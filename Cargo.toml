@@ -4,3 +4,21 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bon = "3.9.0"
+reqwest = { version = "0.13", features = ["json"] }
+serde = { version = "1.0.228", features = ["derive"] }
+espresso-types = { git = "https://github.com/EspressoSystems/espresso-network.git" }
+committable = { git = "https://github.com/EspressoSystems/commit.git" }
+hotshot-types = { git = "https://github.com/EspressoSystems/espresso-network.git" }
+alloy = { version = "1.6.3", default-features = false, features = ["sol-types", "serde"] }
+anyhow = "1.0.101"
+tokio = "1.49.0"
+base64 = "0.22.1"
+serde_bytes = "0.11.19"
+tracing = "0.1.43"
+tracing-subscriber = { version = "0.3.22",  features = ["fmt", "json"] }
+serde_json = "1.0.145"
+
+[dev-dependencies]
+serde_json = "1.0.145"
+tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread", "time"] }
