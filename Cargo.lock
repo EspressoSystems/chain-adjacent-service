@@ -2538,9 +2538,10 @@ name = "chain-agnostic-service"
 version = "0.1.0"
 dependencies = [
  "alloy",
+ "alloy-rlp",
  "anyhow",
  "base64 0.22.1",
- "bon",
+ "clap",
  "committable",
  "espresso-types",
  "hotshot-types",

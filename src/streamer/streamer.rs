@@ -1,11 +1,15 @@
 use crate::espresso_client::client::EspressoClient;
 use crate::rollup::rollup::{Rollup, RollupQueueEntry};
+use crate::utils::exponential_backoff;
 use espresso_types::NamespaceId;
+use std::time::Duration;
 
 const HOTSHOT_RANGE_LIMIT: u64 = 100;
 
 pub struct EspressoStreamerConfig {
     pub max_sequencer_number_drift: u64,
+    pub initial_backoff: Duration,
+    pub max_backoff: Duration,
 }
 
 /// EspressoStreamer is responsible for streaming Espresso transactions
@@ -34,6 +38,7 @@ impl<R: Rollup> EspressoStreamer<R> {
         next_hotshot_block_num: u64,
     ) {
         let mut from_block = next_hotshot_block_num;
+        let mut backoff = self.config.initial_backoff;
 
         loop {
             // get the current hotshot block height
@@ -41,7 +46,7 @@ impl<R: Rollup> EspressoStreamer<R> {
                 Ok(height) => height,
                 Err(err) => {
                     tracing::error!("error while fetching latest hotshot block height: {err}");
-                    // TODO: add a backoff
+                    backoff = exponential_backoff(backoff, self.config.max_backoff).await;
                     continue;
                 }
             };
@@ -56,13 +61,19 @@ impl<R: Rollup> EspressoStreamer<R> {
             {
                 Ok(txns) => txns,
                 Err(err) => {
-                    // TODO add logging here and backoff
+                    tracing::error!(
+                        "error while fetching namespace transactions in range [{from_block}, {to_block}]: {err}"
+                    );
+                    backoff = exponential_backoff(backoff, self.config.max_backoff).await;
                     continue;
                 }
             };
-            let parsed_rollup_entries = self.rollup.parse_messages(hotshot_transactions);
+
+            backoff = self.config.initial_backoff;
+
+            let parsed_rollup_entries =
+                self.rollup.parse_messages(hotshot_transactions, from_block);
             self.filter_messages(parsed_rollup_entries);
-            // TODO: check but as far as I know the request is exclusive of the last value
             from_block = to_block
         }
     }
@@ -73,6 +84,17 @@ impl<R: Rollup> EspressoStreamer<R> {
     fn filter_messages(&mut self, parsed_rollup_entries: Vec<<R as Rollup>::Entry>) {
         for parsed_entry in parsed_rollup_entries {
             if let Some(first) = self.queue.first() {
+                // if seq number is less than the lowest sequencer number which is the first
+                // element in the arrat them skip that entry
+                if parsed_entry.sequence_number() <= first.sequence_number() {
+                    tracing::warn!(
+                        "Sequence number {} is less than the lowest sequencer number {}",
+                        parsed_entry.sequence_number(),
+                        first.sequence_number()
+                    );
+                    continue;
+                }
+
                 if parsed_entry.sequence_number() - first.sequence_number()
                     > self.config.max_sequencer_number_drift
                 {
@@ -85,6 +107,7 @@ impl<R: Rollup> EspressoStreamer<R> {
                 }
             }
             let seq = parsed_entry.sequence_number();
+
             let pos = self.queue.partition_point(|e| e.sequence_number() < seq);
             let exists = pos < self.queue.len() && self.queue[pos].sequence_number() == seq;
             if !exists {

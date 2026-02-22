@@ -146,14 +146,15 @@ pub mod testing {
     #[tokio::test]
     async fn test_espresso_client() {
         let node = EspressoDevNode::start().await;
+
         let height = node
             .client
             .fetch_latest_hotshot_block_height()
             .await
             .expect("failed to fetch block height");
-
         assert!(height > 0, "expected block height > 0, got {height}");
 
+        // Verify the query service reports expected rate limits
         let limits = node
             .client
             .fetch_limits()
@@ -178,39 +179,38 @@ pub mod testing {
             .expect("failed to decode base64 tx");
         let espresso_transaction = Transaction::new(namespace_id, tx_bytes);
 
-        // Submit the transaction to the Espresso node
         let tx_hash = node
             .client
             .submit_transaction(espresso_transaction)
             .await
             .expect("failed to submit transaction");
-
         assert!(tx_hash.to_string() == "TX~NgMAbMRT16XtCJ47yt6wSTwjGdMMFN6Z8okg1agD2waP");
 
-        // wait for a few seconds to get the transaction finalized
+        // Allow time for the transaction to be sequenced and finalized
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        // Fetch the transaction by hash
         let fetched_tx = node
             .client
             .fetch_transaction_by_hash(tx_hash)
             .await
             .expect("failed to fetch transaction");
 
-        // now we fetch namespace transactions in range and see if it has been included
         let namepspace_transactions = node
             .client
             .fetch_namespace_transactions_in_range(namespace_id, 0, fetched_tx.block_height + 1)
             .await
             .expect("failed to fetch namespace transactions");
 
-        // Check that at least one transaction contains the payload similar to the submitted transaction
-        assert!(namepspace_transactions.iter().any(|block| {
-            block
-                .transactions
-                .iter()
-                .any(|tx| tx.payload() == fetched_tx.transaction.payload())
-        }));
+        // Verify the submitted payload appears in at least one block's transactions
+        assert!(
+            namepspace_transactions.iter().any(|block| {
+                block
+                    .transactions
+                    .iter()
+                    .any(|tx| tx.payload() == fetched_tx.transaction.payload())
+            }),
+            "submitted transaction payload not found in namespace block range"
+        );
 
         node.stop();
     }
