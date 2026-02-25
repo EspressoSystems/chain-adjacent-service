@@ -1,4 +1,3 @@
-version: "3.9"
 services:
   espresso-dev-node:
     image: ghcr.io/espressosystems/espresso-sequencer/espresso-dev-node:release-20251120-lip2p-tcp-3855

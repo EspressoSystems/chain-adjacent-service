@@ -38,6 +38,11 @@ impl EspressoDevNode {
             output.status.success() && !String::from_utf8_lossy(&output.stdout).trim().is_empty();
 
         if !already_running {
+            // Remove any stale containers from previous runs to avoid name conflicts.
+            let _ = Command::new("docker")
+                .args(["compose", "-f", COMPOSE_FILE, "down", "--remove-orphans"])
+                .status();
+
             let status = Command::new("docker")
                 .args(["compose", "-f", COMPOSE_FILE, "up", "-d", "--wait"])
                 .status()
@@ -47,7 +52,6 @@ impl EspressoDevNode {
                 panic!("docker compose up failed");
             }
         }
-
         let client = EspressoClient::new(
             format!("http://localhost:{ESPRESSO_SEQUENCER_API_PORT}/"),
             30,
