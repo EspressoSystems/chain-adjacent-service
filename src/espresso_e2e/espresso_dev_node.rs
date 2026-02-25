@@ -1,5 +1,6 @@
 use crate::espresso_client::client::EspressoClient;
-use std::{process::Command, time::Duration};
+use std::{process::Command, sync::OnceLock, time::Duration};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::{Instant, sleep};
 
 const ESPRESSO_SEQUENCER_API_PORT: i32 = 41000;
@@ -12,14 +13,29 @@ const COMPOSE_FILE: &str = concat!(
 /// for testing purposes.
 pub struct EspressoDevNode {
     pub client: EspressoClient,
+    _lifecycle_permit: Option<OwnedSemaphorePermit>,
+}
+
+fn compose_lifecycle_semaphore() -> &'static std::sync::Arc<Semaphore> {
+    static SEMAPHORE: OnceLock<std::sync::Arc<Semaphore>> = OnceLock::new();
+    SEMAPHORE.get_or_init(|| std::sync::Arc::new(Semaphore::new(1)))
 }
 
 impl EspressoDevNode {
     pub fn new(client: EspressoClient) -> Self {
-        Self { client }
+        Self {
+            client,
+            _lifecycle_permit: None,
+        }
     }
 
     pub async fn start() -> Self {
+        let lifecycle_permit = compose_lifecycle_semaphore()
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("compose lifecycle semaphore closed");
+
         // Check if the dev node is already running
         let output = Command::new("docker")
             .args([
@@ -56,7 +72,10 @@ impl EspressoDevNode {
             format!("http://localhost:{ESPRESSO_SEQUENCER_API_PORT}/"),
             30,
         );
-        let node = Self { client };
+        let node = Self {
+            client,
+            _lifecycle_permit: Some(lifecycle_permit),
+        };
         node.wait_until_ready().await;
         node
     }
