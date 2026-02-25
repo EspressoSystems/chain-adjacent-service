@@ -9,7 +9,7 @@ use crate::utils::exponential_backoff;
 
 const HOTSHOT_RANGE_LIMIT: u64 = 100;
 
-/// Streamer is responsible for streaming  transactions
+/// Streamer is responsible for streaming transactions from Espresso
 /// and managing the filtered queue of RollupQueueEntry which is a
 /// generic type over the rollup's messages which are sent in a batch
 pub struct Streamer<R: Rollup> {
@@ -36,6 +36,10 @@ impl<R: Rollup> Streamer<R> {
         }
     }
 
+    /// Polls for hotshot blocks from the Espresso client and adds them to the queue.
+    ///
+    /// It uses exponential backoff to handle errors and retries and calls filter_messages
+    /// to filter the messages.
     pub async fn poll_hotshot_blocks(
         &mut self,
         namespace: NamespaceId,
@@ -45,7 +49,6 @@ impl<R: Rollup> Streamer<R> {
         let mut backoff = Duration::from_millis(self.config.initial_backoff_ms);
 
         loop {
-            // get the current hotshot block height
             let latest_block_height = match self.client.fetch_latest_hotshot_block_height().await {
                 Ok(height) => height,
                 Err(err) => {
@@ -58,10 +61,16 @@ impl<R: Rollup> Streamer<R> {
                     continue;
                 }
             };
+            if from_block >= latest_block_height {
+                // Wait for a bit before checking for new blocks again.
+                tokio::time::sleep(Duration::from_millis(self.config.initial_backoff_ms)).await;
+                continue;
+            }
 
-            let to_block = std::cmp::min(from_block + HOTSHOT_RANGE_LIMIT, latest_block_height);
+            // To block is the latest block height + 1 (because we FetchNamespaceTransactionsInRange is exclusive of the last block)
+            // or from_block + HOTSHOT_RANGE_LIMIT
+            let to_block = std::cmp::min(from_block + HOTSHOT_RANGE_LIMIT, latest_block_height + 1);
 
-            // fetch hotshot blocks
             let hotshot_transactions = match self
                 .client
                 .fetch_namespace_transactions_in_range(namespace, from_block, to_block)
@@ -135,19 +144,22 @@ pub mod testing {
     use crate::{
         config::StreamerConfig,
         espresso_client::{client::EspressoClient, types::NamespaceTransactionsInRange},
+        espresso_e2e::espresso_dev_node::EspressoDevNode,
         rollup::rollup::{Rollup, RollupQueueEntry},
         streamer::streamer::Streamer,
     };
+    use espresso_types::{NamespaceId, Transaction};
+    use std::time::Duration;
 
     #[derive(Clone, Debug)]
     struct MockEntry {
-        seq: u64,
+        seq_num: u64,
         hotshot_height: u64,
     }
 
     impl RollupQueueEntry for MockEntry {
         fn sequence_number(&self) -> u64 {
-            self.seq
+            self.seq_num
         }
 
         fn hotshot_height(&self) -> u64 {
@@ -159,13 +171,31 @@ pub mod testing {
 
     impl Rollup for MockRollup {
         type Entry = MockEntry;
-
         fn parse_hotshot_transactions(
             &self,
-            _entries: Vec<NamespaceTransactionsInRange>,
-            _starting_hotshot_height: u64,
+            entries: Vec<NamespaceTransactionsInRange>,
+            starting_hotshot_height: u64,
         ) -> Vec<Self::Entry> {
-            vec![]
+            let mut parsed_entries = Vec::new();
+            let mut hotshot_height = starting_hotshot_height;
+
+            for entry in entries {
+                for tx in entry.transactions {
+                    let payload = tx.payload();
+
+                    let mut seq_bytes = [0u8; 8];
+                    seq_bytes.copy_from_slice(&payload[payload.len() - 8..]);
+
+                    parsed_entries.push(MockEntry {
+                        seq_num: u64::from_be_bytes(seq_bytes),
+                        hotshot_height,
+                    });
+                }
+
+                hotshot_height += 1;
+            }
+
+            parsed_entries
         }
 
         fn remove_finalized_messages(&self) -> u64 {
@@ -177,11 +207,16 @@ pub mod testing {
         }
     }
 
-    fn make_entry(seq: u64, hotshot_height: u64) -> MockEntry {
+    fn make_entry(seq_num: u64, hotshot_height: u64) -> MockEntry {
         MockEntry {
-            seq,
+            seq_num,
             hotshot_height,
         }
+    }
+
+    fn make_mock_espresso_transaction(seq: u64) -> Transaction {
+        let namespace_id = NamespaceId::from(1918988905u64);
+        Transaction::new(namespace_id, seq.to_be_bytes().to_vec())
     }
 
     fn make_streamer(max_drift: u64, starting_pos: u64) -> Streamer<MockRollup> {
@@ -234,5 +269,96 @@ pub mod testing {
         streamer.filter_messages(vec![make_entry(5, 1)]);
         streamer.filter_messages(vec![make_entry(1, 1)]);
         assert_eq!(queue_positions(&streamer), vec![5]);
+    }
+
+    #[tokio::test]
+    async fn test_poll_hotshot_blocks() {
+        let node = EspressoDevNode::start().await;
+
+        let start_height = node
+            .client
+            .fetch_latest_hotshot_block_height()
+            .await
+            .expect("failed to fetch starting block height");
+
+        let mut streamer = Streamer::new(
+            node.client.clone(),
+            MockRollup,
+            1,
+            StreamerConfig {
+                max_sequencer_number_drift: 1000,
+                initial_backoff_ms: 100,
+                max_backoff_ms: 500,
+            },
+        );
+
+        // Submit at least 10 transactions to the Espresso sequencer
+        let mut submitted_transactions = Vec::new();
+        for seq in 1..=10 {
+            let tx = make_mock_espresso_transaction(seq);
+            let tx_hash = node
+                .client
+                .submit_transaction(tx)
+                .await
+                .expect("failed to submit transaction");
+            submitted_transactions.push((seq, tx_hash));
+        }
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let mut available = 0;
+            for (_, tx_hash) in &submitted_transactions {
+                if node
+                    .client
+                    .fetch_transaction_by_hash(tx_hash.clone())
+                    .await
+                    .is_ok()
+                {
+                    available += 1;
+                }
+            }
+
+            if available == submitted_transactions.len() {
+                break;
+            }
+
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for submitted transactions to be indexed"
+            );
+
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        let namespace_id = NamespaceId::from(1918988905u64);
+        let _ = tokio::time::timeout(
+            Duration::from_secs(60),
+            streamer.poll_hotshot_blocks(namespace_id, start_height),
+        )
+        .await;
+
+        // Verify the queue was populated with entries from polled blocks
+        assert!(
+            !streamer.queue.is_empty(),
+            "expected queue to have entries after polling"
+        );
+
+        // Check all positions from 1 to 10 exist
+        let positions = queue_positions(&streamer);
+        assert!(
+            positions.iter().all(|seq| (1..=10).contains(seq)),
+            "expected parsed sequence numbers to come from submitted payload suffix, got {:?}",
+            positions
+        );
+
+        // Entries must be strictly ascending (sorted, no duplicates)
+        for window in positions.windows(2) {
+            assert!(
+                window[0] < window[1],
+                "expected strictly ascending sequence numbers, got {:?}",
+                positions
+            );
+        }
+
+        node.stop();
     }
 }

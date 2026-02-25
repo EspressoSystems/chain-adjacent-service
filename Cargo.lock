@@ -2541,7 +2541,6 @@ dependencies = [
  "alloy-rlp",
  "anyhow",
  "base64 0.22.1",
- "clap",
  "committable",
  "espresso-types",
  "hotshot-types",

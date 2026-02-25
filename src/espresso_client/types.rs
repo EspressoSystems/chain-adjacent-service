@@ -1,5 +1,5 @@
 use committable::Commitment;
-use espresso_types::{NamespaceId, NsProof, Transaction};
+use espresso_types::{Header, NamespaceId, NsProof, Transaction};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -19,8 +19,8 @@ pub struct TransactionQueryData {
     pub transaction: Transaction,
     pub hash: Commitment<Transaction>,
     pub index: u64,
-    // TODO: fix this
-    pub block_hash: String,
+    // https://github.com/EspressoSystems/espresso-network/blob/main/hotshot-query-service/src/availability/query_data.rs#L41
+    pub block_hash: Commitment<Header>,
     pub block_height: u64,
     pub namespace: NamespaceId,
     pub pos_in_namespace: u32,

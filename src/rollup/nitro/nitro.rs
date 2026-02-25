@@ -33,6 +33,7 @@ impl Rollup for Nitro {
 
         for namespace_tx in namespace_transactions {
             for tx in namespace_tx.transactions {
+                // Parse the Nitro hotshot payload
                 let Ok(legacy_nitro_message) =
                     self.legacy_parse_nitro_hotshot_payload(tx.payload())
                 else {
@@ -74,7 +75,7 @@ impl Rollup for Nitro {
                     entries.push(NitroRollupQueueEntry {
                         message_with_meta,
                         pos: legacy_nitro_message.indices[index],
-                        hotshot_height: starting_hotshot_height,
+                        hotshot_height: hotshot_height,
                     });
                 }
             }
@@ -101,17 +102,20 @@ impl Nitro {
             sequencer_addresses,
         }
     }
-
+    /// Checks if the signature on the message hash is valid and
+    /// is from a sequencer in the `sequencer_addresses` list.
     fn signature_from_know_sequencer(
         &self,
         messages_hash: FixedBytes<32>,
         signature: &[u8],
     ) -> bool {
+        // Signature should always be 65 bytes length
         if signature.len() != 65 {
             tracing::warn!("invalid signature length: {}", signature.len());
             return false;
         }
 
+        // Extract the parity byte from the signature
         let parity = match signature[64] {
             0 | 27 => false,
             1 | 28 => true,
@@ -133,10 +137,13 @@ impl Nitro {
             tracing::warn!("failed to recover signer");
             return false;
         };
-
+        // Check that the signer is indeed part of the sequencer address array
         self.sequencer_addresses.contains(&signer)
     }
 
+    /// It parses Nitro payload using the old parsing method used in golang code
+    /// This code uses batch poster's signature over the combined messages present
+    /// in a given Espresso transaction
     fn legacy_parse_nitro_hotshot_payload(
         &self,
         tx_payload: &[u8],
@@ -144,17 +151,19 @@ impl Nitro {
         if tx_payload.len() < LEN_SIZE {
             return Err(anyhow::anyhow!("payload too short to parse signature size"));
         }
+        // Get the length of the signature
         let signature_len = u64::from_be_bytes(tx_payload[..LEN_SIZE].try_into()?);
 
         let mut current_pos = LEN_SIZE;
-
+        // Check that length of the payload is greater than o signature length
         if tx_payload[current_pos..].len() < signature_len as usize {
             return Err(anyhow::anyhow!("payload too short to parse signature"));
         }
-
+        // extract the signature using the signature length
         let signature = &tx_payload[current_pos..current_pos + signature_len as usize];
         current_pos += signature_len as usize;
 
+        // Take the hash of the remaining payload
         let mut keccak_hasher = Keccak256::new();
         keccak_hasher.update(&tx_payload[current_pos..]);
         let message_data_hash = keccak_hasher.finalize();
@@ -169,15 +178,18 @@ impl Nitro {
             if tx_payload[current_pos..].len() < LEN_SIZE + INDEX_SIZE {
                 return Err(anyhow::Error::msg("payload too short to index size"));
             }
+            // Now we will read the position index of the message
             let index =
                 u64::from_be_bytes(tx_payload[current_pos..current_pos + INDEX_SIZE].try_into()?);
             current_pos += INDEX_SIZE;
+            // After reading the index, ready the message size
             let message_size =
                 u64::from_be_bytes(tx_payload[current_pos..current_pos + LEN_SIZE].try_into()?);
             current_pos += LEN_SIZE;
             if tx_payload[current_pos..].len() < message_size as usize {
                 return Err(anyhow::Error::msg("payload too short to message size"));
             }
+            // Retrieve the message from the payload
             let message = &tx_payload[current_pos..current_pos + message_size as usize];
             current_pos += message_size as usize;
             if message.len() == 0 {

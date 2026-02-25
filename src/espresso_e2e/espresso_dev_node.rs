@@ -20,13 +20,32 @@ impl EspressoDevNode {
     }
 
     pub async fn start() -> Self {
-        let status = Command::new("docker")
-            .args(["compose", "-f", COMPOSE_FILE, "up", "-d", "--wait"])
-            .status()
+        // Check if the dev node is already running
+        let output = Command::new("docker")
+            .args([
+                "compose",
+                "-f",
+                COMPOSE_FILE,
+                "ps",
+                "--status",
+                "running",
+                "-q",
+            ])
+            .output()
             .expect("failed to run docker compose - is docker running?");
 
-        if !status.success() {
-            panic!("docker compose up failed");
+        let already_running =
+            output.status.success() && !String::from_utf8_lossy(&output.stdout).trim().is_empty();
+
+        if !already_running {
+            let status = Command::new("docker")
+                .args(["compose", "-f", COMPOSE_FILE, "up", "-d", "--wait"])
+                .status()
+                .expect("failed to run docker compose - is docker running?");
+
+            if !status.success() {
+                panic!("docker compose up failed");
+            }
         }
 
         let client = EspressoClient::new(
