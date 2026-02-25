@@ -10,14 +10,34 @@ pub struct ServiceConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct EspressoClientConfig {
     pub query_service_url: String,
+    #[serde(default = "client_timeout_secs")]
     pub client_timeout_secs: u64,
+}
+
+fn client_timeout_secs() -> u64 {
+    30
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct StreamerConfig {
+    #[serde(default = "default_max_sequencer_number_drift")]
     pub max_sequencer_number_drift: u64,
+    #[serde(default = "default_initial_backoff_ms")]
     pub initial_backoff_ms: u64,
+    #[serde(default = "default_max_backoff_ms")]
     pub max_backoff_ms: u64,
+}
+
+fn default_max_sequencer_number_drift() -> u64 {
+    1000
+}
+
+fn default_initial_backoff_ms() -> u64 {
+    1000
+}
+
+fn default_max_backoff_ms() -> u64 {
+    30000
 }
 
 #[derive(Debug, Clone, Deserialize)]

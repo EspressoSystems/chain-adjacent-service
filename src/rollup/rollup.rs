@@ -8,7 +8,7 @@ pub trait RollupQueueEntry {
 pub trait Rollup {
     type Entry: RollupQueueEntry;
 
-    fn parse_messages(
+    fn parse_hotshot_transactions(
         &self,
         entries: Vec<NamespaceTransactionsInRange>,
         starting_hotshot_height: u64,

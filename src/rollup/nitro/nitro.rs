@@ -23,8 +23,7 @@ impl RollupQueueEntry for NitroRollupQueueEntry {
 
 impl Rollup for Nitro {
     type Entry = NitroRollupQueueEntry;
-    // TODO: maybe there is better naming?
-    fn parse_messages(
+    fn parse_hotshot_transactions(
         &self,
         namespace_transactions: Vec<NamespaceTransactionsInRange>,
         starting_hotshot_height: u64,
@@ -34,7 +33,8 @@ impl Rollup for Nitro {
 
         for namespace_tx in namespace_transactions {
             for tx in namespace_tx.transactions {
-                let Ok(legacy_nitro_message) = self.legacy_parse_hotshot_payload(tx.payload())
+                let Ok(legacy_nitro_message) =
+                    self.legacy_parse_nitro_hotshot_payload(tx.payload())
                 else {
                     tracing::warn!("failed to parse hotshot payload: {:?}", tx.payload());
                     continue;
@@ -137,7 +137,7 @@ impl Nitro {
         self.sequencer_addresses.contains(&signer)
     }
 
-    fn legacy_parse_hotshot_payload(
+    fn legacy_parse_nitro_hotshot_payload(
         &self,
         tx_payload: &[u8],
     ) -> Result<LegacyParsedNitroEspressoTransaction> {
@@ -208,7 +208,7 @@ pub mod testing {
 
     #[test]
     fn test_parse_message_with_legacy_message() {
-        // Details for transaction TX~jAkVNalcY-TS-Ou3rnTZgtYkJT0zDinffZpx6tY6F5K1
+        // Decaf check transaction TX~jAkVNalcY-TS-Ou3rnTZgtYkJT0zDinffZpx6tY6F5K1
         let base64_tx = "AAAAAAAAAEHEFgCdBGJ3Qu/SXKasPsL8JIPqUo0OPWbe8sesRUf8XQ+g8417Wp9HBnkDcLXYYwyN1EJBESKNVlbnhKp2CTDCAQAAAAAAGZ2LAAAAAAAAA9v5A9j5A9LhA5SksAAAAAAAAAAAAHNlcXVlbmNlcoOdYcyEaZsd8sCAuQOtBPkDqV6DtxsAgwbh8ICAuQNVYMBgQFJgGWCAkIFSf0hlbGxvIFdvcmxkIHdpdGggemtDb2RleCEAAAAAAAAAYKBSYACQYQA8kIJhAO5WW1A0gBVhAElXYACA/VtQYQGsVltjTkh7cWDgG2AAUmBBYARSYCRgAP1bYAGBgRyQghaAYQB5V2B/ghaRUFtgIIIQgQNhAJlXY05Ie3Fg4BtgAFJgImAEUmAkYAD9W1CRkFBWW2AfghEVYQDpV4BgAFJgIGAAIGAfhAFgBRyBAWAghRAVYQDGV1CAW2AfhAFgBRyCAZFQW4GBEBVhAOZXYACBVWABAWEA0lZbUFBbUFBQVluBUWABYAFgQBsDgREVYQEHV2EBB2EAT1ZbYQEbgWEBFYRUYQBlVluEYQCfVltgIGAfghFgAYEUYQFPV2AAgxVhATdXUISCAVFbYAAZYAOFkBscGRZgAYSQGxeEVWEA5lZbYACEgVJgIIEgYB8ZhRaRW4KBEBVhAX9Xh4UBUYJVYCCUhQGUYAGQkgGRAWEBX1ZbUISCEBVhAZ1XhoQBUWAAGWADh5AbYPgWHBkWgVVbUFBQUGABkIEbAZBVUFZbYQGagGEBu2AAOWAA8/5ggGBAUjSAFWEAEFdgAID9W1BgBDYQYQArV2AANWDgHIBj4h83zhRhADBXW2AAgP1bYQA4YQBOVltgQFFhAEWRkGEA3FZbYEBRgJEDkPNbYACAVGEAW5BhASpWW4BgHwFgIICRBAJgIAFgQFGQgQFgQFKAkpGQgYFSYCABgoBUYQCHkGEBKlZbgBVhANRXgGAfEGEAqVdhAQCAg1QEAoNSkWAgAZFhANRWW4IBkZBgAFJgIGAAIJBbgVSBUpBgAQGQYCABgIMRYQC3V4KQA2AfFoIBkVtQUFBQUIFWW2AggVJgAIJRgGAghAFSYABbgYEQFWEBCldgIIGGAYEBUWBAhoQBAVIBYQDtVltQYABgQIKFAQFSYEBgHxlgH4MBFoQBAZFQUJKRUFBWW2ABgYEckIIWgGEBPldgf4IWkVBbYCCCEIEDYQFeV2NOSHtxYOAbYABSYCJgBFJgJGAA/VtQkZBQVv6iZGlwZnNYIhIgPUNNaLgAeEfMEKhyf+Fa5/V9GJtEMExVO+9xGNgGcDpkc29sY0MACBoAM4NNDYygttRYZiOfsCv8ZOo7/bSzIUbvw6wk6b3IJcBzPfpa5eegUGZnmKumi133toxEHqEAxZpA63c4ljsGRg6sAAA2WemCMsw=";
 
         let namespace_id = NamespaceId::from(1918988905u64);
@@ -223,7 +223,7 @@ pub mod testing {
             proof: None,
         };
         let parsed_messages: Vec<NitroRollupQueueEntry> =
-            nitro.parse_messages(vec![namespace_transactions_in_range], 1u64);
+            nitro.parse_hotshot_transactions(vec![namespace_transactions_in_range], 1u64);
 
         assert!(
             parsed_messages.len() == 1,
