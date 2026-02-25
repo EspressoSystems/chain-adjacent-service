@@ -61,16 +61,14 @@ impl<R: Rollup> Streamer<R> {
                     continue;
                 }
             };
-            if from_block >= latest_block_height {
+            if from_block > latest_block_height {
                 // Wait for a bit before checking for new blocks again.
                 tokio::time::sleep(Duration::from_millis(self.config.initial_backoff_ms)).await;
                 continue;
             }
-
-            // To block is the latest block height + 1 (because we FetchNamespaceTransactionsInRange is exclusive of the last block)
-            // or from_block + HOTSHOT_RANGE_LIMIT
+            // to block is set to latest_block_height + 1 because fetch_namespace_transactions_in_range is explusive of the last block
+            // otherwise its set to from_block + HOTSHOT_RANGE_LIMIT
             let to_block = std::cmp::min(from_block + HOTSHOT_RANGE_LIMIT, latest_block_height + 1);
-
             let hotshot_transactions = match self
                 .client
                 .fetch_namespace_transactions_in_range(namespace, from_block, to_block)
@@ -89,13 +87,13 @@ impl<R: Rollup> Streamer<R> {
                     continue;
                 }
             };
-
             backoff = Duration::from_millis(self.config.initial_backoff_ms);
 
             let parsed_rollup_entries = self
                 .rollup
                 .parse_hotshot_transactions(hotshot_transactions, from_block);
             self.filter_messages(parsed_rollup_entries);
+
             from_block = to_block
         }
     }
@@ -275,12 +273,6 @@ pub mod testing {
     async fn test_poll_hotshot_blocks() {
         let node = EspressoDevNode::start().await;
 
-        let start_height = node
-            .client
-            .fetch_latest_hotshot_block_height()
-            .await
-            .expect("failed to fetch starting block height");
-
         let mut streamer = Streamer::new(
             node.client.clone(),
             MockRollup,
@@ -291,6 +283,8 @@ pub mod testing {
                 max_backoff_ms: 500,
             },
         );
+
+        let namespace_id = NamespaceId::from(1918988905u64);
 
         // Submit at least 10 transactions to the Espresso sequencer
         let mut submitted_transactions = Vec::new();
@@ -304,37 +298,16 @@ pub mod testing {
             submitted_transactions.push((seq, tx_hash));
         }
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        loop {
-            let mut available = 0;
-            for (_, tx_hash) in &submitted_transactions {
-                if node
-                    .client
-                    .fetch_transaction_by_hash(tx_hash.clone())
-                    .await
-                    .is_ok()
-                {
-                    available += 1;
-                }
-            }
-
-            if available == submitted_transactions.len() {
-                break;
-            }
-
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "timed out waiting for submitted transactions to be indexed"
-            );
-
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
-        let namespace_id = NamespaceId::from(1918988905u64);
-        let _ = tokio::time::timeout(
-            Duration::from_secs(60),
-            streamer.poll_hotshot_blocks(namespace_id, start_height),
+        let start_poll_block = 0;
+        let timeout_result = tokio::time::timeout(
+            Duration::from_secs(30),
+            streamer.poll_hotshot_blocks(namespace_id, start_poll_block),
         )
         .await;
+        assert!(
+            timeout_result.is_err(),
+            "expected poll_hotshot_blocks to keep polling and hit timeout"
+        );
 
         // Verify the queue was populated with entries from polled blocks
         assert!(
@@ -342,13 +315,15 @@ pub mod testing {
             "expected queue to have entries after polling"
         );
 
-        // Check all positions from 1 to 10 exist
         let positions = queue_positions(&streamer);
-        assert!(
-            positions.iter().all(|seq| (1..=10).contains(seq)),
-            "expected parsed sequence numbers to come from submitted payload suffix, got {:?}",
-            positions
-        );
+        for expected_seq in 1..=10 {
+            assert!(
+                positions.contains(&expected_seq),
+                "expected parsed sequence number {} to be present, got {:?}",
+                expected_seq,
+                positions
+            );
+        }
 
         // Entries must be strictly ascending (sorted, no duplicates)
         for window in positions.windows(2) {
