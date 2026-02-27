@@ -1,7 +1,7 @@
 pub mod config;
 pub mod espresso_client;
 pub mod espresso_e2e;
-pub mod rollup;
+pub mod rollups;
 pub mod streamer;
 pub mod utils;
 

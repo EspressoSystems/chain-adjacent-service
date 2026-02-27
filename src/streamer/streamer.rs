@@ -4,7 +4,7 @@ use espresso_types::NamespaceId;
 
 use crate::config::StreamerConfig;
 use crate::espresso_client::client::EspressoClient;
-use crate::rollup::rollup::{Rollup, RollupQueueEntry};
+use crate::rollups::rollup::{Rollup, RollupQueueEntry};
 use crate::utils::exponential_backoff;
 
 const HOTSHOT_RANGE_LIMIT: u64 = 100;
@@ -143,7 +143,7 @@ pub mod testing {
         config::StreamerConfig,
         espresso_client::{client::EspressoClient, types::NamespaceTransactionsInRange},
         espresso_e2e::espresso_dev_node::EspressoDevNode,
-        rollup::rollup::{Rollup, RollupQueueEntry},
+        rollups::rollup::{Rollup, RollupQueueEntry},
         streamer::streamer::Streamer,
     };
     use espresso_types::{NamespaceId, Transaction};

@@ -1,10 +1,10 @@
 use crate::espresso_client::types::NamespaceTransactionsInRange;
-use crate::rollup::nitro::types::LegacyParsedNitroEspressoTransaction;
-use crate::rollup::nitro::types::MessageWithMetadata;
-use crate::rollup::nitro::types::Nitro;
-use crate::rollup::nitro::types::NitroRollupQueueEntry;
-use crate::rollup::rollup::Rollup;
-use crate::rollup::rollup::RollupQueueEntry;
+use crate::rollups::nitro::types::LegacyParsedNitroEspressoTransaction;
+use crate::rollups::nitro::types::MessageWithMetadata;
+use crate::rollups::nitro::types::Nitro;
+use crate::rollups::nitro::types::NitroRollupQueueEntry;
+use crate::rollups::rollup::Rollup;
+use crate::rollups::rollup::RollupQueueEntry;
 use alloy::primitives::{Address, B256, FixedBytes, Keccak256, Signature};
 use anyhow::Result;
 use std::collections::VecDeque;
@@ -42,7 +42,7 @@ impl Rollup for Nitro {
                 };
 
                 //  If signature is invalid, then skip the transaction
-                if !(self.signature_from_know_sequencer(
+                if !(self.signature_from_known_sequencer(
                     legacy_nitro_message.messages_hash,
                     &legacy_nitro_message.signature,
                 )) {
@@ -104,7 +104,7 @@ impl Nitro {
     }
     /// Checks if the signature on the message hash is valid and
     /// is from a sequencer in the `sequencer_addresses` list.
-    fn signature_from_know_sequencer(
+    fn signature_from_known_sequencer(
         &self,
         messages_hash: FixedBytes<32>,
         signature: &[u8],
