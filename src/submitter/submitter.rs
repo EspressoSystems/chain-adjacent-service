@@ -66,6 +66,7 @@ impl Submitter {
             let client = self.client.clone();
             let config = self.config.clone();
             tokio::spawn(async move {
+                // move the permit to this spawned task so that its automatically released when the task completes
                 let _permit = permit;
                 let mut backoff = Duration::from_millis(config.initial_backoff_ms);
                 loop {
