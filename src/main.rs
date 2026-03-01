@@ -3,6 +3,7 @@ pub mod espresso_client;
 pub mod espresso_e2e;
 pub mod rollups;
 pub mod streamer;
+pub mod submitter;
 pub mod utils;
 
 use anyhow::Result;
