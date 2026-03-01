@@ -69,43 +69,42 @@ impl Submitter {
                 // move the permit to this spawned task so that its automatically released when the task completes
                 let _permit = permit;
                 let mut backoff = Duration::from_millis(config.initial_backoff_ms);
-                loop {
-                    // Submit the transaction to Espresso
-                    let tx_hash = match client.submit_transaction(tx.clone()).await {
-                        Ok(tx_hash) => tx_hash,
+
+                // 1. Submit the transaction, retrying on failure.
+                let tx_hash = loop {
+                    match client.submit_transaction(tx.clone()).await {
+                        Ok(tx_hash) => break tx_hash,
                         Err(err) => {
-                            tracing::warn!("failed to submit transaction: {err}");
+                            tracing::warn!("failed to submit transaction: {err}, retrying...");
                             backoff = exponential_backoff(
                                 backoff,
                                 Duration::from_millis(config.max_backoff_ms),
                             )
                             .await;
-                            continue;
                         }
-                    };
+                    }
+                };
 
-                    // Wait for finalization then check inclusion
-                    tokio::time::sleep(Duration::from_millis(config.finalization_wait_ms)).await;
+                // 2. Poll for finalization, retrying on failure.
+                // Wait for a grace period before the first check.
+                tokio::time::sleep(Duration::from_millis(config.finalization_wait_ms)).await;
 
-                    // Check for inclusion
-                    let transaction_query_data =
-                        match client.fetch_transaction_by_hash(tx_hash).await {
-                            Ok(data) => data,
-                            Err(err) => {
-                                tracing::warn!("transaction not finalized, retrying: {err}");
-                                backoff = exponential_backoff(
-                                    backoff,
-                                    Duration::from_millis(config.max_backoff_ms),
-                                )
-                                .await;
-                                continue;
-                            }
-                        };
-                    tracing::info!(
-                        "finalized transaction with hash: {:?}",
-                        transaction_query_data.hash
-                    );
-                    break;
+                backoff = Duration::from_millis(config.initial_backoff_ms); // Reset backoff for polling
+                loop {
+                    match client.fetch_transaction_by_hash(tx_hash).await {
+                        Ok(data) => {
+                            tracing::info!("finalized transaction with hash: {:?}", data.hash);
+                            break;
+                        }
+                        Err(err) => {
+                            tracing::warn!("transaction not finalized, retrying: {err}");
+                            backoff = exponential_backoff(
+                                backoff,
+                                Duration::from_millis(config.max_backoff_ms),
+                            )
+                            .await;
+                        }
+                    }
                 }
             });
         }
@@ -201,7 +200,7 @@ pub mod testing {
             from = to;
         }
 
-        for expected_seq in 1..=20u64 {
+        for expected_seq in 0..=20u64 {
             assert!(
                 found_seqs.contains(&expected_seq),
                 "expected sequence {} to be finalized on Espresso, found: {:?}",
