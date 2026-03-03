@@ -13,6 +13,7 @@ pub struct SubmitterConfig {
     pub finalization_wait_ms: u64,
     pub initial_backoff_ms: u64,
     pub max_backoff_ms: u64,
+    pub max_finalization_poll_retries: u32,
 }
 
 /// Submitter is responsible for submitting transactions to Espresso
@@ -68,42 +69,60 @@ impl Submitter {
             tokio::spawn(async move {
                 // move the permit to this spawned task so that its automatically released when the task completes
                 let _permit = permit;
-                let mut backoff = Duration::from_millis(config.initial_backoff_ms);
-
-                // 1. Submit the transaction, retrying on failure.
-                let tx_hash = loop {
-                    match client.submit_transaction(tx.clone()).await {
-                        Ok(tx_hash) => break tx_hash,
-                        Err(err) => {
-                            tracing::warn!("failed to submit transaction: {err}, retrying...");
-                            backoff = exponential_backoff(
-                                backoff,
-                                Duration::from_millis(config.max_backoff_ms),
-                            )
-                            .await;
-                        }
-                    }
-                };
-
-                // 2. Poll for finalization, retrying on failure.
-                // Wait for a grace period before the first check.
-                tokio::time::sleep(Duration::from_millis(config.finalization_wait_ms)).await;
-
-                backoff = Duration::from_millis(config.initial_backoff_ms); // Reset backoff for polling
                 loop {
-                    match client.fetch_transaction_by_hash(tx_hash).await {
-                        Ok(data) => {
-                            tracing::info!("finalized transaction with hash: {:?}", data.hash);
-                            break;
+                    let mut backoff = Duration::from_millis(config.initial_backoff_ms);
+
+                    // 1. Submit the transaction, retrying on failure.
+                    let tx_hash = loop {
+                        match client.submit_transaction(tx.clone()).await {
+                            Ok(tx_hash) => break tx_hash,
+                            Err(err) => {
+                                tracing::warn!("failed to submit transaction: {err}, retrying...");
+                                backoff = exponential_backoff(
+                                    backoff,
+                                    Duration::from_millis(config.max_backoff_ms),
+                                )
+                                .await;
+                            }
                         }
-                        Err(err) => {
-                            tracing::warn!("transaction not finalized, retrying: {err}");
-                            backoff = exponential_backoff(
-                                backoff,
-                                Duration::from_millis(config.max_backoff_ms),
-                            )
-                            .await;
+                    };
+
+                    // 2. Poll for finalization with max retries.
+                    // Wait for a grace period before the first check.
+                    tokio::time::sleep(Duration::from_millis(config.finalization_wait_ms)).await;
+
+                    backoff = Duration::from_millis(config.initial_backoff_ms);
+                    let mut poll_attempts: u32 = 0;
+                    let finalized = loop {
+                        match client.fetch_transaction_by_hash(tx_hash).await {
+                            Ok(data) => {
+                                tracing::info!("finalized transaction with hash: {:?}", data.hash);
+                                break true;
+                            }
+                            Err(err) => {
+                                poll_attempts += 1;
+                                if poll_attempts >= config.max_finalization_poll_retries {
+                                    tracing::warn!(
+                                        "max poll retries ({}) reached for tx {tx_hash}, resubmitting",
+                                        config.max_finalization_poll_retries
+                                    );
+                                    break false;
+                                }
+                                tracing::warn!(
+                                    "transaction not finalized (attempt {poll_attempts}/{}), retrying: {err}",
+                                    config.max_finalization_poll_retries
+                                );
+                                backoff = exponential_backoff(
+                                    backoff,
+                                    Duration::from_millis(config.max_backoff_ms),
+                                )
+                                .await;
+                            }
                         }
+                    };
+
+                    if finalized {
+                        break;
                     }
                 }
             });
@@ -132,6 +151,7 @@ pub mod testing {
             finalization_wait_ms: 10000,
             initial_backoff_ms: 100,
             max_backoff_ms: 1000,
+            max_finalization_poll_retries: 5,
         };
         // Max 256 transactions at a time in the channel
         let (sender, reciever) = mpsc::channel(256);
