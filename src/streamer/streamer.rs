@@ -141,81 +141,16 @@ impl<R: Rollup> Streamer<R> {
 pub mod testing {
     use crate::{
         config::StreamerConfig,
-        espresso_client::{client::EspressoClient, types::NamespaceTransactionsInRange},
-        espresso_e2e::espresso_dev_node::EspressoDevNode,
-        rollups::rollup::{Rollup, RollupQueueEntry},
+        espresso_client::client::EspressoClient,
+        espresso_e2e::{
+            espresso_dev_node::EspressoDevNode,
+            mock_rollup::{MockRollup, make_entry, make_mock_espresso_transaction},
+        },
+        rollups::rollup::RollupQueueEntry,
         streamer::streamer::Streamer,
     };
-    use espresso_types::{NamespaceId, Transaction};
+    use espresso_types::NamespaceId;
     use std::time::Duration;
-
-    #[derive(Clone, Debug)]
-    struct MockEntry {
-        seq_num: u64,
-        hotshot_height: u64,
-    }
-
-    impl RollupQueueEntry for MockEntry {
-        fn sequence_number(&self) -> u64 {
-            self.seq_num
-        }
-
-        fn hotshot_height(&self) -> u64 {
-            self.hotshot_height
-        }
-    }
-
-    struct MockRollup;
-
-    impl Rollup for MockRollup {
-        type Entry = MockEntry;
-        fn parse_hotshot_transactions(
-            &self,
-            entries: Vec<NamespaceTransactionsInRange>,
-            starting_hotshot_height: u64,
-        ) -> Vec<Self::Entry> {
-            let mut parsed_entries = Vec::new();
-            let mut hotshot_height = starting_hotshot_height;
-
-            for entry in entries {
-                for tx in entry.transactions {
-                    let payload = tx.payload();
-
-                    let mut seq_bytes = [0u8; 8];
-                    seq_bytes.copy_from_slice(&payload[payload.len() - 8..]);
-
-                    parsed_entries.push(MockEntry {
-                        seq_num: u64::from_be_bytes(seq_bytes),
-                        hotshot_height,
-                    });
-                }
-
-                hotshot_height += 1;
-            }
-
-            parsed_entries
-        }
-
-        fn remove_finalized_messages(&self) -> u64 {
-            todo!()
-        }
-
-        fn verify_batch(&self) -> bool {
-            todo!()
-        }
-    }
-
-    fn make_entry(seq_num: u64, hotshot_height: u64) -> MockEntry {
-        MockEntry {
-            seq_num,
-            hotshot_height,
-        }
-    }
-
-    fn make_mock_espresso_transaction(seq: u64) -> Transaction {
-        let namespace_id = NamespaceId::from(1918988905u64);
-        Transaction::new(namespace_id, seq.to_be_bytes().to_vec())
-    }
 
     fn make_streamer(max_drift: u64, starting_pos: u64) -> Streamer<MockRollup> {
         let client = EspressoClient::new("http://127.0.0.1".to_string(), 30);
