@@ -2,10 +2,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use espresso_types::Transaction;
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{AcquireError, Semaphore, mpsc};
 
 use crate::espresso_client::client::EspressoClient;
 use crate::utils::exponential_backoff;
+use thiserror::Error;
 
 #[derive(Clone, Debug)]
 pub struct SubmitterConfig {
@@ -14,6 +15,14 @@ pub struct SubmitterConfig {
     pub initial_backoff_ms: u64,
     pub max_backoff_ms: u64,
     pub max_finalization_poll_retries: u32,
+}
+
+#[derive(Debug, Error)]
+pub enum SubmitterError {
+    #[error("channel was closed")]
+    ChannelClosed,
+    #[error("acquire permit error: {0}")]
+    FailedToAcquirePermit(AcquireError),
 }
 
 /// Submitter is responsible for submitting transactions to Espresso
@@ -46,24 +55,21 @@ impl Submitter {
     /// Then it acquires a permit from the semaphore, blocking if all max_in_flight is hit.
     ///
     /// Finally, it submits the transaction to Espresso and checks the finalization of the transaction.
-    pub async fn submit_transactions(&mut self) {
+    pub async fn submit_transactions(&mut self) -> Result<(), SubmitterError> {
         loop {
             // First try to fetch a transaction from the channel
-            let tx = match self.unsubmitted_txs.recv().await {
-                Some(tx) => tx,
-                None => {
-                    tracing::warn!("channel closed!");
-                    break;
-                }
-            };
+            let tx = self
+                .unsubmitted_txs
+                .recv()
+                .await
+                .ok_or(SubmitterError::ChannelClosed)?;
             // Acquire a permit from semaphore, block if all max_in_flight is hit
-            let permit = match self.sem.clone().acquire_owned().await {
-                Ok(permit) => permit,
-                Err(err) => {
-                    tracing::warn!("semaphore threw an error {err}");
-                    break;
-                }
-            };
+            let permit = self
+                .sem
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(SubmitterError::FailedToAcquirePermit)?;
             let client = self.client.clone();
             let config = self.config.clone();
             tokio::spawn(async move {
@@ -136,6 +142,7 @@ pub mod testing {
         espresso_e2e::{
             espresso_dev_node::EspressoDevNode, mock_rollup::make_mock_espresso_transaction,
         },
+        submitter::submitter::SubmitterError,
         submitter::submitter::{Submitter, SubmitterConfig},
     };
     use espresso_types::NamespaceId;
@@ -168,10 +175,12 @@ pub mod testing {
         });
         // Run the submitter until all transactions are processed
         let submitter_result =
-            tokio::time::timeout(Duration::from_secs(120), submitter.submit_transactions()).await;
+            tokio::time::timeout(Duration::from_secs(120), submitter.submit_transactions())
+                .await
+                .expect("submitter should have completed all tasks within 2 minutes");
         assert!(
-            submitter_result.is_ok(),
-            "submitter should have completed all tasks within 2 minutes"
+            matches!(submitter_result, Err(SubmitterError::ChannelClosed)),
+            "submitter should stop after sender closes channel"
         );
         send_handle.await.expect("sender task panicked");
         // Wait for all in flight tasks to finish
