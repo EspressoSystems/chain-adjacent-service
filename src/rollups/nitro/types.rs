@@ -1,6 +1,8 @@
-use alloy::primitives::{Address, B256, Bytes, FixedBytes, U256};
+use alloy::primitives::{Address, B256, FixedBytes, U256};
 use alloy_rlp::{Decodable, Error, PayloadView, RlpDecodable, RlpEncodable};
+use espresso_types::NamespaceId;
 use serde::{Deserialize, Serialize};
+use serde_with::{base64::Base64, serde_as};
 use std::collections::VecDeque;
 use tokio::sync::mpsc;
 
@@ -53,12 +55,14 @@ impl Decodable for MessageWithMetadata {
     }
 }
 
+#[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct L1IncomingMessage {
     #[serde(rename = "header")]
     pub header: Option<L1IncomingMessageHeader>,
+    #[serde_as(as = "Base64")]
     #[serde(rename = "l2Msg")]
-    pub l2msg: Bytes,
+    pub l2msg: Vec<u8>,
     #[serde(rename = "batchGasCost", skip_serializing_if = "Option::is_none")]
     pub legacy_batch_gas_cost: Option<u64>,
     #[serde(rename = "batchDataTokens", skip_serializing_if = "Option::is_none")]
@@ -81,7 +85,7 @@ impl Decodable for L1IncomingMessage {
 
         let header =
             decode_optional_field::<L1IncomingMessageHeader>(fields[0], NilPolicy::EmptyListOnly)?;
-        let l2msg = alloy_rlp::decode_exact::<Bytes>(fields[1])?;
+        let l2msg = alloy_rlp::decode_exact::<Vec<u8>>(fields[1])?;
         let legacy_batch_gas_cost = if fields.len() > 2 {
             decode_optional_field::<u64>(fields[2], NilPolicy::EmptyStringOnly)?
         } else {
@@ -122,6 +126,7 @@ pub struct L1IncomingMessageHeader {
     pub timestamp: u64,
     #[serde(rename = "requestId")]
     pub request_id: Option<B256>,
+    // TODO: L1_Base_fee has some issues with serialization and deseralization in JSON
     #[serde(rename = "baseFeeL1")]
     pub l1_base_fee: Option<U256>,
 }
@@ -185,7 +190,7 @@ pub struct LastBatchInfo {
 #[derive(Debug)]
 pub struct Nitro {
     pub sequencer_addresses: Vec<Address>,
-
+    pub namespace_id: NamespaceId,
     pub last_batch_info_receiver: mpsc::Receiver<LastBatchInfo>,
 }
 
