@@ -1,10 +1,13 @@
 use serde::Deserialize;
 
+use crate::da_api::config::DaApiConfig;
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServiceConfig {
     pub espresso_client: EspressoClientConfig,
     pub streamer: StreamerConfig,
     pub rollup: RollupConfig,
+    pub da_server_config: DaApiConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
