@@ -11,6 +11,8 @@ use crate::rollups::rollup::RollupQueueEntry;
 use alloy::primitives::Bytes;
 use alloy::primitives::{Address, B256, FixedBytes, Keccak256, Signature};
 use anyhow::Result;
+use espresso_types::NamespaceId;
+use espresso_types::Transaction;
 use std::collections::VecDeque;
 use tokio::sync::mpsc;
 
@@ -158,18 +160,16 @@ impl Rollup for Nitro {
 }
 
 impl Nitro {
-    pub fn new(
-        sequencer_addresses: Vec<Address>,
-        last_batch_info_receiver: mpsc::Receiver<LastBatchInfo>,
-    ) -> Self {
+    pub fn new(sequencer_addresses: Vec<Address>, namespace_id: NamespaceId, last_batch_info_receiver: mpsc::Receiver<LastBatchInfo>) -> Self {
         Self {
             sequencer_addresses,
+            namespace_id,
             last_batch_info_receiver,
         }
     }
     /// Checks if the signature on the message hash is valid and
     /// is from a sequencer in the `sequencer_addresses` list.
-    fn signature_from_known_sequencer(
+    pub fn signature_from_known_sequencer(
         &self,
         messages_hash: FixedBytes<32>,
         signature: &[u8],
@@ -271,6 +271,23 @@ impl Nitro {
             messages,
         })
     }
+
+    // Creates an Espresso Transaction from an array of MessageWithMetadata
+    pub fn create_espresso_transaction_from_broadcast_feed_messages(
+        &self,
+        messages: Vec<MessageWithMetadata>,
+    ) -> Vec<Transaction> {
+        let mut payload = Vec::new();
+        // TODO: add a header maybe?
+        for msg in messages {
+            // TODO: implement alloy_rlp::Encodable for MessageWithMetadata to use RLP encoding here
+            let encoded_msg = serde_json::to_vec(&msg).unwrap_or_default();
+            // Append the length of the message and the message itself to the payload
+            payload.extend_from_slice(&(encoded_msg.len() as u64).to_be_bytes());
+            payload.extend_from_slice(&encoded_msg);
+        }
+        return vec![Transaction::new(self.namespace_id, payload)];
+    }
 }
 
 #[cfg(test)]
@@ -295,7 +312,7 @@ pub mod testing {
             message_with_meta: MessageWithMetadata {
                 message: Some(L1IncomingMessage {
                     header: None,
-                    l2msg: AlloyBytes::copy_from_slice(l2msg),
+                    l2msg: l2msg.to_vec(),
                     legacy_batch_gas_cost: None,
                     batch_data_stats: None,
                 }),
@@ -319,7 +336,7 @@ pub mod testing {
 
     fn make_nitro() -> Nitro {
         let (_tx, rx) = mpsc::channel(1);
-        Nitro::new(vec![], rx)
+        Nitro::new(vec![], NamespaceId::default(), rx)
     }
 
     #[test]
@@ -340,7 +357,7 @@ pub mod testing {
             last_batch_delayed_messages_read: 0,
         };
         let content = b"hello world";
-        let batch = vec![BatchMessage::L2Msg(AlloyBytes::copy_from_slice(content))];
+        let batch = vec![BatchMessage::L2Msg(content.to_vec())];
         let queue = vec![make_entry_with_l2msg(content, 0, 0)];
         assert!(nitro.verify_batch_messages(&batch, &queue, &ctx));
     }
@@ -471,7 +488,7 @@ pub mod testing {
         let sequencer_address = Address::from_str("0x91B62241cCec21Cebb3AbD24599855c009864e1E")
             .expect("failed to parse sequencer address");
         let (_tx, rx) = mpsc::channel(1);
-        let nitro = Nitro::new(vec![sequencer_address], rx);
+        let nitro = Nitro::new(vec![sequencer_address], namespace_id, rx);
         let namespace_transactions_in_range = NamespaceTransactionsInRange {
             transactions: vec![Transaction::new(namespace_id, tx_bytes)],
             proof: None,
