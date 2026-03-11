@@ -105,7 +105,7 @@ impl<R: Rollup> Streamer<R> {
         for parsed_entry in parsed_rollup_entries {
             if let Some(first) = self.queue.first() {
                 // if seq number is less than the lowest sequencer number which is the first
-                // element in the arrat them skip that entry
+                // element in the array then skip that entry
                 if parsed_entry.sequence_number() < self.starting_pos {
                     tracing::warn!(
                         "sequence number {} is less than the starting pos of the streamer {}",
