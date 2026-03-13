@@ -28,8 +28,6 @@ pub struct BroadcastFeedMessage {
     pub sequence_number: u64,
     #[serde(rename = "message")]
     pub message: MessageWithMetadata,
-    #[serde(default, rename = "blockHash", skip_serializing_if = "Option::is_none")]
-    pub block_hash: Option<B256>,
     #[serde_as(as = "serde_with::DefaultOnNull<Base64>")]
     #[serde(default)]
     pub signature: Vec<u8>,
@@ -42,6 +40,8 @@ pub struct BroadcastFeedMessage {
     pub block_metadata: Vec<u8>,
     #[serde(skip)]
     pub cumulative_sum_msg_size: u64,
+    #[serde(default, rename = "blockHash", skip_serializing_if = "Option::is_none")]
+    pub block_hash: Option<B256>,
 }
 
 /// Confirmed sequence number from the feed server.
