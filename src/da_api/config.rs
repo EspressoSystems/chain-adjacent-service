@@ -1,5 +1,6 @@
 // src/config/mod.rs
 
+use alloy::primitives::Bytes;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -24,7 +25,7 @@ pub struct DaApiConfig {
 #[derive(Default, Debug, Clone, Deserialize, Serialize)]
 pub struct DaProviderConfig {
     /// DA type byte
-    pub da_type_byte: u8,
+    pub da_type_byte: Bytes,
 
     pub endpoint_url: String,
 

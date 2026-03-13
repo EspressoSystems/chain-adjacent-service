@@ -3,9 +3,24 @@ use std::collections::HashMap;
 use alloy::primitives::{Bytes, FixedBytes};
 use serde::{Deserialize, Serialize};
 
+use crate::da_api::certificate::nitro::CasCertificate;
+
+// #[derive(Debug, Clone, Serialize, Deserialize)]
+// pub struct JsonRpcResponse<T> {
+//     pub result: T,
+// }
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum JsonRpcResponse<T> {
+    Success { result: T },
+    Error { error: JsonRpcError },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JsonRpcResponse<T> {
-    pub result: T,
+pub struct JsonRpcError {
+    pub code: i32,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,13 +32,13 @@ pub struct SupportedHeaderBytesResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecoverPayloadAndPreimagesResult {
     #[serde(rename = "Payload")]
-    pub payload: Bytes,
+    pub payload: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecoverPayloadResult {
     #[serde(rename = "Payload")]
-    pub payload: Bytes,
+    pub payload: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,5 +82,29 @@ pub struct StoreParameters {
 #[serde(rename_all = "camelCase")]
 pub struct StoreResponse {
     #[serde(rename = "serialized-da-cert")]
-    pub serialized_da_cert: String,
+    pub serialized_da_certificate: Bytes,
+}
+
+impl From<CasCertificate> for StoreResponse {
+    fn from(cert: CasCertificate) -> Self {
+        let cas_cert_bytes = cert.to_bytes();
+        println!("Serialised certificate bytes: {:?}", cas_cert_bytes);
+        let cas_to_store: Bytes = cas_cert_bytes.into();
+        println!("CAS certificate bytes to store: {:?}", cas_to_store);
+        StoreResponse {
+            serialized_da_certificate: cas_to_store,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerateReadPreimageProofResponse {
+    pub proof: Bytes,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerateCertificateValidityProofResponse {
+    pub proof: Bytes,
 }

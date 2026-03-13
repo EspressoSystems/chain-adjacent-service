@@ -12,7 +12,12 @@
 // [150]     : 0x05   (downstream DA indicator: 0x05 = Celestia)
 // [151-...] : downstream DA certificate (e.g., Celestia commitment blob)
 
-use crate::da_api::error::{DaApiError, DaApiResult};
+use crate::da_api::{
+    error::{DaApiError, DaApiResult},
+    nitro::types::StoreResponse,
+};
+use alloy::primitives::Keccak256;
+use serde::{Deserialize, Serialize};
 
 // ── DA type bytes ──────────────────────────────────────────────────────────────
 /// DA API header flag (same as DACertificateMessageHeaderFlag in Nitro)
@@ -45,7 +50,7 @@ pub const CAS_VERSION: u8 = 0x01;
 
 // ─────────────────────────────────────────────────────────────────────────────
 /// Parsed CAS certificate
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CasCertificate {
     pub header_size: u8,
     pub header: Vec<u8>,
@@ -53,11 +58,21 @@ pub struct CasCertificate {
     pub end_message_pos: u32,
     pub start_hotshot_block: u32,
     pub min_hotshot_block_still_in_streamer_queue: u32,
+    #[serde(with = "serde_bytes")]
     pub batch_data_hash: [u8; 32],
+    #[serde(with = "serde_bytes")]
     pub cas_signature: [u8; 65],
     pub da_api_header_flag: u8,
     pub da_provider_flag: u8,
     pub downstream_certificate: Vec<u8>,
+}
+
+impl TryFrom<StoreResponse> for CasCertificate {
+    type Error = DaApiError;
+
+    fn try_from(value: StoreResponse) -> Result<Self, Self::Error> {
+        CasCertificate::from_bytes(&value.serialized_da_certificate.to_vec())
+    }
 }
 
 impl CasCertificate {
@@ -96,6 +111,7 @@ impl CasCertificate {
 
     // ── Deserialise ──────────────────────────────────────────────────────────
 
+    //TODO: remove unwraps and replace with proper error handling
     pub fn from_bytes(data: &[u8]) -> DaApiResult<Self> {
         if data.len() < CERT_MIN_SIZE {
             return Err(DaApiError::InvalidCertificateLength(data.len()));
@@ -155,35 +171,70 @@ impl CasCertificate {
         })
     }
 
-    // ── Signing helpers ──────────────────────────────────────────────────────
-
-    /// Build the message that the CAS signs over:
-    /// keccak256(start_message_pos || end_message_pos ||
-    ///           start_hotshot_block || min_hotshot_block ||
-    ///           batchData || downstreamCert)
-    pub fn signing_payload(
+    // should return a Result
+    pub fn build_espresso_certificate(
         start_message_pos: u32,
         end_message_pos: u32,
         start_hotshot_block: u32,
         min_hotshot_block_still_in_streamer_queue: u32,
         batch_data: &[u8],
         downstream_cert: &[u8],
-    ) -> [u8; 32] {
-        // use sha3::{Digest, Keccak256};
-        // let mut h = Keccak256::new();
-        // h.update(start_message_pos.to_be_bytes());
-        // h.update(end_message_pos.to_be_bytes());
-        // h.update(start_hotshot_block.to_be_bytes());
-        // h.update(min_hotshot_block_still_in_streamer_queue.to_be_bytes());
-        // h.update(batch_data);
-        // h.update(downstream_cert);
-        // h.finalize().into()
-        unimplemented!()
+    ) -> Self {
+        let mut keccak_hasher = Keccak256::new();
+        keccak_hasher.update(batch_data);
+        let batch_data_hash = keccak_hasher.finalize();
+
+        let mut header = vec![0u8; 32];
+        header[0] = CAS_VERSION;
+
+        let cas_signature = Self::build_and_sign_payload(
+            start_message_pos,
+            end_message_pos,
+            start_hotshot_block,
+            min_hotshot_block_still_in_streamer_queue,
+            batch_data,
+            downstream_cert,
+        );
+        Self {
+            header_size: header.len() as u8,
+            header,
+            start_message_pos,
+            end_message_pos,
+            start_hotshot_block,
+            min_hotshot_block_still_in_streamer_queue,
+            batch_data_hash: *batch_data_hash,
+
+            cas_signature,
+            da_api_header_flag: downstream_cert[0],
+            da_provider_flag: downstream_cert[1],
+            downstream_certificate: downstream_cert.to_vec(),
+        }
+    }
+
+    // ── Signing helpers ──────────────────────────────────────────────────────
+
+    /// Build and sign the payload using CAS signer
+    /// keccak256(start_message_pos || end_message_pos ||
+    ///           start_hotshot_block || min_hotshot_block ||
+    ///           batchData || downstreamCert)
+    pub fn build_and_sign_payload(
+        _start_message_pos: u32,
+        _end_message_pos: u32,
+        _start_hotshot_block: u32,
+        _min_hotshot_block_still_in_streamer_queue: u32,
+        _batch_data: &[u8],
+        _downstream_cert: &[u8],
+    ) -> [u8; 65] {
+        return [0u8; 65]; // TODO: implement signing logic
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
+    use alloy::primitives::Bytes;
+
     use super::*;
 
     // Helper to create a dummy certificate
@@ -232,5 +283,32 @@ mod tests {
 
         let result = CasCertificate::from_bytes(&bytes);
         assert!(result.is_err(), "Should fail when the flag is incorrect");
+    }
+
+    #[test]
+    fn test_reference_da_cert() {
+        let da_cert=Bytes::from_str("0x01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1cb94dcff2136dfab4d1d4506cc5160a3b58c9481a87513c71882526ae8ac6e30e3f4a9d56da07893bf5245fd0ff0c50e2a66b52067d8e8b23beb3c8e4f8230743").unwrap();
+        println!("length of da_cert: {}", da_cert.len());
+        let espresso_da_cert =
+            CasCertificate::build_espresso_certificate(0, 0, 0, 0, &da_cert, &da_cert);
+        println!(
+            "length of espresso_da_cert: {}",
+            espresso_da_cert.to_bytes().len()
+        );
+
+        let test_espresso_cert=Bytes::from_str("0x200100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d6f4495acb1e8e0c5583a2357178fffd13f0cec5b216542b40027999633d72f000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1c4a3a991487b304c790fd36d080c164f21b819b1ac35393e92940165f3934e130775b12208c995cd6675c5f33c181b19c3657910f4260cc0d115e413d62223db2").unwrap();
+        println!("length of test_espresso_cert: {}", test_espresso_cert.len());
+
+        let mut sequencer_msg = vec![0u8; 41];
+        sequencer_msg[40] = 0x63;
+
+        // append certificate
+        sequencer_msg.extend_from_slice(&test_espresso_cert);
+
+        // convert back to Bytes
+        let sequencer_msg = Bytes::from(sequencer_msg);
+
+        println!("length of sequencer_msg: {}", sequencer_msg.len());
+        println!("{:?}", sequencer_msg.to_string());
     }
 }

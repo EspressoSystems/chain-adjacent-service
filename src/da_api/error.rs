@@ -1,11 +1,16 @@
 // src/error/mod.rs
 
-use alloy::hex;
+use alloy::{hex, primitives::Bytes};
 use jsonrpsee::types::ErrorObjectOwned;
 use thiserror::Error;
 
+use crate::da_api::nitro::types::JsonRpcError;
+
 #[derive(Debug, Error)]
 pub enum DaApiError {
+    #[error("no DA providers configured")]
+    NoDaProvidersConfigured,
+
     // Certificate validation errors - these allow syncing to continue
     #[error("certificate validation failed: {0}")]
     CertificateValidation(String),
@@ -23,7 +28,7 @@ pub enum DaApiError {
     InvalidCasSignature,
 
     #[error("certificate validation failed: unsupported DA type {0:#x}")]
-    UnsupportedDaType(u8),
+    UnsupportedDaType(Bytes),
 
     // Infrastructure errors - these stop syncing
     #[error("downstream DA error: {0}")]
@@ -55,6 +60,15 @@ pub enum DaApiError {
 
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+
+    #[error("parsing error: {0}")]
+    ParsingError(String),
+
+    #[error("dynamic batching resize requested by DA provider: {0}")]
+    DynamicBatchingResize(String),
+
+    #[error("fallback to next writer requested by DA provider: {0}")]
+    FallbackRequested(String),
 }
 
 impl From<DaApiError> for ErrorObjectOwned {
@@ -71,6 +85,20 @@ impl From<DaApiError> for ErrorObjectOwned {
                 None::<()>,
             ),
             _ => ErrorObjectOwned::owned(-32602, err.to_string(), None::<()>),
+        }
+    }
+}
+
+impl From<JsonRpcError> for DaApiError {
+    fn from(err: JsonRpcError) -> Self {
+        match err.message {
+            msg if msg.contains("message too large for current DA backend") => {
+                DaApiError::DynamicBatchingResize(msg)
+            }
+            msg if msg.contains("DA provider requests fallback to next writer") => {
+                DaApiError::FallbackRequested(msg)
+            }
+            _ => DaApiError::DownstreamDa(err.message),
         }
     }
 }
