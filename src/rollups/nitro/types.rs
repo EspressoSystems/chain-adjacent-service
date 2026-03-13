@@ -126,8 +126,9 @@ pub struct L1IncomingMessageHeader {
     pub timestamp: u64,
     #[serde(rename = "requestId")]
     pub request_id: Option<B256>,
-    // TODO: L1_Base_fee has some issues with serialization and deseralization in JSON
-    #[serde(rename = "baseFeeL1")]
+    // Go's big.Int marshals as a bare JSON decimal number; alloy's U256 defaults to "0x…" hex.
+    // as a reason we had to write a custom serializer/deseralizer `go_bigint_u56`
+    #[serde(rename = "baseFeeL1", with = "go_bigint_u56")]
     pub l1_base_fee: Option<U256>,
 }
 
@@ -248,6 +249,42 @@ fn decode_optional_b256_allow_nil_list(buf: &[u8]) -> Result<Option<B256>, Error
             } else {
                 Err(Error::UnexpectedList)
             }
+        }
+    }
+}
+
+/// Custom serde for `Option<U256>` bridges Go's `*big.Int`. Go cannot parse hex strings and alloy
+/// doesn't emit decimal numbers as a reason we need this serializer/deserializer.
+mod go_bigint_u56 {
+    use alloy::primitives::U256;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
+
+    pub fn serialize<S: Serializer>(val: &Option<U256>, s: S) -> Result<S::Ok, S::Error> {
+        match val {
+            None => s.serialize_none(),
+            // Emit a bare JSON number (no quotes) so Go's big.Int.UnmarshalJSON can parse it.
+            Some(v) => {
+                let raw = serde_json::value::RawValue::from_string(v.to_string())
+                    .map_err(serde::ser::Error::custom)?;
+                raw.serialize(s)
+            }
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<U256>, D::Error> {
+        match Option::<serde_json::Value>::deserialize(d)? {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(serde_json::Value::Number(n)) => n
+                .to_string()
+                .parse::<U256>()
+                .map(Some)
+                .map_err(Error::custom),
+            Some(serde_json::Value::String(s)) => {
+                s.parse::<U256>().map(Some).map_err(Error::custom)
+            }
+            Some(v) => Err(Error::custom(format!(
+                "expected null, number, or string for U256, got {v}"
+            ))),
         }
     }
 }
