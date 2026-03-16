@@ -72,6 +72,13 @@ impl NitroNode {
             .await
             .expect("lifecycle semaphore closed");
 
+        let script = std::path::Path::new(TESTNODE_DIR).join("test-node.bash");
+
+        assert!(
+            script.exists(),
+            "nitro-testnode submodule not initialized. Run: git submodule update --init --recursive"
+        );
+
         let child = Command::new("bash")
             .arg("./test-node.bash")
             .args(["--init", "--l2-referenceda", "--simple"])
