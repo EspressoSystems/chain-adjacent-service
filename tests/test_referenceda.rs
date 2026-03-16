@@ -40,14 +40,23 @@ fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
 }
 
 #[tokio::test]
-async fn test_nitro_reference_da_supported_header_bytes() {
+async fn test_nitro_reference_da() {
     let nitro_node = NitroNode::start().await;
+    println!("Nitro node started");
 
     let my_addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
 
     let _server = spawn_server(my_addr, nitro_node.client.reference_da_url.to_string());
     sleep(Duration::from_millis(100)).await;
 
+    println!("running test_nitro_reference_da_supported_header_bytes");
+    test_nitro_reference_da_supported_header_bytes(my_addr.to_string()).await;
+
+    println!("running test_nitro_reference_da_store_and_recover");
+    test_nitro_reference_da_store_and_recover(my_addr.to_string()).await;
+}
+
+async fn test_nitro_reference_da_supported_header_bytes(my_addr: String) {
     let client = reqwest::Client::new();
 
     let response: Value = client
@@ -76,20 +85,14 @@ async fn test_nitro_reference_da_supported_header_bytes() {
     assert_eq!(response, expected);
 }
 
-#[tokio::test]
-async fn test_nitro_reference_da_store_and_recover() {
-    let nitro_node = NitroNode::start().await;
+async fn test_nitro_reference_da_store_and_recover(my_addr: String) {
+    // let nitro_node = NitroNode::start().await;
 
     let _expected_store_response=Bytes::from_str("0x200100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d6f4495acb1e8e0c5583a2357178fffd13f0cec5b216542b40027999633d72f000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1b740050eab36712d4b0f427ba6c02c9b55561fadf70a6a9cb8d1c5f801ad48f6d5b70695d5b2bf4f89cc393fdddc152fa30c2011592f27a3680eaddbf23d25455").unwrap();
 
     let expected_recover_payload_response = String::from(
         "iOBaxMa5Cwkk1VN76lois9CM1aJ8jFbK9XWTYNp6z9okponMpBu8omzLHYeXBMUPd3fyXq972op6UxHJ96FZwPsAAAAAacZHWwEAAAAAAAAAAQjzxzlAMrW6s3wSA6OILAQ9danW7ROBrpW8NFyybsyGar1u/AGllnCo/Pu2Oe3wHwwwY8NZoNdHnNwrkLUoDI/rFCVJJ1vv6vw+KsKzfH0k4Vx0Ga56LVklTFN4aJDD2g==",
     );
-
-    let my_addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
-
-    let _server = spawn_server(my_addr, nitro_node.client.reference_da_url.to_string());
-    sleep(Duration::from_millis(100)).await;
 
     let client = reqwest::Client::new();
 

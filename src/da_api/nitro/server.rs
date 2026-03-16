@@ -14,10 +14,7 @@ use crate::da_api::{
             RecoverPayloadAndPreimagesResult, RecoverPayloadResult, StoreResponse,
             SupportedHeaderBytesResult,
         },
-        utils::{
-            extract_da_sequencer_msg_from_espresso_da_certificate,
-            get_espresso_metadata_from_da_certificate,
-        },
+        utils::extract_da_sequencer_msg_from_espresso_da_certificate,
     },
 };
 use alloy::primitives::{Bytes, FixedBytes, U64};

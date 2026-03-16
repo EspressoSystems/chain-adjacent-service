@@ -81,7 +81,7 @@ impl NitroNode {
 
         let child = Command::new("bash")
             .arg("./test-node.bash")
-            .args(["--init", "--l2-referenceda", "--simple"])
+            .args(["--init-force", "--l2-referenceda", "--simple"])
             // critical: script resolves all its relative paths from its own repo root
             .current_dir(TESTNODE_DIR)
             .stdout(Stdio::inherit())
