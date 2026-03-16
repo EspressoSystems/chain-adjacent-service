@@ -3,6 +3,10 @@ name = "chain-agnostic-service"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "chain_agnostic_service"
+path = "src/lib.rs"
+
 [dependencies]
 reqwest = { version = "0.13", features = ["json"] }
 serde = { version = "1.0.228", features = ["derive"] }

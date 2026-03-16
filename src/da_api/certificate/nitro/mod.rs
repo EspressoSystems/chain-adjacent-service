@@ -288,27 +288,22 @@ mod tests {
     #[test]
     fn test_reference_da_cert() {
         let da_cert=Bytes::from_str("0x01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1cb94dcff2136dfab4d1d4506cc5160a3b58c9481a87513c71882526ae8ac6e30e3f4a9d56da07893bf5245fd0ff0c50e2a66b52067d8e8b23beb3c8e4f8230743").unwrap();
-        println!("length of da_cert: {}", da_cert.len());
+        assert_eq!(da_cert.len(), 99);
+
         let espresso_da_cert =
             CasCertificate::build_espresso_certificate(0, 0, 0, 0, &da_cert, &da_cert);
-        println!(
-            "length of espresso_da_cert: {}",
-            espresso_da_cert.to_bytes().len()
-        );
-
-        let test_espresso_cert=Bytes::from_str("0x200100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d6f4495acb1e8e0c5583a2357178fffd13f0cec5b216542b40027999633d72f000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1c4a3a991487b304c790fd36d080c164f21b819b1ac35393e92940165f3934e130775b12208c995cd6675c5f33c181b19c3657910f4260cc0d115e413d62223db2").unwrap();
-        println!("length of test_espresso_cert: {}", test_espresso_cert.len());
+        // cas certificate created: "0x200100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d6f4495acb1e8e0c5583a2357178fffd13f0cec5b216542b40027999633d72f000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1c4a3a991487b304c790fd36d080c164f21b819b1ac35393e92940165f3934e130775b12208c995cd6675c5f33c181b19c3657910f4260cc0d115e413d62223db2"
 
         let mut sequencer_msg = vec![0u8; 41];
         sequencer_msg[40] = 0x63;
 
         // append certificate
-        sequencer_msg.extend_from_slice(&test_espresso_cert);
+        sequencer_msg.extend_from_slice(&espresso_da_cert.to_bytes());
 
         // convert back to Bytes
         let sequencer_msg = Bytes::from(sequencer_msg);
 
-        println!("length of sequencer_msg: {}", sequencer_msg.len());
-        println!("{:?}", sequencer_msg.to_string());
+        assert_eq!(sequencer_msg.len(), 41 + espresso_da_cert.to_bytes().len());
+        assert_eq!(sequencer_msg.len(), 288);
     }
 }

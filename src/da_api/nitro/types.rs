@@ -5,11 +5,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::da_api::certificate::nitro::CasCertificate;
 
-// #[derive(Debug, Clone, Serialize, Deserialize)]
-// pub struct JsonRpcResponse<T> {
-//     pub result: T,
-// }
-
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum JsonRpcResponse<T> {
@@ -88,9 +83,9 @@ pub struct StoreResponse {
 impl From<CasCertificate> for StoreResponse {
     fn from(cert: CasCertificate) -> Self {
         let cas_cert_bytes = cert.to_bytes();
-        println!("Serialised certificate bytes: {:?}", cas_cert_bytes);
+
         let cas_to_store: Bytes = cas_cert_bytes.into();
-        println!("CAS certificate bytes to store: {:?}", cas_to_store);
+
         StoreResponse {
             serialized_da_certificate: cas_to_store,
         }

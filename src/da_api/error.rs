@@ -1,5 +1,3 @@
-// src/error/mod.rs
-
 use alloy::{hex, primitives::Bytes};
 use jsonrpsee::types::ErrorObjectOwned;
 use thiserror::Error;

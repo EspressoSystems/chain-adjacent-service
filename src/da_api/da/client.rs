@@ -1,6 +1,3 @@
-// src/da/client.rs
-
-use alloy::primitives::Bytes;
 use async_trait::async_trait;
 
 /// Result of storing data in a downstream DA system.

@@ -1,5 +1,3 @@
-// src/config/mod.rs
-
 use alloy::primitives::Bytes;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

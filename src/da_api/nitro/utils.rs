@@ -15,9 +15,8 @@ pub fn extract_espresso_metadata_from_sequencer_messsage(
     }
     let seq_msg = sequencer_msg.slice(0..40);
     let header_byte = sequencer_msg.slice(40..41);
-    let espresso_da_cert_format = sequencer_msg.slice(CERT_START..CERT_START + ESPRESSO_CERT_LEN);
+    let _espresso_da_cert_format = sequencer_msg.slice(CERT_START..CERT_START + ESPRESSO_CERT_LEN);
     let da_cert = sequencer_msg.slice(CERT_START + ESPRESSO_CERT_LEN..);
-
 
     let res = [seq_msg, header_byte, da_cert].concat();
     Ok(res.into())

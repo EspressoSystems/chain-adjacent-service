@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    str::FromStr,
     sync::atomic::{AtomicU8, Ordering},
 };
 
@@ -25,9 +24,10 @@ use alloy::primitives::{Bytes, FixedBytes, U64};
 use jsonrpsee::{
     core::{RpcResult, async_trait},
     proc_macros::rpc,
-    types::{ErrorObject, ErrorObjectOwned},
+    types::{ ErrorObjectOwned},
 };
 use serde_json::json;
+use tracing::info;
 
 #[rpc(server, namespace = "daprovider")]
 pub trait DaApi: Send + Sync {
@@ -107,7 +107,7 @@ impl NitroDaServer {
 #[async_trait]
 impl DaApiServer for NitroDaServer {
     async fn get_supported_header_bytes(&self) -> RpcResult<SupportedHeaderBytesResult> {
-        println!("Received get_supported_header_bytes request");
+        info!("Received get_supported_header_bytes request");
 
         let da_endpoint = self
             .router
@@ -149,13 +149,12 @@ impl DaApiServer for NitroDaServer {
         batch_block_hash: FixedBytes<32>,
         sequencer_msg: Bytes,
     ) -> RpcResult<RecoverPayloadResult> {
-        // TODO: is the sequencer_msg contatining the custom certificate we create? If so, that actual ext-DA certificate needs to be extracted from it and then passed to the DA provider. we will need to extract the espresso cert and only pass what the alt-da provider expects somethng of this format: [SequencerHeader(40 bytes), DACertificateFlag(0x01), Certificate(...)]
 
-        println!(
+        info!(
             "Received recover_payload request with batch_num: {}, batch_block_hash: {:?}, sequencer_msg: {:?}",
             batch_num, batch_block_hash, sequencer_msg
         );
-        println!("{:?}", self.router);
+
         if sequencer_msg.len() <= 40 {
             return Err(DaApiError::InvalidSequencerMessageLength(sequencer_msg.len()).into());
         }
@@ -169,13 +168,14 @@ impl DaApiServer for NitroDaServer {
             .ok_or(DaApiError::NoDaProvidersConfigured)?;
 
         let da_certificate_format =
-            extract_espresso_metadata_from_sequencer_messsage(&sequencer_msg).map_err(|_err| {
-                ErrorObjectOwned::from(DaApiError::InvalidSequencerMessageLength(
-                    sequencer_msg.len(),
-                ))
-            })?;
+        extract_espresso_metadata_from_sequencer_messsage(&sequencer_msg).map_err(|_err| {
+            ErrorObjectOwned::from(DaApiError::InvalidSequencerMessageLength(
+                sequencer_msg.len(),
+            ))
+        })?;
 
-        println!(
+
+        info!(
             "Extracted DA certificate format from sequencer message: {:?}",
             da_certificate_format.len()
         );
@@ -218,12 +218,10 @@ impl DaApiServer for NitroDaServer {
         batch_block_hash: FixedBytes<32>,
         sequencer_msg: Bytes,
     ) -> RpcResult<PreImagesResult> {
-        // TODO: is the sequencer_msg contatining the custom certificate we create? If so, that actual ext-DA certificate needs to be extracted from it and then passed to the DA provider
 
         if sequencer_msg.len() <= 40 {
             return Err(DaApiError::InvalidSequencerMessageLength(sequencer_msg.len()).into());
         }
-        // let header_byte = Bytes::from_str(&format!("0x{:02x}", sequencer_msg[40])).unwrap();
 
         let da_endpoint = self
             .router
@@ -275,7 +273,6 @@ impl DaApiServer for NitroDaServer {
         batch_block_hash: FixedBytes<32>,
         sequencer_msg: Bytes,
     ) -> RpcResult<RecoverPayloadAndPreimagesResult> {
-        // TODO: is the sequencer_msg contatining the custom certificate we create? If so, that actual ext-DA certificate needs to be extracted from it and then passed to the DA provider
 
         if sequencer_msg.len() <= 40 {
             return Err(DaApiError::InvalidSequencerMessageLength(sequencer_msg.len()).into());
@@ -369,7 +366,7 @@ impl DaApiServer for NitroDaServer {
         // get certificate from DA provider...check for returned errros and handle current da provider accordingly
         // combine with espresso metadata + signature and return to caller
 
-        println!("Received message: {}, timeout: {}", message, timeout);
+        info!("Received message: {}, timeout: {}", message, timeout);
 
         let (
             start_message_pos,
@@ -571,13 +568,13 @@ mod tests {
     use super::*;
     use alloy::primitives::{Bytes, b256};
     use jsonrpsee::{
-        core::{RpcResult, client::ClientT},
+        core::{ client::ClientT},
         http_client::HttpClientBuilder,
         rpc_params,
     };
-    use serde_json::{Value, json};
+    use serde_json::{json};
     use std::{collections::HashMap, net::SocketAddr, str::FromStr};
-    use tokio::{task::JoinHandle, time::sleep};
+    use tokio::{task::JoinHandle};
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
 
     use crate::da_api::{
@@ -656,8 +653,8 @@ mod tests {
 
         // sequencer_msg: 40 bytes padding + header byte 0x80 + certificate bytes
         let mut sequencer_msg = vec![0u8; 40];
-        sequencer_msg.push(0x80); // header byte matching da_providers config
-        sequencer_msg.extend_from_slice(b"certificate_data");
+        sequencer_msg.push(0x05); // header byte matching da_providers config
+        sequencer_msg.extend_from_slice(b"0x200100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d6f4495acb1e8e0c5583a2357178fffd13f0cec5b216542b40027999633d72f000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1b740050eab36712d4b0f427ba6c02c9b55561fadf70a6a9cb8d1c5f801ad48f6d5b70695d5b2bf4f89cc393fdddc152fa30c2011592f27a3680eaddbf23d25455");
 
         let response: Result<RecoverPayloadResult, _> = client
             .request(
@@ -878,53 +875,3 @@ mod tests {
     }
 }
 
-// ./celestia-server --enable-rpc --rpc-port 26657 --celestia.auth-token "" --celestia.namespace-id 65636c69707365 --celestia.rpc "https://celestia-rpc.stakely.io/"
-
-// run nitro node with reference DA
-// ./test-node.bash --init --l2-referenceda --simple
-
-// reference DA
-
-// STORE (uses txn: https://etherscan.io/tx/0xfb896dfed0e32970c451edfd862bdb6d05837f43634dbbce08902c3ca317e233)
-// input to store: {
-//   "jsonrpc": "2.0",
-//   "id": 1,
-//   "method": "daprovider_store",
-//   "params": [
-//     "0x88e05ac4c6b90b0924d5537bea5a22b3d08cd5a27c8c56caf5759360da7acfda24a689cca41bbca26ccb1d879704c50f7777f25eaf7bda8a7a5311c9f7a159c0fb0000000069c6475b01000000000000000108f3c7394032b5bab37c1203a3882c043d75a9d6ed1381ae95bc345cb26ecc866abd6efc01a59670a8fcfbb639edf01f0c3063c359a0d7479cdc2b90b5280c8feb142549275befeafc3e2ac2b37c7d24e15c7419ae7a2d59254c53786890c3da",
-//     "0x67a305801"
-//   ]
-// }
-
-//output cert: {
-//   "jsonrpc": "2.0",
-//   "id": 1,
-//   "result": {
-//     "serialized-da-cert": "0x01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1b4c52d6dc5bb2b3f5c1700efc9dc723667ed565e3aac8d56add236b40f816b10d515ef03e9efc9f803fd42b3cbc205eff65349437d96ef5c268cc2d6a638b5963"
-//   }
-// }
-
-// RECOVER PAYLOAD
-
-// input:
-// {
-//   "jsonrpc": "2.0",
-//   "id": 1,
-//   "method": "daprovider_recoverPayload",
-//   "params": [
-//     "0xD88",
-//     "0x4D1CF3D08C6C7755E3622F55E7D03CA009A4D706BCF79A13AB9F52E3C4526990",
-//     "0x0000000000000000000000000000000000000000000000000000000000000000000000000000000001ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1b4c52d6dc5bb2b3f5c1700efc9dc723667ed565e3aac8d56add236b40f816b10d515ef03e9efc9f803fd42b3cbc205eff65349437d96ef5c268cc2d6a638b5963"
-//   ]
-// }
-
-// output(this is in base64):
-// {
-//   "jsonrpc": "2.0",
-//   "id": 1,
-//   "result": {
-//     "Payload": "iOBaxMa5Cwkk1VN76lois9CM1aJ8jFbK9XWTYNp6z9okponMpBu8omzLHYeXBMUPd3fyXq972op6UxHJ96FZwPsAAAAAacZHWwEAAAAAAAAAAQjzxzlAMrW6s3wSA6OILAQ9danW7ROBrpW8NFyybsyGar1u/AGllnCo/Pu2Oe3wHwwwY8NZoNdHnNwrkLUoDI/rFCVJJ1vv6vw+KsKzfH0k4Vx0Ga56LVklTFN4aJDD2g=="
-//   }
-// }
-
-// 0x00000000000000000000000000000000000000000000000000000000000000000000000000000000200100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d6f4495acb1e8e0c5583a2357178fffd13f0cec5b216542b40027999633d72f000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1cb94dcff2136dfab4d1d4506cc5160a3b58c9481a87513c71882526ae8ac6e30e3f4a9d56da07893bf5245fd0ff0c50e2a66b52067d8e8b23beb3c8e4f8230743
