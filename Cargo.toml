@@ -3,6 +3,14 @@ name = "chain-agnostic-service"
 version = "0.1.0"
 edition = "2024"
 
+[lints.clippy]
+let_and_return = "warn"
+uninlined_format_args = "warn"
+unnecessary_debug_formatting = "warn"
+unwrap_used = "deny"
+useless_let_if_seq = "warn"
+wildcard_imports = "warn"
+
 [dependencies]
 reqwest = { version = "0.13", features = ["json"] }
 serde = { version = "1.0.228", features = ["derive"] }
