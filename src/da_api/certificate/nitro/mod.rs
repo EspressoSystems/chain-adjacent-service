@@ -128,22 +128,34 @@ impl CasCertificate {
         let start_message_pos = u32::from_be_bytes(
             data[CERT_START_MSG_POS..CERT_START_MSG_POS + START_MSG_POS_SIZE]
                 .try_into()
-                .unwrap(),
+                .map_err(|err| {
+                    DaApiError::Serialization(format!("failed to parse start_message_pos: {err:?}"))
+                })?,
         );
         let end_message_pos = u32::from_be_bytes(
             data[CERT_END_MSG_POS..CERT_END_MSG_POS + END_MSG_POS_SIZE]
                 .try_into()
-                .unwrap(),
+                .map_err(|err| {
+                    DaApiError::Serialization(format!("failed to parse end_message_pos: {err:?}"))
+                })?,
         );
         let start_hotshot_block = u32::from_be_bytes(
             data[CERT_START_HOTSHOT..CERT_START_HOTSHOT + START_HOTSHOT_SIZE]
                 .try_into()
-                .unwrap(),
+                .map_err(|err| {
+                    DaApiError::Serialization(format!(
+                        "failed to parse start_hotshot_block: {err:?}"
+                    ))
+                })?,
         );
         let min_hotshot_block_still_in_streamer_queue = u32::from_be_bytes(
             data[CERT_MIN_HOTSHOT..CERT_MIN_HOTSHOT + MIN_HOTSHOT_SIZE]
                 .try_into()
-                .unwrap(),
+                .map_err(|err| {
+                    DaApiError::Serialization(format!(
+                        "failed to parse min_hotshot_block_still_in_streamer_queue: {err:?}"
+                    ))
+                })?,
         );
 
         let mut batch_data_hash = [0u8; 32];

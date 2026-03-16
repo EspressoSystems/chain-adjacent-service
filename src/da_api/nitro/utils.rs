@@ -5,16 +5,17 @@ const DA_CERT_FLAG_LEN: usize = 1;
 const CERT_START: usize = SEQUENCER_HEADER_LEN + DA_CERT_FLAG_LEN;
 const ESPRESSO_CERT_LEN: usize = 149; // 0..148 inclusive
 
-/// Sequencer message format is: [SequencerHeader(40 bytes), DACertificateFlag(0x01), Certificate(...)]
-/// this function extracts the espresso metadata from the inner certificate
-pub fn extract_espresso_metadata_from_sequencer_messsage(
+/// Sequencer message format is: [SequencerHeader(40 bytes), DACertificateFlag(0x01), Certificate(EspressoCert, DACert)]
+/// this function removes the espresso metadata to obtain the da certificate
+/// Returns: [SequencerHeader(40 bytes), DACertificateFlag(0x01), DACert]
+pub fn extract_da_sequencer_msg_from_espresso_da_certificate(
     sequencer_msg: &Bytes,
 ) -> anyhow::Result<Bytes> {
     if sequencer_msg.len() < CERT_START + ESPRESSO_CERT_LEN {
         return Err(anyhow::anyhow!("Sequencer message is too short"));
     }
-    let seq_msg = sequencer_msg.slice(0..40);
-    let header_byte = sequencer_msg.slice(40..41);
+    let seq_msg = sequencer_msg.slice(0..SEQUENCER_HEADER_LEN);
+    let header_byte = sequencer_msg.slice(SEQUENCER_HEADER_LEN..SEQUENCER_HEADER_LEN + 1);
     let _espresso_da_cert_format = sequencer_msg.slice(CERT_START..CERT_START + ESPRESSO_CERT_LEN);
     let da_cert = sequencer_msg.slice(CERT_START + ESPRESSO_CERT_LEN..);
 
@@ -22,7 +23,9 @@ pub fn extract_espresso_metadata_from_sequencer_messsage(
     Ok(res.into())
 }
 
-pub fn extract_espresso_metadata_from_da_certificate(certificate: &Bytes) -> anyhow::Result<Bytes> {
+/// Input: Certificate format: [SequencerHeader(40 bytes), DACertificateFlag(0x01), Certificate(EspressoCert, DACert)]
+/// Returns: EspressoCert
+pub fn get_espresso_metadata_from_da_certificate(certificate: &Bytes) -> anyhow::Result<Bytes> {
     if certificate.len() < ESPRESSO_CERT_LEN {
         return Err(anyhow::anyhow!("DA certificate is too short"));
     }
@@ -37,9 +40,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_extract_espresso_metadata() {
+    fn test_remove_espresso_metadata() {
         // build fake sequencer header
         let mut data = vec![0u8; SEQUENCER_HEADER_LEN];
+        let mut expected_data = data.clone();
 
         // DACertificateMessageHeaderFlag
         data.push(0x63);
@@ -53,15 +57,24 @@ mod tests {
         data.push(0x63); // Celestia indicator
         data.extend(vec![9u8; 20]); // dummy downstream cert
 
+        expected_data.push(0x63);
+        expected_data.push(0x01);
+        expected_data.push(0x63);
+        expected_data.extend(vec![9u8; 20]);
+
         let sequencer_msg = Bytes::from(data);
 
-        let extracted = extract_espresso_metadata_from_sequencer_messsage(&sequencer_msg).unwrap();
+        let extracted =
+            extract_da_sequencer_msg_from_espresso_da_certificate(&sequencer_msg).unwrap();
 
         // check length
-        assert_eq!(extracted.len(), ESPRESSO_CERT_LEN);
+        assert_eq!(
+            extracted.len(),
+            (SEQUENCER_HEADER_LEN + 1 + 1 + 1 + 20) as usize
+        );
 
         // check contents match expected metadata
-        assert_eq!(extracted, Bytes::from(cert_metadata));
+        assert_eq!(extracted, Bytes::from(expected_data));
     }
 
     #[test]
@@ -69,9 +82,8 @@ mod tests {
         let sequencer_message=Bytes::from_str("0x0000000000000000000000000000000000000000000000000000000000000000000000000000000063200100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d6f4495acb1e8e0c5583a2357178fffd13f0cec5b216542b40027999633d72f000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1c4a3a991487b304c790fd36d080c164f21b819b1ac35393e92940165f3934e130775b12208c995cd6675c5f33c181b19c3657910f4260cc0d115e413d62223db2").unwrap();
 
         let extracted =
-            extract_espresso_metadata_from_sequencer_messsage(&sequencer_message).unwrap();
+            extract_da_sequencer_msg_from_espresso_da_certificate(&sequencer_message).unwrap();
 
-        // check length
         assert_eq!(extracted.len(), 139);
     }
 }

@@ -15,8 +15,8 @@ use crate::da_api::{
             SupportedHeaderBytesResult,
         },
         utils::{
-            extract_espresso_metadata_from_da_certificate,
-            extract_espresso_metadata_from_sequencer_messsage,
+            extract_da_sequencer_msg_from_espresso_da_certificate,
+            get_espresso_metadata_from_da_certificate,
         },
     },
 };
@@ -166,12 +166,14 @@ impl DaApiServer for NitroDaServer {
             .map(|config| config.endpoint_url.clone())
             .ok_or(DaApiError::NoDaProvidersConfigured)?;
 
-        let da_certificate_format =
-            extract_espresso_metadata_from_sequencer_messsage(&sequencer_msg).map_err(|_err| {
-                ErrorObjectOwned::from(DaApiError::InvalidSequencerMessageLength(
-                    sequencer_msg.len(),
-                ))
-            })?;
+        let da_certificate_format = extract_da_sequencer_msg_from_espresso_da_certificate(
+            &sequencer_msg,
+        )
+        .map_err(|_err| {
+            ErrorObjectOwned::from(DaApiError::InvalidSequencerMessageLength(
+                sequencer_msg.len(),
+            ))
+        })?;
 
         info!(
             "Extracted DA certificate format from sequencer message: {:?}",
@@ -226,12 +228,14 @@ impl DaApiServer for NitroDaServer {
             .map(|config| config.endpoint_url.clone())
             .ok_or(DaApiError::NoDaProvidersConfigured)?;
 
-        let da_certificate_format =
-            extract_espresso_metadata_from_sequencer_messsage(&sequencer_msg).map_err(|_err| {
-                ErrorObjectOwned::from(DaApiError::InvalidSequencerMessageLength(
-                    sequencer_msg.len(),
-                ))
-            })?;
+        let da_certificate_format = extract_da_sequencer_msg_from_espresso_da_certificate(
+            &sequencer_msg,
+        )
+        .map_err(|_err| {
+            ErrorObjectOwned::from(DaApiError::InvalidSequencerMessageLength(
+                sequencer_msg.len(),
+            ))
+        })?;
 
         let request_body = json!({
             "jsonrpc": "2.0",
@@ -281,12 +285,14 @@ impl DaApiServer for NitroDaServer {
             .map(|config| config.endpoint_url.clone())
             .ok_or(DaApiError::NoDaProvidersConfigured)?;
 
-        let da_certificate_format =
-            extract_espresso_metadata_from_sequencer_messsage(&sequencer_msg).map_err(|_err| {
-                ErrorObjectOwned::from(DaApiError::InvalidSequencerMessageLength(
-                    sequencer_msg.len(),
-                ))
-            })?;
+        let da_certificate_format = extract_da_sequencer_msg_from_espresso_da_certificate(
+            &sequencer_msg,
+        )
+        .map_err(|_err| {
+            ErrorObjectOwned::from(DaApiError::InvalidSequencerMessageLength(
+                sequencer_msg.len(),
+            ))
+        })?;
 
         let request_body = json!({
             "jsonrpc": "2.0",
@@ -459,10 +465,12 @@ impl DaApiServer for NitroDaServer {
             .map(|config| config.endpoint_url.clone())
             .ok_or(DaApiError::NoDaProvidersConfigured)?;
 
-        let da_certificate_format = extract_espresso_metadata_from_da_certificate(&certificate)
-            .map_err(|_err| {
-                ErrorObjectOwned::from(DaApiError::InvalidSequencerMessageLength(certificate.len()))
-            })?;
+        let da_certificate_format = extract_da_sequencer_msg_from_espresso_da_certificate(
+            &certificate,
+        )
+        .map_err(|_err| {
+            ErrorObjectOwned::from(DaApiError::InvalidSequencerMessageLength(certificate.len()))
+        })?;
 
         let request_body = json!({
             "jsonrpc": "2.0",
@@ -512,10 +520,12 @@ impl DaApiServer for NitroDaServer {
             .map(|config| config.endpoint_url.clone())
             .ok_or(DaApiError::NoDaProvidersConfigured)?;
 
-        let da_certificate_format = extract_espresso_metadata_from_da_certificate(&certificate)
-            .map_err(|_err| {
-                ErrorObjectOwned::from(DaApiError::InvalidSequencerMessageLength(certificate.len()))
-            })?;
+        let da_certificate_format = extract_da_sequencer_msg_from_espresso_da_certificate(
+            &certificate,
+        )
+        .map_err(|_err| {
+            ErrorObjectOwned::from(DaApiError::InvalidSequencerMessageLength(certificate.len()))
+        })?;
 
         let request_body = json!({
             "jsonrpc": "2.0",
