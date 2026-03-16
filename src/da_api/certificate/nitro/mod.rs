@@ -1,16 +1,17 @@
 // Certificate byte layout (0-indexed)
 // [0]         : Header Size (1 byte)
-// [1..33]     : Header (32 bytes, assuming header size is 32)
-// [34..37]    : start_message_pos
-// [38..41]    : end_message_pos
-// [42..45]    : start_hotshot_block
-// [46..49]    : min_hotshot_block_still_in_streamer_queue
-// [50..81]    : keccak256(batchData) (32 bytes)
-// [82..147]   : CAS ECDSA signature (65 bytes)
+// [1..32]     : Header (32 bytes)
 //
-// [148]       : 0x01   (DA API header, DACertificateMessageHeaderFlag)
-// [149]       : 0x05   (downstream DA indicator: 0x05 = Celestia)
-// [150-...]   : downstream DA certificate (e.g., Celestia commitment blob)
+// [33..36]    : start_message_pos
+// [37..40]    : end_message_pos
+// [41..44]    : start_hotshot_block
+// [45..48]    : min_hotshot_block_still_in_streamer_queue
+// [49..80]    : keccak256(batchData) (32 bytes)
+// [81..145]   : CAS ECDSA signature (65 bytes)
+//
+// [146]       : 0x01  (DA API header)
+// [147]       : 0x05  (Celestia indicator)
+// [148-...]   : downstream DA certificate
 
 use crate::da_api::{
     error::{DaApiError, DaApiResult},
