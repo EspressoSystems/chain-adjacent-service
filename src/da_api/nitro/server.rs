@@ -414,7 +414,7 @@ impl DaApiServer for NitroDaServer {
                     min_hotshot_block_still_in_streamer_queue,
                     &batch_data,
                     &result.serialized_da_certificate.clone(),
-                );
+                )?;
                 //reset to primary DA provider after a successful store
                 self.current_da_provider.store(0, Ordering::Relaxed);
 
@@ -426,13 +426,11 @@ impl DaApiServer for NitroDaServer {
                 match DaApiError::from(error) {
                     DaApiError::FallbackRequested(message) => {
                         // Switch to next DA provider in the router if error is a fallback request, otherwise return the error
-                        if self.router.len() as u8
-                            > self.current_da_provider.load(Ordering::Relaxed)
-                        {
-                            self.current_da_provider.store(
-                                self.current_da_provider.load(Ordering::Relaxed) + 1,
-                                Ordering::Relaxed,
-                            );
+                        let current_provider_index =
+                            self.current_da_provider.load(Ordering::Relaxed);
+                        if (current_provider_index + 1) < self.router.len() as u8 {
+                            self.current_da_provider
+                                .store(current_provider_index + 1, Ordering::Relaxed);
                         } else {
                             // TODO: all DAs failed; falling back to L1!
                         }

@@ -1,16 +1,16 @@
-// Certificate byte layout
-// [0]       : Header Size
-// [1..X]    : Header (let us consider header size is 32)
-// [34-37]   : start_message_pos
-// [38-41]   : end_message_pos
-// [42-45]   : start_hotshot_block
-// [46-49]   : min_hotshot_block_still_in_streamer_queue
-// [50-82]   : keccak256(batchData)
-// [83-148]  : CAS ECDSA signature (65 bytes)
-
-// [149]     : 0x01   (DA API header, DACertificateMessageHeaderFlag)
-// [150]     : 0x05   (downstream DA indicator: 0x05 = Celestia)
-// [151-...] : downstream DA certificate (e.g., Celestia commitment blob)
+// Certificate byte layout (0-indexed)
+// [0]         : Header Size (1 byte)
+// [1..33]     : Header (32 bytes, assuming header size is 32)
+// [34..37]    : start_message_pos
+// [38..41]    : end_message_pos
+// [42..45]    : start_hotshot_block
+// [46..49]    : min_hotshot_block_still_in_streamer_queue
+// [50..81]    : keccak256(batchData) (32 bytes)
+// [82..147]   : CAS ECDSA signature (65 bytes)
+//
+// [148]       : 0x01   (DA API header, DACertificateMessageHeaderFlag)
+// [149]       : 0x05   (downstream DA indicator: 0x05 = Celestia)
+// [150-...]   : downstream DA certificate (e.g., Celestia commitment blob)
 
 use crate::da_api::{
     error::{DaApiError, DaApiResult},
@@ -191,7 +191,11 @@ impl CasCertificate {
         min_hotshot_block_still_in_streamer_queue: u32,
         batch_data: &[u8],
         downstream_cert: &[u8],
-    ) -> Self {
+    ) -> DaApiResult<Self> {
+        if downstream_cert.len() < 2 {
+            return Err(DaApiError::InvalidCertificateLength(downstream_cert.len()));
+        }
+
         let mut keccak_hasher = Keccak256::new();
         keccak_hasher.update(batch_data);
         let batch_data_hash = keccak_hasher.finalize();
@@ -207,7 +211,7 @@ impl CasCertificate {
             batch_data,
             downstream_cert,
         );
-        Self {
+        Ok(Self {
             header_size: header.len() as u8,
             header,
             start_message_pos,
@@ -220,7 +224,7 @@ impl CasCertificate {
             da_api_header_flag: downstream_cert[0],
             da_provider_flag: downstream_cert[1],
             downstream_certificate: downstream_cert.to_vec(),
-        }
+        })
     }
 
     // ── Signing helpers ──────────────────────────────────────────────────────
@@ -303,7 +307,7 @@ mod tests {
         assert_eq!(da_cert.len(), 99);
 
         let espresso_da_cert =
-            CasCertificate::build_espresso_certificate(0, 0, 0, 0, &da_cert, &da_cert);
+            CasCertificate::build_espresso_certificate(0, 0, 0, 0, &da_cert, &da_cert).unwrap();
         // cas certificate created: "0x200100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d6f4495acb1e8e0c5583a2357178fffd13f0cec5b216542b40027999633d72f000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1c4a3a991487b304c790fd36d080c164f21b819b1ac35393e92940165f3934e130775b12208c995cd6675c5f33c181b19c3657910f4260cc0d115e413d62223db2"
 
         let mut sequencer_msg = vec![0u8; 41];
