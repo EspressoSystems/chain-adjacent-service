@@ -1,6 +1,4 @@
-use crate::{
-    da_api::da::client::DaClient,
-};
+use crate::da_api::da::client::DaClient;
 use std::{collections::HashMap, sync::Arc};
 
 /// Routes DA operations to the correct downstream client based on the DA type byte.

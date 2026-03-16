@@ -24,7 +24,7 @@ use alloy::primitives::{Bytes, FixedBytes, U64};
 use jsonrpsee::{
     core::{RpcResult, async_trait},
     proc_macros::rpc,
-    types::{ ErrorObjectOwned},
+    types::ErrorObjectOwned,
 };
 use serde_json::json;
 use tracing::info;
@@ -149,7 +149,6 @@ impl DaApiServer for NitroDaServer {
         batch_block_hash: FixedBytes<32>,
         sequencer_msg: Bytes,
     ) -> RpcResult<RecoverPayloadResult> {
-
         info!(
             "Received recover_payload request with batch_num: {}, batch_block_hash: {:?}, sequencer_msg: {:?}",
             batch_num, batch_block_hash, sequencer_msg
@@ -168,12 +167,11 @@ impl DaApiServer for NitroDaServer {
             .ok_or(DaApiError::NoDaProvidersConfigured)?;
 
         let da_certificate_format =
-        extract_espresso_metadata_from_sequencer_messsage(&sequencer_msg).map_err(|_err| {
-            ErrorObjectOwned::from(DaApiError::InvalidSequencerMessageLength(
-                sequencer_msg.len(),
-            ))
-        })?;
-
+            extract_espresso_metadata_from_sequencer_messsage(&sequencer_msg).map_err(|_err| {
+                ErrorObjectOwned::from(DaApiError::InvalidSequencerMessageLength(
+                    sequencer_msg.len(),
+                ))
+            })?;
 
         info!(
             "Extracted DA certificate format from sequencer message: {:?}",
@@ -218,7 +216,6 @@ impl DaApiServer for NitroDaServer {
         batch_block_hash: FixedBytes<32>,
         sequencer_msg: Bytes,
     ) -> RpcResult<PreImagesResult> {
-
         if sequencer_msg.len() <= 40 {
             return Err(DaApiError::InvalidSequencerMessageLength(sequencer_msg.len()).into());
         }
@@ -273,7 +270,6 @@ impl DaApiServer for NitroDaServer {
         batch_block_hash: FixedBytes<32>,
         sequencer_msg: Bytes,
     ) -> RpcResult<RecoverPayloadAndPreimagesResult> {
-
         if sequencer_msg.len() <= 40 {
             return Err(DaApiError::InvalidSequencerMessageLength(sequencer_msg.len()).into());
         }
@@ -567,14 +563,10 @@ pub fn verify_batch_data(message: Bytes) -> (u32, u32, u32, u32, Vec<u8>) {
 mod tests {
     use super::*;
     use alloy::primitives::{Bytes, b256};
-    use jsonrpsee::{
-        core::{ client::ClientT},
-        http_client::HttpClientBuilder,
-        rpc_params,
-    };
-    use serde_json::{json};
+    use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder, rpc_params};
+    use serde_json::json;
     use std::{collections::HashMap, net::SocketAddr, str::FromStr};
-    use tokio::{task::JoinHandle};
+    use tokio::task::JoinHandle;
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
 
     use crate::da_api::{
@@ -874,4 +866,3 @@ mod tests {
         );
     }
 }
-
