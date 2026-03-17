@@ -22,7 +22,7 @@ pub struct BroadcastMessage {
 /// Individual feed message containing a sequence number, message data, and signature.
 /// Matches Go struct `BroadcastFeedMessage`
 #[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BroadcastFeedMessage {
     #[serde(rename = "sequenceNumber")]
     pub sequence_number: u64,
@@ -31,7 +31,7 @@ pub struct BroadcastFeedMessage {
     #[serde_as(as = "serde_with::DefaultOnNull<Base64>")]
     #[serde(default)]
     pub signature: Vec<u8>,
-    #[serde_as(as = "Base64")]
+    #[serde_as(as = "serde_with::DefaultOnNull<Base64>")]
     #[serde(
         default,
         rename = "blockMetadata",

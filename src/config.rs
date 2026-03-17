@@ -20,24 +20,19 @@ fn client_timeout_secs() -> u64 {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct StreamerConfig {
-    #[serde(default = "default_max_sequencer_number_drift")]
     pub max_sequencer_number_drift: u64,
-    #[serde(default = "default_initial_backoff_ms")]
     pub initial_backoff_ms: u64,
-    #[serde(default = "default_max_backoff_ms")]
     pub max_backoff_ms: u64,
 }
 
-fn default_max_sequencer_number_drift() -> u64 {
-    1000
-}
-
-fn default_initial_backoff_ms() -> u64 {
-    1000
-}
-
-fn default_max_backoff_ms() -> u64 {
-    30000
+impl Default for StreamerConfig {
+    fn default() -> Self {
+        Self {
+            max_sequencer_number_drift: 1000,
+            initial_backoff_ms: 1000,
+            max_backoff_ms: 30000,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
