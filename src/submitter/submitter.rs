@@ -232,9 +232,7 @@ pub mod testing {
         for expected_seq in 0..=20u64 {
             assert!(
                 found_seqs.contains(&expected_seq),
-                "expected sequence {} to be finalized on Espresso, found: {:?}",
-                expected_seq,
-                found_seqs
+                "expected sequence {expected_seq} to be finalized on Espresso, found: {found_seqs:?}"
             );
         }
         espresso_node.stop();

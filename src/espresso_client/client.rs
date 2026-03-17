@@ -76,8 +76,7 @@ impl EspressoClient {
         }
 
         let url = self.config.query_base_url.join(&format!(
-            "availability/block/{}/{}/namespace/{}",
-            start, end, namespace
+            "availability/block/{start}/{end}/namespace/{namespace}"
         ))?;
         self.get(url).await
     }
@@ -103,10 +102,10 @@ impl EspressoClient {
         &self,
         tx_hash: Commitment<Transaction>,
     ) -> Result<TransactionQueryData> {
-        let url = self.config.query_base_url.join(&format!(
-            "availability/transaction/hash/{}/noproof",
-            tx_hash.to_string()
-        ))?;
+        let url = self
+            .config
+            .query_base_url
+            .join(&format!("availability/transaction/hash/{tx_hash}/noproof"))?;
 
         self.get(url).await
     }
