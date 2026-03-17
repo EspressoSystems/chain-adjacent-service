@@ -570,10 +570,8 @@ pub mod testing {
     #[tokio::test]
     #[ignore] // requires network access to live Arbitrum feed and espresso dev node
     async fn test_live_arbitrum_feed_e2e() {
+        use super::{FEED_CLIENT_VERSION, HEADER_FEED_CLIENT_VERSION, HEADER_REQUESTED_SEQ_NUM};
         use futures::StreamExt;
-        use super::{
-            FEED_CLIENT_VERSION, HEADER_FEED_CLIENT_VERSION, HEADER_REQUESTED_SEQ_NUM,
-        };
         use yawc::frame::OpCode;
         use yawc::{CompressionLevel, DeflateOptions, HttpRequest, Options, WebSocket};
 
