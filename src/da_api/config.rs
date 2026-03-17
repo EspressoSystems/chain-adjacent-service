@@ -10,12 +10,6 @@ pub struct DaApiConfig {
     /// downstream DA providers
     pub da_providers: HashMap<u8, DaProviderConfig>,
 
-    /// CAS signing key
-    pub signing_key_hex: String,
-
-    /// ZK circuit configuration
-    pub zk: ZkConfig,
-
     /// Espresso/HotShot configuration
     pub hotshot: HotShotConfig,
 }

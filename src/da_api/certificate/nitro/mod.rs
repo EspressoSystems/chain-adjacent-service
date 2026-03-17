@@ -139,8 +139,10 @@ impl CasCertificate {
             return Err(DaApiError::InvalidHeaderByte(data[position]));
         }
 
+        //extract the header size indicate at position 0
         let header_size = data[position];
         position += 1;
+        //extract the certificate header
         let header = data[position..position + header_size as usize].to_vec();
         position += header_size as usize;
 
@@ -214,7 +216,7 @@ impl CasCertificate {
     }
 
     /// Public facing function to build and sign the payload using CAS signer
-    /// 
+    ///
     /// Returns the CAS signature
     pub fn build_espresso_certificate(
         start_message_pos: u32,
@@ -260,7 +262,7 @@ impl CasCertificate {
     }
 
     /// Inner logic to build and sign the payload
-    /// 
+    ///
     /// Build and sign the payload using CAS signer
     /// keccak256(start_message_pos || end_message_pos ||
     ///           start_hotshot_block || min_hotshot_block ||

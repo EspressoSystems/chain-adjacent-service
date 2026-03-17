@@ -22,8 +22,10 @@ pub enum DaApiError {
     #[error("certificate validation failed: invalid certificate length {0}")]
     InvalidCertificateLength(usize),
 
-    #[error("certificate validation failed: invalid sequencer message length {0}")]
-    InvalidSequencerMessageLength(usize),
+    #[error(
+        "certificate validation failed: invalid sequencer message length, expected minimum {0}, got {1}"
+    )]
+    InvalidSequencerMessageLength(usize, usize),
 
     #[error("certificate validation failed: invalid CAS signature")]
     InvalidCasSignature,
@@ -80,9 +82,9 @@ impl From<DaApiError> for ErrorObjectOwned {
                 format!("Invalid header byte: 0x{byte:02x}"),
                 None::<()>,
             ),
-            DaApiError::InvalidSequencerMessageLength(len) => ErrorObjectOwned::owned(
+            DaApiError::InvalidSequencerMessageLength(expected, got) => ErrorObjectOwned::owned(
                 -32602,
-                format!("Invalid sequencer message length: {len}"),
+                format!("Invalid sequencer message length: expected:{expected}, got:{got}"),
                 None::<()>,
             ),
             _ => ErrorObjectOwned::owned(-32602, err.to_string(), None::<()>),

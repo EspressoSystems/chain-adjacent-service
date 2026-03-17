@@ -1,5 +1,7 @@
 use alloy::primitives::Bytes;
 
+use crate::da_api::error::DaApiError;
+
 const SEQUENCER_HEADER_LEN: usize = 40;
 const DA_CERT_FLAG_LEN: usize = 1;
 const CERT_START: usize = SEQUENCER_HEADER_LEN + DA_CERT_FLAG_LEN;
@@ -10,9 +12,12 @@ const ESPRESSO_CERT_LEN: usize = 149; // 0..148 inclusive
 /// Returns: [SequencerHeader(40 bytes), DACertificateFlag(0x01), DACert]
 pub fn extract_da_sequencer_msg_from_espresso_da_certificate(
     sequencer_msg: &Bytes,
-) -> anyhow::Result<Bytes> {
+) -> Result<Bytes, DaApiError> {
     if sequencer_msg.len() < CERT_START + ESPRESSO_CERT_LEN {
-        return Err(anyhow::anyhow!("Sequencer message is too short"));
+        return Err(DaApiError::InvalidSequencerMessageLength(
+            CERT_START + ESPRESSO_CERT_LEN,
+            sequencer_msg.len(),
+        ));
     }
     let seq_msg = sequencer_msg.slice(0..SEQUENCER_HEADER_LEN);
     let header_byte = sequencer_msg.slice(SEQUENCER_HEADER_LEN..SEQUENCER_HEADER_LEN + 1);

@@ -9,7 +9,10 @@ use crate::da_api::{
     error::DaApiError,
     nitro::{
         types::{
-            DAStoreResponse, GenerateCertificateValidityProofResponse, GenerateReadPreimageProofResponse, JsonRpcResponse, MaxMessageSizeResult, PreImagesResult, RecoverPayloadAndPreimagesResult, RecoverPayloadResult, SupportedHeaderBytesResult
+            DAStoreResponse, GenerateCertificateValidityProofResponse,
+            GenerateReadPreimageProofResponse, JsonRpcResponse, MaxMessageSizeResult,
+            PreImagesResult, RecoverPayloadAndPreimagesResult, RecoverPayloadResult,
+            SupportedHeaderBytesResult,
         },
         utils::extract_da_sequencer_msg_from_espresso_da_certificate,
     },
@@ -103,6 +106,7 @@ impl DaApiServer for NitroDaServer {
     async fn get_supported_header_bytes(&self) -> RpcResult<SupportedHeaderBytesResult> {
         info!("Received get_supported_header_bytes request");
 
+        // Get the current DA provider to route this to
         let da_endpoint = self
             .router
             .get(&self.current_da_provider.load(Ordering::Relaxed))
@@ -149,10 +153,8 @@ impl DaApiServer for NitroDaServer {
         );
 
         if sequencer_msg.len() <= 40 {
-            return Err(DaApiError::InvalidSequencerMessageLength(sequencer_msg.len()).into());
+            return Err(DaApiError::InvalidSequencerMessageLength(40, sequencer_msg.len()).into());
         }
-
-        // let header_byte = Bytes::from_str(&format!("0x{:02x}", sequencer_msg[40])).unwrap();
 
         let da_endpoint = self
             .router
@@ -160,14 +162,10 @@ impl DaApiServer for NitroDaServer {
             .map(|config| config.endpoint_url.clone())
             .ok_or(DaApiError::NoDaProvidersConfigured)?;
 
-        let da_certificate_format = extract_da_sequencer_msg_from_espresso_da_certificate(
-            &sequencer_msg,
-        )
-        .map_err(|_err| {
-            ErrorObjectOwned::from(DaApiError::InvalidSequencerMessageLength(
-                sequencer_msg.len(),
-            ))
-        })?;
+        let da_certificate_format: Bytes =
+            extract_da_sequencer_msg_from_espresso_da_certificate(&sequencer_msg).map_err(
+                |err| ErrorObjectOwned::from(DaApiError::CertificateValidation(err.to_string())),
+            )?;
 
         info!(
             "Extracted DA certificate format from sequencer message: {:?}",
@@ -213,7 +211,7 @@ impl DaApiServer for NitroDaServer {
         sequencer_msg: Bytes,
     ) -> RpcResult<PreImagesResult> {
         if sequencer_msg.len() <= 40 {
-            return Err(DaApiError::InvalidSequencerMessageLength(sequencer_msg.len()).into());
+            return Err(DaApiError::InvalidSequencerMessageLength(40, sequencer_msg.len()).into());
         }
 
         let da_endpoint = self
@@ -222,14 +220,10 @@ impl DaApiServer for NitroDaServer {
             .map(|config| config.endpoint_url.clone())
             .ok_or(DaApiError::NoDaProvidersConfigured)?;
 
-        let da_certificate_format = extract_da_sequencer_msg_from_espresso_da_certificate(
-            &sequencer_msg,
-        )
-        .map_err(|_err| {
-            ErrorObjectOwned::from(DaApiError::InvalidSequencerMessageLength(
-                sequencer_msg.len(),
-            ))
-        })?;
+        let da_certificate_format =
+            extract_da_sequencer_msg_from_espresso_da_certificate(&sequencer_msg).map_err(
+                |err| ErrorObjectOwned::from(DaApiError::CertificateValidation(err.to_string())),
+            )?;
 
         let request_body = json!({
             "jsonrpc": "2.0",
@@ -269,7 +263,7 @@ impl DaApiServer for NitroDaServer {
         sequencer_msg: Bytes,
     ) -> RpcResult<RecoverPayloadAndPreimagesResult> {
         if sequencer_msg.len() <= 40 {
-            return Err(DaApiError::InvalidSequencerMessageLength(sequencer_msg.len()).into());
+            return Err(DaApiError::InvalidSequencerMessageLength(40, sequencer_msg.len()).into());
         }
         // let header_byte = Bytes::from_str(&format!("0x{:02x}", sequencer_msg[40])).unwrap();
 
@@ -279,14 +273,10 @@ impl DaApiServer for NitroDaServer {
             .map(|config| config.endpoint_url.clone())
             .ok_or(DaApiError::NoDaProvidersConfigured)?;
 
-        let da_certificate_format = extract_da_sequencer_msg_from_espresso_da_certificate(
-            &sequencer_msg,
-        )
-        .map_err(|_err| {
-            ErrorObjectOwned::from(DaApiError::InvalidSequencerMessageLength(
-                sequencer_msg.len(),
-            ))
-        })?;
+        let da_certificate_format =
+            extract_da_sequencer_msg_from_espresso_da_certificate(&sequencer_msg).map_err(
+                |err| ErrorObjectOwned::from(DaApiError::CertificateValidation(err.to_string())),
+            )?;
 
         let request_body = json!({
             "jsonrpc": "2.0",
@@ -372,6 +362,7 @@ impl DaApiServer for NitroDaServer {
             batch_data,
         ) = verify_batch_data(message.clone());
 
+        // Get the current DA provider to route this request to
         let da_endpoint = self
             .router
             .get(&self.current_da_provider.load(Ordering::Relaxed))
@@ -457,12 +448,10 @@ impl DaApiServer for NitroDaServer {
             .map(|config| config.endpoint_url.clone())
             .ok_or(DaApiError::NoDaProvidersConfigured)?;
 
-        let da_certificate_format = extract_da_sequencer_msg_from_espresso_da_certificate(
-            &certificate,
-        )
-        .map_err(|_err| {
-            ErrorObjectOwned::from(DaApiError::InvalidSequencerMessageLength(certificate.len()))
-        })?;
+        let da_certificate_format =
+            extract_da_sequencer_msg_from_espresso_da_certificate(&certificate).map_err(|err| {
+                ErrorObjectOwned::from(DaApiError::CertificateValidation(err.to_string()))
+            })?;
 
         let request_body = json!({
             "jsonrpc": "2.0",
@@ -512,12 +501,10 @@ impl DaApiServer for NitroDaServer {
             .map(|config| config.endpoint_url.clone())
             .ok_or(DaApiError::NoDaProvidersConfigured)?;
 
-        let da_certificate_format = extract_da_sequencer_msg_from_espresso_da_certificate(
-            &certificate,
-        )
-        .map_err(|_err| {
-            ErrorObjectOwned::from(DaApiError::InvalidSequencerMessageLength(certificate.len()))
-        })?;
+        let da_certificate_format =
+            extract_da_sequencer_msg_from_espresso_da_certificate(&certificate).map_err(|err| {
+                ErrorObjectOwned::from(DaApiError::CertificateValidation(err.to_string()))
+            })?;
 
         let request_body = json!({
             "jsonrpc": "2.0",
@@ -575,7 +562,7 @@ mod tests {
         RollupType,
         certificate::nitro::CasCertificate,
         config::{DaApiConfig, DaProviderConfig},
-        nitro::types::{RecoverPayloadResult, DAStoreResponse},
+        nitro::types::{DAStoreResponse, RecoverPayloadResult},
         run,
     };
 
