@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use alloy::primitives::{Bytes, FixedBytes};
 use serde::{Deserialize, Serialize};
 
-use crate::da_api::certificate::nitro::CasCertificate;
+use crate::da_api::{certificate::nitro::CasCertificate, error::DaApiError};
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
@@ -80,15 +80,12 @@ pub struct StoreResponse {
     pub serialized_da_certificate: Bytes,
 }
 
-impl From<CasCertificate> for StoreResponse {
-    fn from(cert: CasCertificate) -> Self {
-        let cas_cert_bytes = cert.to_bytes();
-
-        let cas_to_store: Bytes = cas_cert_bytes.into();
-
-        StoreResponse {
-            serialized_da_certificate: cas_to_store,
-        }
+impl TryFrom<CasCertificate> for StoreResponse {
+    type Error = DaApiError;
+    fn try_from(value: CasCertificate) -> Result<Self, Self::Error> {
+        Ok(StoreResponse {
+            serialized_da_certificate: value.to_bytes()?.into(),
+        })
     }
 }
 

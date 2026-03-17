@@ -415,7 +415,7 @@ impl DaApiServer for NitroDaServer {
                 //reset to primary DA provider after a successful store
                 self.current_da_provider.store(0, Ordering::Relaxed);
 
-                Ok(final_certificate.into())
+                StoreResponse::try_from(final_certificate).map_err(Into::into)
             }
             JsonRpcResponse::Error { error } => {
                 let error_code = error.code;

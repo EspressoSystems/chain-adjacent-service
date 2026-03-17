@@ -9,6 +9,9 @@ pub enum DaApiError {
     #[error("no DA providers configured")]
     NoDaProvidersConfigured,
 
+    #[error("certificate serialization failed: {0}")]
+    CertificateSerializationFailed(String),
+
     // Certificate validation errors - these allow syncing to continue
     #[error("certificate validation failed: {0}")]
     CertificateValidation(String),

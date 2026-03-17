@@ -22,32 +22,30 @@ use serde::{Deserialize, Serialize};
 
 // ── DA type bytes ──────────────────────────────────────────────────────────────
 /// DA API header flag (same as DACertificateMessageHeaderFlag in Nitro)
-pub const DA_API_HEADER_FLAG: u8 = 0x01;
+pub const DA_CERTIFICATE_MESSAGE_HEADER_FLAG: u8 = 0x01;
 
 pub const START_MSG_POS_SIZE: usize = 4; // u32
 pub const END_MSG_POS_SIZE: usize = 4; // u32
-pub const START_HOTSHOT_SIZE: usize = 4; // u32
-pub const MIN_HOTSHOT_SIZE: usize = 4; // u32
+pub const START_HOTSHOT_BLOCK_SIZE: usize = 4; // u32
+pub const MINIMUM_HOTSHOT_BLOCK_STILL_IN_STREAMER_QUEUE_SIZE: usize = 4; // u32
 pub const BATCH_HASH_SIZE: usize = 32; // keccak256
 pub const CAS_SIG_SIZE: usize = 65; // ECDSA (r,s,v)
 
-pub const CERT_HEADER_SIZE: usize = 0;
-pub const CERT_HEADER: usize = 1;
-pub const CERT_START_MSG_POS: usize = 33;
-pub const CERT_END_MSG_POS: usize = 37;
-pub const CERT_START_HOTSHOT: usize = 41;
-pub const CERT_MIN_HOTSHOT: usize = 45;
-pub const CERT_BATCH_HASH: usize = 49;
-pub const CERT_CAS_SIG: usize = 81;
-pub const CERT_DA_HEADER_FLAG: usize = 146;
-pub const CERT_DA_PROVIDER_FLAG: usize = 147;
-pub const CERT_DOWNSTREAM_CERT: usize = 148;
+//ensure this value is consistent with the certificate design. this is needed to ensure the da byte is as expected
+pub const CERT_DA_HEADER_FLAG_POS: usize = 146;
 
 /// Minimum fixed-size portion of a CAS certificate (no downstream cert)
-pub const CERT_MIN_SIZE: usize = CERT_DOWNSTREAM_CERT;
+pub const CERT_MINIMUM_SIZE: usize = 148;
+
+/// Expected header size (32 bytes as per certificate layout)
+pub const CERT_HEADER_SIZE: usize = 32;
 
 /// CAS certificate version
-pub const CAS_VERSION: u8 = 0x01;
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CASCertificateVersion {
+    V1 = 0x01,
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 /// Parsed CAS certificate
@@ -77,71 +75,95 @@ impl TryFrom<StoreResponse> for CasCertificate {
 }
 
 impl CasCertificate {
-    // ── Serialise ────────────────────────────────────────────────────────────
-
     /// Serialise the certificate into its wire format.
-    pub fn to_bytes(&self) -> Vec<u8> {
+    pub fn to_bytes(&self) -> Result<Vec<u8>, DaApiError> {
+        let mut position = 0;
         let downstream_len = self.downstream_certificate.len();
-        let mut buf = vec![0u8; CERT_MIN_SIZE + downstream_len];
+        let mut buf = vec![0u8; CERT_MINIMUM_SIZE + downstream_len];
 
-        buf[CERT_HEADER_SIZE] = self.header.len() as u8;
-        buf[CERT_HEADER..CERT_HEADER + self.header.len()].copy_from_slice(&self.header);
+        buf[position] = self.header.len() as u8;
+        position += 1;
 
-        buf[CERT_START_MSG_POS..CERT_START_MSG_POS + START_MSG_POS_SIZE]
+        if self.header.len() != CERT_HEADER_SIZE {
+            return Err(DaApiError::CertificateSerializationFailed(format!(
+                "invalid header size, expected: {CERT_HEADER_SIZE}, got: {}",
+                self.header.len()
+            )));
+        }
+        buf[position..position + self.header.len()].copy_from_slice(&self.header);
+        position += self.header.len();
+
+        buf[position..position + START_MSG_POS_SIZE]
             .copy_from_slice(&self.start_message_pos.to_be_bytes());
-        buf[CERT_END_MSG_POS..CERT_END_MSG_POS + END_MSG_POS_SIZE]
+        position += START_MSG_POS_SIZE;
+
+        buf[position..position + END_MSG_POS_SIZE]
             .copy_from_slice(&self.end_message_pos.to_be_bytes());
-        buf[CERT_START_HOTSHOT..CERT_START_HOTSHOT + START_HOTSHOT_SIZE]
+        position += END_MSG_POS_SIZE;
+
+        buf[position..position + START_HOTSHOT_BLOCK_SIZE]
             .copy_from_slice(&self.start_hotshot_block.to_be_bytes());
-        buf[CERT_MIN_HOTSHOT..CERT_MIN_HOTSHOT + MIN_HOTSHOT_SIZE]
+        position += START_HOTSHOT_BLOCK_SIZE;
+
+        buf[position..position + MINIMUM_HOTSHOT_BLOCK_STILL_IN_STREAMER_QUEUE_SIZE]
             .copy_from_slice(&self.min_hotshot_block_still_in_streamer_queue.to_be_bytes());
+        position += MINIMUM_HOTSHOT_BLOCK_STILL_IN_STREAMER_QUEUE_SIZE;
 
-        buf[CERT_BATCH_HASH..CERT_BATCH_HASH + BATCH_HASH_SIZE]
-            .copy_from_slice(&self.batch_data_hash);
-        buf[CERT_CAS_SIG..CERT_CAS_SIG + CAS_SIG_SIZE].copy_from_slice(&self.cas_signature);
+        buf[position..position + BATCH_HASH_SIZE].copy_from_slice(&self.batch_data_hash);
+        position += BATCH_HASH_SIZE;
 
-        buf[CERT_DA_HEADER_FLAG] = DA_API_HEADER_FLAG;
-        buf[CERT_DA_PROVIDER_FLAG] = self.da_provider_flag;
+        buf[position..position + CAS_SIG_SIZE].copy_from_slice(&self.cas_signature);
+        position += CAS_SIG_SIZE;
+
+        buf[position] = DA_CERTIFICATE_MESSAGE_HEADER_FLAG;
+        position += 1;
+        buf[position] = self.da_provider_flag;
+        position += 1;
 
         if !self.downstream_certificate.is_empty() {
-            buf[CERT_DOWNSTREAM_CERT..].copy_from_slice(&self.downstream_certificate);
+            buf[position..].copy_from_slice(&self.downstream_certificate);
         }
 
-        buf
+        Ok(buf)
     }
 
-    // ── Deserialise ──────────────────────────────────────────────────────────
-
-    //TODO: remove unwraps and replace with proper error handling
+    /// Deserialise the certificate into its wire format.
     pub fn from_bytes(data: &[u8]) -> DaApiResult<Self> {
-        if data.len() < CERT_MIN_SIZE {
+        if data.len() < CERT_MINIMUM_SIZE {
             return Err(DaApiError::InvalidCertificateLength(data.len()));
         }
+        let mut position = 0;
 
         // Sanity-check the DA API header flag embedded in the cert
-        if data[CERT_DA_HEADER_FLAG] != DA_API_HEADER_FLAG {
-            return Err(DaApiError::InvalidHeaderByte(data[CERT_DA_HEADER_FLAG]));
+        if data[CERT_DA_HEADER_FLAG_POS] != DA_CERTIFICATE_MESSAGE_HEADER_FLAG {
+            return Err(DaApiError::InvalidHeaderByte(data[position]));
         }
 
-        let header_size = data[CERT_HEADER_SIZE];
-        let header = data[CERT_HEADER..CERT_HEADER + header_size as usize].to_vec();
+        let header_size = data[position];
+        position += 1;
+        let header = data[position..position + header_size as usize].to_vec();
+        position += header_size as usize;
 
         let start_message_pos = u32::from_be_bytes(
-            data[CERT_START_MSG_POS..CERT_START_MSG_POS + START_MSG_POS_SIZE]
+            data[position..position + START_MSG_POS_SIZE]
                 .try_into()
                 .map_err(|err| {
                     DaApiError::Serialization(format!("failed to parse start_message_pos: {err:?}"))
                 })?,
         );
+        position += START_MSG_POS_SIZE;
+
         let end_message_pos = u32::from_be_bytes(
-            data[CERT_END_MSG_POS..CERT_END_MSG_POS + END_MSG_POS_SIZE]
+            data[position..position + END_MSG_POS_SIZE]
                 .try_into()
                 .map_err(|err| {
                     DaApiError::Serialization(format!("failed to parse end_message_pos: {err:?}"))
                 })?,
         );
+        position += END_MSG_POS_SIZE;
+
         let start_hotshot_block = u32::from_be_bytes(
-            data[CERT_START_HOTSHOT..CERT_START_HOTSHOT + START_HOTSHOT_SIZE]
+            data[position..position + START_HOTSHOT_BLOCK_SIZE]
                 .try_into()
                 .map_err(|err| {
                     DaApiError::Serialization(format!(
@@ -149,8 +171,10 @@ impl CasCertificate {
                     ))
                 })?,
         );
+        position += START_HOTSHOT_BLOCK_SIZE;
+
         let min_hotshot_block_still_in_streamer_queue = u32::from_be_bytes(
-            data[CERT_MIN_HOTSHOT..CERT_MIN_HOTSHOT + MIN_HOTSHOT_SIZE]
+            data[position..position + MINIMUM_HOTSHOT_BLOCK_STILL_IN_STREAMER_QUEUE_SIZE]
                 .try_into()
                 .map_err(|err| {
                     DaApiError::Serialization(format!(
@@ -158,16 +182,21 @@ impl CasCertificate {
                     ))
                 })?,
         );
+        position += MINIMUM_HOTSHOT_BLOCK_STILL_IN_STREAMER_QUEUE_SIZE;
 
         let mut batch_data_hash = [0u8; 32];
-        batch_data_hash.copy_from_slice(&data[CERT_BATCH_HASH..CERT_BATCH_HASH + BATCH_HASH_SIZE]);
+        batch_data_hash.copy_from_slice(&data[position..position + BATCH_HASH_SIZE]);
+        position += BATCH_HASH_SIZE;
 
         let mut cas_signature = [0u8; 65];
-        cas_signature.copy_from_slice(&data[CERT_CAS_SIG..CERT_CAS_SIG + CAS_SIG_SIZE]);
+        cas_signature.copy_from_slice(&data[position..position + CAS_SIG_SIZE]);
+        position += CAS_SIG_SIZE;
 
-        let da_api_header_flag = data[CERT_DA_HEADER_FLAG];
-        let da_provider_flag = data[CERT_DA_PROVIDER_FLAG];
-        let downstream_certificate = data[CERT_DOWNSTREAM_CERT..].to_vec();
+        let da_api_header_flag = data[position];
+        position += 1;
+        let da_provider_flag = data[position];
+        position += 1;
+        let downstream_certificate = data[position..].to_vec();
 
         Ok(Self {
             header_size,
@@ -184,7 +213,9 @@ impl CasCertificate {
         })
     }
 
-    // should return a Result
+    /// Public facing function to build and sign the payload using CAS signer
+    /// 
+    /// Returns the CAS signature
     pub fn build_espresso_certificate(
         start_message_pos: u32,
         end_message_pos: u32,
@@ -202,7 +233,7 @@ impl CasCertificate {
         let batch_data_hash = keccak_hasher.finalize();
 
         let mut header = vec![0u8; 32];
-        header[0] = CAS_VERSION;
+        header[0] = CASCertificateVersion::V1 as u8;
 
         let cas_signature = Self::build_and_sign_payload(
             start_message_pos,
@@ -228,13 +259,13 @@ impl CasCertificate {
         })
     }
 
-    // ── Signing helpers ──────────────────────────────────────────────────────
-
+    /// Inner logic to build and sign the payload
+    /// 
     /// Build and sign the payload using CAS signer
     /// keccak256(start_message_pos || end_message_pos ||
     ///           start_hotshot_block || min_hotshot_block ||
     ///           batchData || downstreamCert)
-    pub fn build_and_sign_payload(
+    fn build_and_sign_payload(
         _start_message_pos: u32,
         _end_message_pos: u32,
         _start_hotshot_block: u32,
@@ -275,7 +306,7 @@ mod tests {
     fn test_round_trip_serialization() {
         let original = create_mock_cert();
 
-        let bytes = original.to_bytes();
+        let bytes = original.to_bytes().unwrap();
 
         let recovered =
             CasCertificate::from_bytes(&bytes).expect("Failed to deserialize valid bytes");
@@ -293,10 +324,10 @@ mod tests {
 
     #[test]
     fn test_invalid_header_flag() {
-        let mut bytes = create_mock_cert().to_bytes();
+        let mut bytes = create_mock_cert().to_bytes().unwrap();
 
         // Corrupt the DA API header flag
-        bytes[CERT_DA_HEADER_FLAG] = 0xFE;
+        bytes[CERT_DA_HEADER_FLAG_POS] = 0xFE;
 
         let result = CasCertificate::from_bytes(&bytes);
         assert!(result.is_err(), "Should fail when the flag is incorrect");
@@ -315,12 +346,15 @@ mod tests {
         sequencer_msg[40] = 0x63;
 
         // append certificate
-        sequencer_msg.extend_from_slice(&espresso_da_cert.to_bytes());
+        sequencer_msg.extend_from_slice(&espresso_da_cert.to_bytes().unwrap());
 
         // convert back to Bytes
         let sequencer_msg = Bytes::from(sequencer_msg);
 
-        assert_eq!(sequencer_msg.len(), 41 + espresso_da_cert.to_bytes().len());
+        assert_eq!(
+            sequencer_msg.len(),
+            41 + espresso_da_cert.to_bytes().unwrap().len()
+        );
         assert_eq!(sequencer_msg.len(), 288);
     }
 }
