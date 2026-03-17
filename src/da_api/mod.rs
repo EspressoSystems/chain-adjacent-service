@@ -20,10 +20,9 @@ pub async fn run(
             let rollup_da_server = NitroDaServer::new(da_api_config.da_providers);
 
             let server = Server::builder().build(&da_api_config.listen_addr).await?;
-            let handle = server.start(crate::da_api::nitro::server::DaApiServer::into_rpc(
+            server.start(crate::da_api::nitro::server::DaApiServer::into_rpc(
                 rollup_da_server,
-            ));
-            handle
+            ))
         }
     };
 

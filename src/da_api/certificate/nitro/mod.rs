@@ -70,7 +70,7 @@ impl TryFrom<DAStoreResponse> for CasCertificate {
     type Error = DaApiError;
 
     fn try_from(value: DAStoreResponse) -> Result<Self, Self::Error> {
-        CasCertificate::from_bytes(&value.serialized_da_certificate.to_vec())
+        CasCertificate::from_bytes(value.serialized_da_certificate.as_ref())
     }
 }
 
@@ -275,7 +275,7 @@ impl CasCertificate {
         _batch_data: &[u8],
         _downstream_cert: &[u8],
     ) -> [u8; 65] {
-        return [0u8; 65]; // TODO: implement signing logic
+        [0u8; 65] // TODO: implement signing logic
     }
 }
 

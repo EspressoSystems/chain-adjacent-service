@@ -15,6 +15,7 @@ use chain_agnostic_service::{
 
 use common::nitro_node::NitroNode;
 
+#[allow(clippy::unwrap_used)]
 fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
     let mut da_providers = HashMap::new();
     da_providers.insert(
@@ -56,11 +57,12 @@ async fn test_nitro_reference_da() {
     test_nitro_reference_da_store_and_recover(my_addr.to_string()).await;
 }
 
+#[allow(clippy::unwrap_used)]
 async fn test_nitro_reference_da_supported_header_bytes(my_addr: String) {
     let client = reqwest::Client::new();
 
     let response: Value = client
-        .post(format!("http://{}", my_addr))
+        .post(format!("http://{my_addr}"))
         .json(&json!({
             "jsonrpc": "2.0",
             "method": "daprovider_getSupportedHeaderBytes",
@@ -85,6 +87,7 @@ async fn test_nitro_reference_da_supported_header_bytes(my_addr: String) {
     assert_eq!(response, expected);
 }
 
+#[allow(clippy::unwrap_used)]
 async fn test_nitro_reference_da_store_and_recover(my_addr: String) {
     // let nitro_node = NitroNode::start().await;
 
@@ -97,7 +100,7 @@ async fn test_nitro_reference_da_store_and_recover(my_addr: String) {
     let client = reqwest::Client::new();
 
     let response :Result<Value, _>= client
-            .post(format!("http://{}", my_addr))
+            .post(format!("http://{my_addr}"))
             .json(&json!({
                 "jsonrpc": "2.0",
                 "method": "daprovider_store",
@@ -127,7 +130,7 @@ async fn test_nitro_reference_da_store_and_recover(my_addr: String) {
     sequencer_msg.extend_from_slice(&Bytes::from_str(espresso_da_cert).unwrap());
 
     let recover_payload: Result<Value, _> = client
-        .post(format!("http://{}", my_addr))
+        .post(format!("http://{my_addr}"))
         .json(&json!({
             "jsonrpc": "2.0",
             "method": "daprovider_recoverPayload",

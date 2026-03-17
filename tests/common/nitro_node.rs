@@ -31,7 +31,7 @@ impl NitroNodeConfig {
             .json(&request_body)
             .send()
             .await
-            .map_err(|e| anyhow::anyhow!("Connection failed: {}", e))?;
+            .map_err(|err| anyhow::anyhow!("Connection failed: {err}"))?;
 
         if !response.status().is_success() {
             return Err(anyhow::anyhow!(
@@ -94,11 +94,8 @@ impl NitroNode {
 
         let node = Self {
             client: NitroNodeConfig {
-                reference_da_url: Url::parse(&format!(
-                    "http://localhost:{}",
-                    REFERENCE_DA_ENDPOINT
-                ))
-                .unwrap(),
+                reference_da_url: Url::parse(&format!("http://localhost:{REFERENCE_DA_ENDPOINT}"))
+                    .expect("failed to parse reference da url"),
             },
             process: Mutex::new(child),
             _lifecycle_permit: Some(lifecycle_permit),
@@ -142,20 +139,20 @@ impl NitroNode {
         match status {
             Ok(s) if s.success() => {}
             Ok(s) => {
-                let msg = format!("`docker compose down -v` exited with status: {}", s);
+                let msg = format!("`docker compose down -v` exited with status: {s}");
                 // If we're already panicking, a second panic would abort the
                 // process immediately, swallowing the original panic message.
                 // Print instead and let the original panic surface cleanly.
                 if std::thread::panicking() {
-                    eprintln!("ERROR during cleanup: {}", msg);
+                    eprintln!("ERROR during cleanup: {msg}");
                 } else {
                     panic!("{}", msg);
                 }
             }
-            Err(e) => {
-                let msg = format!("`docker compose down -v` failed to execute: {}", e);
+            Err(err) => {
+                let msg = format!("`docker compose down -v` failed to execute: {err}");
                 if std::thread::panicking() {
-                    eprintln!("ERROR during cleanup: {}", msg);
+                    eprintln!("ERROR during cleanup: {msg}");
                 } else {
                     panic!("{}", msg);
                 }

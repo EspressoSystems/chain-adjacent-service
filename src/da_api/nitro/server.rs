@@ -310,7 +310,6 @@ impl DaApiServer for NitroDaServer {
     }
 
     /// Writer methods ///
-
     async fn get_max_message_size(&self) -> RpcResult<MaxMessageSizeResult> {
         let da_endpoint = self
             .router
@@ -433,7 +432,6 @@ impl DaApiServer for NitroDaServer {
     }
 
     /// VALIDATOR METHODS ///
-
     async fn generate_read_preimage_proof(
         &self,
         cert_hash: [u8; 32],
@@ -480,13 +478,11 @@ impl DaApiServer for NitroDaServer {
             JsonRpcResponse::Error { error } => {
                 let error_code = error.code;
                 let error_message = error.message.clone();
-                match DaApiError::from(error) {
-                    _ => Err(ErrorObjectOwned::owned(
-                        error_code,
-                        error_message,
-                        None::<()>,
-                    )),
-                }
+                Err(ErrorObjectOwned::owned(
+                    error_code,
+                    error_message,
+                    None::<()>,
+                ))
             }
         }
     }
@@ -531,13 +527,11 @@ impl DaApiServer for NitroDaServer {
             JsonRpcResponse::Error { error } => {
                 let error_code = error.code;
                 let error_message = error.message.clone();
-                match DaApiError::from(error) {
-                    _ => Err(ErrorObjectOwned::owned(
-                        error_code,
-                        error_message,
-                        None::<()>,
-                    )),
-                }
+                Err(ErrorObjectOwned::owned(
+                    error_code,
+                    error_message,
+                    None::<()>,
+                ))
             }
         }
     }
@@ -545,12 +539,11 @@ impl DaApiServer for NitroDaServer {
 
 // mock function
 pub fn verify_batch_data(message: Bytes) -> (u32, u32, u32, u32, Vec<u8>) {
-    return (0, 0, 0, 0, message.to_vec());
+    (0, 0, 0, 0, message.to_vec())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloy::primitives::{Bytes, b256};
     use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder, rpc_params};
     use serde_json::json;
@@ -629,7 +622,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
-            .build(format!("http://{}", addr))
+            .build(format!("http://{addr}"))
             .unwrap();
 
         // sequencer_msg: 40 bytes padding + header byte 0x80 + certificate bytes
@@ -671,7 +664,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
-            .build(format!("http://{}", addr))
+            .build(format!("http://{addr}"))
             .unwrap();
 
         let response: Result<DAStoreResponse, _> = client
@@ -707,7 +700,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
-            .build(format!("http://{}", addr))
+            .build(format!("http://{addr}"))
             .unwrap();
 
         let response: Result<DAStoreResponse, _> = client
@@ -743,7 +736,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
-            .build(format!("http://{}", addr))
+            .build(format!("http://{addr}"))
             .unwrap();
 
         let response: Result<DAStoreResponse, _> = client
@@ -774,7 +767,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
-            .build(format!("http://{}", addr))
+            .build(format!("http://{addr}"))
             .unwrap();
 
         let response: Result<DAStoreResponse, _> = client
@@ -825,7 +818,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
-            .build(format!("http://{}", addr))
+            .build(format!("http://{addr}"))
             .unwrap();
 
         // First call hits primary → gets FallbackRequested → increments provider index

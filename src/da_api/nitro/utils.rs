@@ -73,10 +73,7 @@ mod tests {
             extract_da_sequencer_msg_from_espresso_da_certificate(&sequencer_msg).unwrap();
 
         // check length
-        assert_eq!(
-            extracted.len(),
-            (SEQUENCER_HEADER_LEN + 1 + 1 + 1 + 20) as usize
-        );
+        assert_eq!(extracted.len(), (SEQUENCER_HEADER_LEN + 1 + 1 + 1 + 20));
 
         // check contents match expected metadata
         assert_eq!(extracted, Bytes::from(expected_data));
