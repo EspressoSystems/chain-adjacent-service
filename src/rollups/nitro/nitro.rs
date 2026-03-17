@@ -75,13 +75,13 @@ impl Rollup for Nitro {
                     entries.push(NitroRollupQueueEntry {
                         message_with_meta,
                         pos: legacy_nitro_message.indices[index],
-                        hotshot_height: hotshot_height,
+                        hotshot_height,
                     });
                 }
             }
             // There is a namespace transaction for each hotshot height
             // even if there are no transactions
-            hotshot_height = hotshot_height + 1;
+            hotshot_height += 1;
         }
 
         entries
@@ -192,7 +192,7 @@ impl Nitro {
             // Retrieve the message from the payload
             let message = &tx_payload[current_pos..current_pos + message_size as usize];
             current_pos += message_size as usize;
-            if message.len() == 0 {
+            if message.is_empty() {
                 tracing::warn!("empty message");
                 continue;
             }
@@ -213,7 +213,6 @@ pub mod testing {
     use std::str::FromStr;
 
     use super::*;
-    use alloy_rlp::Bytes;
     use base64::Engine;
     use base64::engine::general_purpose;
     use espresso_types::{NamespaceId, Transaction};
@@ -264,11 +263,11 @@ pub mod testing {
             "Incorrect poster address"
         );
         assert!(
-            l1_incoming_header.l1_base_fee == None,
+            l1_incoming_header.l1_base_fee.is_none(),
             "Incorrect l1_base_fee"
         );
         assert!(
-            l1_incoming_header.request_id == None,
+            l1_incoming_header.request_id.is_none(),
             "Incorrect request id"
         );
         assert!(
@@ -287,14 +286,14 @@ pub mod testing {
             .decode(l2_msg)
             .expect("failed to decode base64 tx");
 
-        assert!(l1_incoming_message.l2msg == Bytes::from(l2_msg_bytes_decoded));
+        assert!(l1_incoming_message.l2msg == l2_msg_bytes_decoded);
         assert!(
-            l1_incoming_message.batch_data_stats == None,
+            l1_incoming_message.batch_data_stats.is_none(),
             "Incorrect batch data stats"
         );
 
         assert!(
-            l1_incoming_message.legacy_batch_gas_cost == None,
+            l1_incoming_message.legacy_batch_gas_cost.is_none(),
             "Incorrect legacy batch data cost"
         )
     }
