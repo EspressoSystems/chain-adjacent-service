@@ -254,9 +254,7 @@ pub mod testing {
         for expected_seq in 1..=10 {
             assert!(
                 positions.contains(&expected_seq),
-                "expected parsed sequence number {} to be present, got {:?}",
-                expected_seq,
-                positions
+                "expected parsed sequence number {expected_seq} to be present, got {positions:?}"
             );
         }
 
@@ -264,8 +262,7 @@ pub mod testing {
         for window in positions.windows(2) {
             assert!(
                 window[0] < window[1],
-                "expected strictly ascending sequence numbers, got {:?}",
-                positions
+                "expected strictly ascending sequence numbers, got {positions:?}"
             );
         }
 
