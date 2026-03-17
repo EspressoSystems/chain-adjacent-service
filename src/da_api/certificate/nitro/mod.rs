@@ -15,7 +15,7 @@
 
 use crate::da_api::{
     error::{DaApiError, DaApiResult},
-    nitro::types::StoreResponse,
+    nitro::types::DAStoreResponse,
 };
 use alloy::primitives::Keccak256;
 use serde::{Deserialize, Serialize};
@@ -66,10 +66,10 @@ pub struct CasCertificate {
     pub downstream_certificate: Vec<u8>,
 }
 
-impl TryFrom<StoreResponse> for CasCertificate {
+impl TryFrom<DAStoreResponse> for CasCertificate {
     type Error = DaApiError;
 
-    fn try_from(value: StoreResponse) -> Result<Self, Self::Error> {
+    fn try_from(value: DAStoreResponse) -> Result<Self, Self::Error> {
         CasCertificate::from_bytes(&value.serialized_da_certificate.to_vec())
     }
 }

@@ -9,10 +9,7 @@ use crate::da_api::{
     error::DaApiError,
     nitro::{
         types::{
-            GenerateCertificateValidityProofResponse, GenerateReadPreimageProofResponse,
-            JsonRpcResponse, MaxMessageSizeResult, PreImagesResult,
-            RecoverPayloadAndPreimagesResult, RecoverPayloadResult, StoreResponse,
-            SupportedHeaderBytesResult,
+            DAStoreResponse, GenerateCertificateValidityProofResponse, GenerateReadPreimageProofResponse, JsonRpcResponse, MaxMessageSizeResult, PreImagesResult, RecoverPayloadAndPreimagesResult, RecoverPayloadResult, SupportedHeaderBytesResult
         },
         utils::extract_da_sequencer_msg_from_espresso_da_certificate,
     },
@@ -63,7 +60,7 @@ pub trait DaApi: Send + Sync {
     async fn get_max_message_size(&self) -> RpcResult<MaxMessageSizeResult>;
 
     #[method(name = "store")]
-    async fn store(&self, message: Bytes, timeout: U64) -> RpcResult<StoreResponse>;
+    async fn store(&self, message: Bytes, timeout: U64) -> RpcResult<DAStoreResponse>;
 
     #[method(name = "generateReadPreimageProof")]
     async fn generate_read_preimage_proof(
@@ -359,7 +356,7 @@ impl DaApiServer for NitroDaServer {
         }
     }
 
-    async fn store(&self, message: Bytes, timeout: U64) -> RpcResult<StoreResponse> {
+    async fn store(&self, message: Bytes, timeout: U64) -> RpcResult<DAStoreResponse> {
         // run CAS verification on the message
         // call DA provider store endpoint with the message and timeout
         // get certificate from DA provider...check for returned errros and handle current da provider accordingly
@@ -398,7 +395,7 @@ impl DaApiServer for NitroDaServer {
             .send()
             .await
             .map_err(|err| ErrorObjectOwned::from(DaApiError::Rpc(err.to_string())))?
-            .json::<JsonRpcResponse<StoreResponse>>()
+            .json::<JsonRpcResponse<DAStoreResponse>>()
             .await
             .map_err(|err| ErrorObjectOwned::from(DaApiError::ParsingError(err.to_string())))?;
 
@@ -415,7 +412,7 @@ impl DaApiServer for NitroDaServer {
                 //reset to primary DA provider after a successful store
                 self.current_da_provider.store(0, Ordering::Relaxed);
 
-                StoreResponse::try_from(final_certificate).map_err(Into::into)
+                DAStoreResponse::try_from(final_certificate).map_err(Into::into)
             }
             JsonRpcResponse::Error { error } => {
                 let error_code = error.code;
@@ -578,7 +575,7 @@ mod tests {
         RollupType,
         certificate::nitro::CasCertificate,
         config::{DaApiConfig, DaProviderConfig},
-        nitro::types::{RecoverPayloadResult, StoreResponse},
+        nitro::types::{RecoverPayloadResult, DAStoreResponse},
         run,
     };
 
@@ -690,7 +687,7 @@ mod tests {
             .build(format!("http://{}", addr))
             .unwrap();
 
-        let response: Result<StoreResponse, _> = client
+        let response: Result<DAStoreResponse, _> = client
             .request("daprovider_store", rpc_params![valid_message(), 5000u64])
             .await;
 
@@ -726,7 +723,7 @@ mod tests {
             .build(format!("http://{}", addr))
             .unwrap();
 
-        let response: Result<StoreResponse, _> = client
+        let response: Result<DAStoreResponse, _> = client
             .request("daprovider_store", rpc_params![valid_message(), 5000u64])
             .await;
 
@@ -762,7 +759,7 @@ mod tests {
             .build(format!("http://{}", addr))
             .unwrap();
 
-        let response: Result<StoreResponse, _> = client
+        let response: Result<DAStoreResponse, _> = client
             .request("daprovider_store", rpc_params![valid_message(), 5000u64])
             .await;
 
@@ -793,7 +790,7 @@ mod tests {
             .build(format!("http://{}", addr))
             .unwrap();
 
-        let response: Result<StoreResponse, _> = client
+        let response: Result<DAStoreResponse, _> = client
             .request("daprovider_store", rpc_params![valid_message(), 5000u64])
             .await;
 
@@ -855,7 +852,7 @@ mod tests {
 
         // Second call should now hit the fallback provider
         // NOTE: remove ignore once build_and_sign_payload is implemented
-        let second: Result<StoreResponse, _> = client
+        let second: Result<DAStoreResponse, _> = client
             .request("daprovider_store", rpc_params![valid_message(), 5000u64])
             .await;
         assert!(

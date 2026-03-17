@@ -75,15 +75,15 @@ pub struct StoreParameters {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StoreResponse {
+pub struct DAStoreResponse {
     #[serde(rename = "serialized-da-cert")]
     pub serialized_da_certificate: Bytes,
 }
 
-impl TryFrom<CasCertificate> for StoreResponse {
+impl TryFrom<CasCertificate> for DAStoreResponse {
     type Error = DaApiError;
     fn try_from(value: CasCertificate) -> Result<Self, Self::Error> {
-        Ok(StoreResponse {
+        Ok(DAStoreResponse {
             serialized_da_certificate: value.to_bytes()?.into(),
         })
     }

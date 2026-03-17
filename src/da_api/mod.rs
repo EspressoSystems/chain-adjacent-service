@@ -1,6 +1,5 @@
 pub mod certificate;
 pub mod config;
-pub mod da;
 pub mod error;
 pub mod nitro;
 
