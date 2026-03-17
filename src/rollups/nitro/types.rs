@@ -1,4 +1,4 @@
-use alloy::primitives::{Address, FixedBytes, B256, U256};
+use alloy::primitives::{Address, B256, FixedBytes, U256};
 use alloy_rlp::{Decodable, Error, PayloadView, RlpDecodable, RlpEncodable};
 use espresso_types::NamespaceId;
 use serde::{Deserialize, Serialize};
@@ -272,7 +272,7 @@ fn decode_optional_b256_allow_nil_list(buf: &[u8]) -> Result<Option<B256>, Error
 /// doesn't emit decimal numbers as a reason we need this serializer/deserializer.
 mod go_bigint_u56 {
     use alloy::primitives::U256;
-    use serde::{de::Error, Deserialize, Deserializer, Serialize, Serializer};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
 
     pub fn serialize<S: Serializer>(val: &Option<U256>, s: S) -> Result<S::Ok, S::Error> {
         match val {
