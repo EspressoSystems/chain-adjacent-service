@@ -3,7 +3,7 @@ use std::time::Duration;
 use alloy::primitives::Keccak256;
 use base64::Engine as _;
 use espresso_types::Transaction;
-use futures::StreamExt;
+use futures::{StreamExt, TryFutureExt};
 use thiserror::Error;
 use tokio::sync::mpsc;
 use yawc::frame::OpCode;
@@ -69,7 +69,7 @@ pub enum BroadcasterClientError {
     #[error("signature verification failed for seq {seq_num}: {reason}")]
     InvalidSignature { seq_num: u64, reason: String },
     #[error("espresso_submission_channel send error: {0}")]
-    ChannelSendError(#[from] mpsc::error::SendError<Vec<Transaction>>),
+    ChannelSendError(#[from] mpsc::error::SendError<Transaction>),
     #[error("invalid message: {0}")]
     InvalidMessage(String),
 }
@@ -96,7 +96,7 @@ pub struct BroadcasterClient {
     next_seq_num: u64,
     first_reconnect_attempt: bool,
     rollup: Nitro,
-    espresso_submission_channel: mpsc::Sender<Vec<Transaction>>,
+    espresso_submission_channel: mpsc::Sender<Transaction>,
 }
 
 impl BroadcasterClient {
@@ -106,7 +106,7 @@ impl BroadcasterClient {
         chain_id: u64,
         current_message_count: u64,
         rollup: Nitro,
-        espresso_submission_channel: mpsc::Sender<Vec<Transaction>>,
+        espresso_submission_channel: mpsc::Sender<Transaction>,
     ) -> Self {
         Self {
             config,
@@ -273,41 +273,45 @@ impl BroadcasterClient {
             )));
         }
 
-        let feed_server_version = response
-            .headers()
-            .get(HEADER_FEED_CLIENT_VERSION)
-            .ok_or(BroadcasterClientError::MissingFeedServerVersion)
-            .and_then(|value| {
-                value
-                    .to_str()
-                    .map_err(|_| BroadcasterClientError::IncorrectFeedVersion)
-            })
-            .and_then(|s| {
-                s.parse::<u64>()
-                    .map_err(|_| BroadcasterClientError::IncorrectFeedVersion)
-            })?;
+        if self.config.require_feed_server_version {
+            let feed_server_version = response
+                .headers()
+                .get(HEADER_FEED_SERVER_VERSION)
+                .ok_or(BroadcasterClientError::MissingFeedServerVersion)
+                .and_then(|value| {
+                    value
+                        .to_str()
+                        .map_err(|_| BroadcasterClientError::IncorrectFeedVersion)
+                })
+                .and_then(|s| {
+                    s.parse::<u64>()
+                        .map_err(|_| BroadcasterClientError::IncorrectFeedVersion)
+                })?;
 
-        if self.config.require_feed_server_version && feed_server_version != FEED_SERVER_VERSION {
-            return Err(BroadcasterClientError::IncorrectFeedVersion);
+            if feed_server_version != FEED_SERVER_VERSION {
+                return Err(BroadcasterClientError::IncorrectFeedVersion);
+            }
         }
 
-        let chain_id = response
-            .headers()
-            .get(HEADER_CHAIN_ID)
-            .ok_or(BroadcasterClientError::MissingChainId)
-            .and_then(|value| {
-                value
-                    .to_str()
-                    .map_err(|_| BroadcasterClientError::IncorrectChainId)
-            })
-            .and_then(|value| {
-                value
-                    .parse::<u64>()
-                    .map_err(|_| BroadcasterClientError::IncorrectChainId)
-            })?;
+        if self.config.require_chain_id {
+            let chain_id = response
+                .headers()
+                .get(HEADER_CHAIN_ID)
+                .ok_or(BroadcasterClientError::MissingChainId)
+                .and_then(|value| {
+                    value
+                        .to_str()
+                        .map_err(|_| BroadcasterClientError::IncorrectChainId)
+                })
+                .and_then(|value| {
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| BroadcasterClientError::IncorrectChainId)
+                })?;
 
-        if self.config.require_chain_id && chain_id != self.chain_id {
-            return Err(BroadcasterClientError::IncorrectChainId);
+            if chain_id != self.chain_id {
+                return Err(BroadcasterClientError::IncorrectChainId);
+            }
         }
 
         Ok(())
@@ -420,18 +424,21 @@ impl BroadcasterClient {
                     continue;
                 }
             }
-            broadcast_feed_messages.push(message.message.clone());
+            broadcast_feed_messages.push(message.clone());
         }
 
         // Create an espresso transaction from the broadcast messages and add it to the rollup queue
-        let payload = self
+        let espresso_transactions = self
             .rollup
-            .create_espresso_transaction_from_broadcast_feed_messages(broadcast_feed_messages);
+            .create_espresso_transaction_from_broadcast_feed_messages(broadcast_feed_messages)
+            .map_err(|e| BroadcasterClientError::InvalidMessage(e.to_string()))?;
 
-        self.espresso_submission_channel
-            .send(payload)
-            .await
-            .map_err(|e| BroadcasterClientError::ChannelSendError(e))?;
+        for tx in espresso_transactions {
+            self.espresso_submission_channel
+                .send(tx)
+                .await
+                .map_err(|e| BroadcasterClientError::ChannelSendError(e))?;
+        }
 
         for message in &msg.messages {
             if let Some(message) = message {
@@ -505,5 +512,213 @@ impl BroadcasterClient {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+pub mod testing {
+    use std::collections::BTreeMap;
+    use std::time::Duration;
+
+    use espresso_types::{NamespaceId, Transaction};
+    use tokio::sync::mpsc;
+
+    use crate::config::StreamerConfig;
+    use crate::espresso_e2e::espresso_dev_node::EspressoDevNode;
+    use crate::rollups::nitro::{
+        broadcaster_client::{
+            broadcaster_client::{
+                BroadcasterClient, BroadcasterClientConfig, BroadcasterClientError,
+            },
+            message_types::BroadcastMessage,
+        },
+        types::Nitro,
+    };
+    use crate::rollups::rollup::RollupQueueEntry;
+    use crate::streamer::streamer::Streamer;
+    use crate::submitter::submitter::{Submitter, SubmitterConfig, SubmitterError};
+
+    const TEST_NAMESPACE_ID: u64 = 42161;
+
+    fn make_test_nitro_rollup() -> Nitro {
+        Nitro::new(vec![], NamespaceId::from(TEST_NAMESPACE_ID))
+    }
+
+    fn make_test_broadcaster_client() -> (BroadcasterClient, mpsc::Receiver<Transaction>) {
+        let (tx, rx) = mpsc::channel(256);
+        let rollup = make_test_nitro_rollup();
+        let client = BroadcasterClient::new(
+            BroadcasterClientConfig::default(),
+            // TODO: in future, we should modify the tests
+            // to listen to an actual broadcaster server when
+            // the code is ready for that, but for now we just want
+            // to test the message processing logic
+            "ws://localhost:8080".to_string(),
+            TEST_NAMESPACE_ID,
+            0,
+            rollup,
+            tx,
+        );
+        (client, rx)
+    }
+
+    fn load_test_data() -> Vec<BroadcastMessage> {
+        let data = include_str!("../../../espresso_e2e/nitro_broadcast_test_data.json");
+        serde_json::from_str(data).expect("failed to load test data")
+    }
+
+    #[tokio::test]
+    #[ignore] // requires network access to live Arbitrum feed and espresso dev node
+    async fn test_live_arbitrum_feed_e2e() {
+        use futures::StreamExt;
+        use super::{
+            FEED_CLIENT_VERSION, HEADER_FEED_CLIENT_VERSION, HEADER_REQUESTED_SEQ_NUM,
+        };
+        use yawc::frame::OpCode;
+        use yawc::{CompressionLevel, DeflateOptions, HttpRequest, Options, WebSocket};
+
+        const ARB_FEED_URL: &str = "wss://arb1-feed.arbitrum.io/feed";
+        const ARB_CHAIN_ID: u64 = 42161;
+        const NUM_MESSAGES: usize = 5;
+        const READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+        let url: url::Url = ARB_FEED_URL.parse().expect("invalid feed url");
+        let request = HttpRequest::builder()
+            .header(HEADER_FEED_CLIENT_VERSION, FEED_CLIENT_VERSION.to_string())
+            .header(HEADER_REQUESTED_SEQ_NUM, "0");
+
+        let options = Options {
+            compression: Some(DeflateOptions {
+                level: CompressionLevel::best(),
+                server_no_context_takeover: true,
+                client_no_context_takeover: true,
+                ..Default::default()
+            }),
+            no_delay: true,
+            ..Default::default()
+        };
+
+        let mut ws = WebSocket::connect(url)
+            .with_request(request)
+            .with_options(options)
+            .await
+            .expect("failed to connect to Arbitrum feed");
+
+        let (tx, rx) = mpsc::channel(256);
+        let rollup = Nitro::new(vec![], NamespaceId::from(ARB_CHAIN_ID));
+        let mut client = BroadcasterClient::new(
+            BroadcasterClientConfig::default(),
+            ARB_FEED_URL.to_string(),
+            ARB_CHAIN_ID,
+            0,
+            rollup,
+            tx,
+        );
+
+        let mut messages_processed = 0;
+        while messages_processed < NUM_MESSAGES {
+            let frame = tokio::time::timeout(READ_TIMEOUT, ws.next())
+                .await
+                .expect("timeout waiting for feed message")
+                .expect("feed stream ended unexpectedly");
+
+            match frame.opcode() {
+                OpCode::Text | OpCode::Binary => {
+                    let payload = frame.into_payload();
+                    let result = client.process_message(&payload).await;
+                    assert!(
+                        result.is_ok(),
+                        "process_message failed on live feed data: {:?}",
+                        result.err()
+                    );
+                    messages_processed += 1;
+                }
+                _ => continue,
+            }
+        }
+
+        let espresso_node = EspressoDevNode::start().await;
+
+        let submitter_config = SubmitterConfig::default();
+        let mut submitter = Submitter::new(espresso_node.client.clone(), rx, submitter_config);
+
+        tokio::time::sleep(Duration::from_secs(10)).await;
+
+        let mut streamer = Streamer::new(
+            espresso_node.client.clone(),
+            make_test_nitro_rollup(),
+            0,
+            StreamerConfig::default(),
+        );
+
+        streamer.poll_hotshot_blocks(NamespaceId::from(ARB_CHAIN_ID), 1);
+
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        let queue = streamer.queue_entries();
+
+        println!(
+            "processed {} live feed messages, {} entries in streamer queue",
+            messages_processed,
+            queue.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_process_messages() {
+        let (mut client, mut rx) = make_test_broadcaster_client();
+        let broadcast_messages = load_test_data();
+
+        for broadcast_message in &broadcast_messages {
+            let payload =
+                serde_json::to_vec(broadcast_message).expect("failed to serialize test message");
+            let result = client.process_message(&payload).await;
+            assert!(result.is_ok(), "process_message failed: {:?}", result.err());
+        }
+
+        // Start the espresso dev node
+        let espresso_node = EspressoDevNode::start().await;
+
+        let submitter_config = SubmitterConfig::default();
+        let mut submitter = Submitter::new(espresso_node.client.clone(), rx, submitter_config);
+
+        // Wait for 10 seconds to let submitter process the transactions
+        tokio::time::sleep(Duration::from_secs(10)).await;
+
+        // Now we will use the streamer to read from Espresso and compare messages
+        let mut streamer = Streamer::new(
+            espresso_node.client.clone(),
+            make_test_nitro_rollup(),
+            0,
+            StreamerConfig::default(),
+        );
+
+        streamer.poll_hotshot_blocks(NamespaceId::from(TEST_NAMESPACE_ID), 1);
+
+        // Wait for 10 seconds to let streamer process the hotshot blocks
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        let queue = streamer.queue_entries();
+
+        // Now compare the messages in the queue with the original broadcast messages
+        let mut original_messages = BTreeMap::new();
+        for broadcast_message in broadcast_messages {
+            for message in broadcast_message.messages {
+                if let Some(message) = message {
+                    original_messages.insert(message.sequence_number, message.message);
+                }
+            }
+        }
+
+        for entry in queue {
+            let expected_message = original_messages
+                .get(&entry.sequence_number())
+                .expect("message in queue not found in original messages");
+
+            assert_eq!(
+                &entry.message_with_meta,
+                expected_message,
+                "message content does not match for seq_num {}",
+                entry.sequence_number()
+            );
+        }
     }
 }

@@ -1,9 +1,12 @@
 use crate::espresso_client::types::NamespaceTransactionsInRange;
+use crate::rollups::nitro::broadcaster_client::message_types::BroadcastFeedMessage;
 use crate::rollups::nitro::types::BatchMessage;
 use crate::rollups::nitro::types::LastBatchInfo;
 use crate::rollups::nitro::types::LegacyParsedNitroEspressoTransaction;
 use crate::rollups::nitro::types::MessageWithMetadata;
 use crate::rollups::nitro::types::Nitro;
+use crate::rollups::nitro::types::NitroBroadcastMessages;
+use crate::rollups::nitro::types::NitroHeader;
 use crate::rollups::nitro::types::NitroRollupQueueEntry;
 use crate::rollups::nitro::types::VerificationContext;
 use crate::rollups::rollup::Rollup;
@@ -45,51 +48,21 @@ impl Rollup for Nitro {
 
         for namespace_tx in namespace_transactions {
             for tx in namespace_tx.transactions {
-                // Parse the Nitro hotshot payload
-                let Ok(legacy_nitro_message) =
-                    self.legacy_parse_nitro_hotshot_payload(tx.payload())
-                else {
-                    tracing::warn!("failed to parse hotshot payload: {:?}", tx.payload());
-                    continue;
-                };
-
-                //  If signature is invalid, then skip the transaction
-                if !(self.signature_from_known_sequencer(
-                    legacy_nitro_message.messages_hash,
-                    &legacy_nitro_message.signature,
-                )) {
-                    tracing::warn!(
-                        "invalid signature: {:?} on message hash: {:?}",
-                        legacy_nitro_message.signature,
-                        legacy_nitro_message.messages_hash
-                    );
-                    continue;
-                }
-                // Length of indices and messages should be equal
-                if legacy_nitro_message.indices.len() != legacy_nitro_message.messages.len() {
-                    tracing::warn!(
-                        "length mismatch between indices: {} and messages: {}",
-                        legacy_nitro_message.indices.len(),
-                        legacy_nitro_message.messages.len()
-                    );
+                // Try V1 format first
+                if let Ok(broadcast_messages) = self.parse_nitro_hotshot_payload(tx.payload()) {
+                    for message in broadcast_messages {
+                        entries.push(NitroRollupQueueEntry {
+                            message_with_meta: message.message,
+                            pos: message.sequence_number,
+                            hotshot_height,
+                        });
+                    }
                     continue;
                 }
 
-                // Alloy rlp decode message with metadata
-                for (index, msg) in legacy_nitro_message.messages.into_iter().enumerate() {
-                    let Ok(message_with_meta) =
-                        alloy_rlp::decode_exact::<MessageWithMetadata>(&msg)
-                    else {
-                        tracing::warn!("failed to decode message with metadata");
-                        continue;
-                    };
-
-                    entries.push(NitroRollupQueueEntry {
-                        message_with_meta,
-                        pos: legacy_nitro_message.indices[index],
-                        hotshot_height,
-                    });
-                }
+                // Fall back to legacy format
+                entries
+                    .extend(self.legacy_parse_nitro_hotshot_payload(tx.payload(), hotshot_height));
             }
             // There is a namespace transaction for each hotshot height
             // even if there are no transactions
@@ -160,7 +133,11 @@ impl Rollup for Nitro {
 }
 
 impl Nitro {
-    pub fn new(sequencer_addresses: Vec<Address>, namespace_id: NamespaceId, last_batch_info_receiver: mpsc::Receiver<LastBatchInfo>) -> Self {
+    pub fn new(
+        sequencer_addresses: Vec<Address>,
+        namespace_id: NamespaceId,
+        last_batch_info_receiver: mpsc::Receiver<LastBatchInfo>,
+    ) -> Self {
         Self {
             sequencer_addresses,
             namespace_id,
@@ -206,29 +183,72 @@ impl Nitro {
         self.sequencer_addresses.contains(&signer)
     }
 
-    /// It parses Nitro payload using the old parsing method used in golang code
-    /// This code uses batch poster's signature over the combined messages present
-    /// in a given Espresso transaction
+    /// Parses a legacy Nitro hotshot payload (binary format with batch poster signature)
+    /// into queue entries, performing signature verification and RLP decoding.
     fn legacy_parse_nitro_hotshot_payload(
+        &self,
+        tx_payload: &[u8],
+        hotshot_height: u64,
+    ) -> Vec<NitroRollupQueueEntry> {
+        let parsed = match self.parse_legacy_payload_bytes(tx_payload) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("failed to parse legacy hotshot payload: {e}");
+                return Vec::new();
+            }
+        };
+
+        if !self.signature_from_known_sequencer(parsed.messages_hash, &parsed.signature) {
+            tracing::warn!(
+                "invalid signature: {:?} on message hash: {:?}",
+                parsed.signature,
+                parsed.messages_hash
+            );
+            return Vec::new();
+        }
+
+        if parsed.indices.len() != parsed.messages.len() {
+            tracing::warn!(
+                "length mismatch between indices: {} and messages: {}",
+                parsed.indices.len(),
+                parsed.messages.len()
+            );
+            return Vec::new();
+        }
+
+        let mut entries = Vec::new();
+        for (index, msg) in parsed.messages.into_iter().enumerate() {
+            let Ok(message_with_meta) = alloy_rlp::decode_exact::<MessageWithMetadata>(&msg) else {
+                tracing::warn!("failed to decode message with metadata");
+                continue;
+            };
+            entries.push(NitroRollupQueueEntry {
+                message_with_meta,
+                pos: parsed.indices[index],
+                hotshot_height,
+            });
+        }
+        entries
+    }
+
+    /// Low-level binary parsing of the legacy payload format:
+    /// `[signature_len (8b)] [signature] [index (8b)] [message_len (8b)] [message] ...`
+    fn parse_legacy_payload_bytes(
         &self,
         tx_payload: &[u8],
     ) -> Result<LegacyParsedNitroEspressoTransaction> {
         if tx_payload.len() < LEN_SIZE {
             return Err(anyhow::anyhow!("payload too short to parse signature size"));
         }
-        // Get the length of the signature
         let signature_len = u64::from_be_bytes(tx_payload[..LEN_SIZE].try_into()?);
 
         let mut current_pos = LEN_SIZE;
-        // Check that length of the payload is greater than o signature length
         if tx_payload[current_pos..].len() < signature_len as usize {
             return Err(anyhow::anyhow!("payload too short to parse signature"));
         }
-        // extract the signature using the signature length
         let signature = &tx_payload[current_pos..current_pos + signature_len as usize];
         current_pos += signature_len as usize;
 
-        // Take the hash of the remaining payload
         let mut keccak_hasher = Keccak256::new();
         keccak_hasher.update(&tx_payload[current_pos..]);
         let message_data_hash = keccak_hasher.finalize();
@@ -243,18 +263,15 @@ impl Nitro {
             if tx_payload[current_pos..].len() < LEN_SIZE + INDEX_SIZE {
                 return Err(anyhow::Error::msg("payload too short to index size"));
             }
-            // Now we will read the position index of the message
             let index =
                 u64::from_be_bytes(tx_payload[current_pos..current_pos + INDEX_SIZE].try_into()?);
             current_pos += INDEX_SIZE;
-            // After reading the index, ready the message size
             let message_size =
                 u64::from_be_bytes(tx_payload[current_pos..current_pos + LEN_SIZE].try_into()?);
             current_pos += LEN_SIZE;
             if tx_payload[current_pos..].len() < message_size as usize {
                 return Err(anyhow::Error::msg("payload too short to message size"));
             }
-            // Retrieve the message from the payload
             let message = &tx_payload[current_pos..current_pos + message_size as usize];
             current_pos += message_size as usize;
             if message.is_empty() {
@@ -275,18 +292,67 @@ impl Nitro {
     // Creates an Espresso Transaction from an array of MessageWithMetadata
     pub fn create_espresso_transaction_from_broadcast_feed_messages(
         &self,
-        messages: Vec<MessageWithMetadata>,
-    ) -> Vec<Transaction> {
+        messages: Vec<BroadcastFeedMessage>,
+    ) -> Result<Vec<Transaction>> {
         let mut payload = Vec::new();
-        // TODO: add a header maybe?
+        // Add a header indicating NitroHeader V1
+        let header = NitroHeader::V1;
+        let encoded_header = serde_json::to_vec(&header)
+            .map_err(|e| anyhow::anyhow!("failed to encode header into json: {e}"))?;
+        payload.extend_from_slice(&(encoded_header.len() as u64).to_be_bytes());
+        payload.extend_from_slice(&encoded_header);
+
         for msg in messages {
-            // TODO: implement alloy_rlp::Encodable for MessageWithMetadata to use RLP encoding here
-            let encoded_msg = serde_json::to_vec(&msg).unwrap_or_default();
-            // Append the length of the message and the message itself to the payload
+            let encoded_msg = serde_json::to_vec(&msg)
+                .map_err(|e| anyhow::anyhow!("failed to encode msg into json: {e}"))?;
             payload.extend_from_slice(&(encoded_msg.len() as u64).to_be_bytes());
             payload.extend_from_slice(&encoded_msg);
         }
-        return vec![Transaction::new(self.namespace_id, payload)];
+        return Ok(vec![Transaction::new(self.namespace_id, payload)]);
+    }
+
+    // Parses the payload of an Espresso transaction into an array of BroadcastFeedMessage
+    pub fn parse_nitro_hotshot_payload(
+        &self,
+        tx_payload: &[u8],
+    ) -> Result<Vec<BroadcastFeedMessage>> {
+        // Parse the header first
+        // First 8 bytes indicate the length of the header
+        if tx_payload.len() < LEN_SIZE {
+            return Err(anyhow::anyhow!("payload too short to parse header size"));
+        }
+        let header_len = u64::from_be_bytes(tx_payload[..LEN_SIZE].try_into()?);
+        if tx_payload[LEN_SIZE..].len() < header_len as usize {
+            return Err(anyhow::anyhow!("payload too short to parse header"));
+        }
+        let header_bytes = &tx_payload[LEN_SIZE..LEN_SIZE + header_len as usize];
+        let header: NitroHeader = serde_json::from_slice(header_bytes)
+            .map_err(|e| anyhow::anyhow!("failed to parse nitro hotshot header: {e}"))?;
+        if header != NitroHeader::V1 {
+            return Err(anyhow::anyhow!("unsupported nitro hotshot header version"));
+        }
+
+        let mut messages: Vec<BroadcastFeedMessage> = Vec::new();
+        // After the header, we will have multiple messages, each message is prefixed with its length in the next 8 bytes
+        for mut current_pos in (LEN_SIZE + header_len as usize)..tx_payload.len() {
+            if tx_payload[current_pos..].len() < LEN_SIZE {
+                return Err(anyhow::anyhow!("payload too short to parse message size"));
+            }
+            let message_size =
+                u64::from_be_bytes(tx_payload[current_pos..current_pos + LEN_SIZE].try_into()?);
+            current_pos += LEN_SIZE;
+            if tx_payload[current_pos..].len() < message_size as usize {
+                return Err(anyhow::anyhow!("payload too short to parse message"));
+            }
+            let message_bytes = &tx_payload[current_pos..current_pos + message_size as usize];
+            current_pos += message_size as usize;
+            let message: BroadcastFeedMessage = serde_json::from_slice(message_bytes)
+                .map_err(|e| anyhow::anyhow!("failed to parse nitro hotshot message: {e}"))?;
+            // TODO: we need to add message signature check here
+            messages.push(message);
+        }
+
+        Ok(messages)
     }
 }
 

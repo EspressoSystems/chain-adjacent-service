@@ -17,6 +17,18 @@ pub struct SubmitterConfig {
     pub max_finalization_poll_retries: u32,
 }
 
+impl Default for SubmitterConfig {
+    fn default() -> Self {
+        Self {
+            max_in_flight: 4,
+            finalization_wait_ms: 5000, // 5 seconds
+            initial_backoff_ms: 100,    // 100 ms
+            max_backoff_ms: 10000,      // 10 seconds
+            max_finalization_poll_retries: 5,
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum SubmitterError {
     #[error("channel was closed")]
