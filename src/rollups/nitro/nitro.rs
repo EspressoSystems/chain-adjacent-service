@@ -1,13 +1,18 @@
 use crate::espresso_client::types::NamespaceTransactionsInRange;
+use crate::rollups::nitro::types::BatchMessage;
+use crate::rollups::nitro::types::LastBatchInfo;
 use crate::rollups::nitro::types::LegacyParsedNitroEspressoTransaction;
 use crate::rollups::nitro::types::MessageWithMetadata;
 use crate::rollups::nitro::types::Nitro;
 use crate::rollups::nitro::types::NitroRollupQueueEntry;
+use crate::rollups::nitro::types::VerificationContext;
 use crate::rollups::rollup::Rollup;
 use crate::rollups::rollup::RollupQueueEntry;
+use alloy::primitives::Bytes;
 use alloy::primitives::{Address, B256, FixedBytes, Keccak256, Signature};
 use anyhow::Result;
 use std::collections::VecDeque;
+use tokio::sync::mpsc;
 
 const LEN_SIZE: usize = 8;
 const INDEX_SIZE: usize = 8;
@@ -23,6 +28,11 @@ impl RollupQueueEntry for NitroRollupQueueEntry {
 
 impl Rollup for Nitro {
     type Entry = NitroRollupQueueEntry;
+    type BatchMessage = BatchMessage;
+    type VerificationContext = VerificationContext;
+    const PARSE_BATCH_FN: fn(Bytes) -> Result<Vec<BatchMessage>> =
+        super::batch_parsing::parse_batch;
+
     fn parse_hotshot_transactions(
         &self,
         namespace_transactions: Vec<NamespaceTransactionsInRange>,
@@ -91,15 +101,70 @@ impl Rollup for Nitro {
         todo!()
     }
 
-    fn verify_batch(&self) -> bool {
-        todo!()
+    fn verify_batch_messages(
+        &self,
+        batch_messages: &[Self::BatchMessage],
+        streamer_queue: &[Self::Entry],
+        context: &Self::VerificationContext,
+    ) -> bool {
+        if batch_messages.len() > streamer_queue.len() {
+            // the streamer has not enough messages to match the batch messages
+            tracing::warn!(
+                "batch messages length: {} is greater than streamer queue length: {}",
+                batch_messages.len(),
+                streamer_queue.len()
+            );
+            return false;
+        }
+        for (index, msg) in batch_messages.iter().enumerate() {
+            match msg {
+                BatchMessage::L2Msg(content) => {
+                    // Safe here because we have already checked that batch_messages
+                    // length is not greater than streamer_queue length
+                    let entry = &streamer_queue[index];
+                    let Some(msg_bytes) = entry.message_with_meta.message.as_ref() else {
+                        tracing::warn!("message with metadata does not contain a message");
+                        return false;
+                    };
+                    if *content != *msg_bytes.l2msg {
+                        tracing::warn!("message content does not match streamer queue entry");
+                        return false;
+                    }
+                }
+                BatchMessage::DelayedMsg => {
+                    let prev_delayed_message_read = if index == 0 {
+                        context.last_batch_delayed_messages_read
+                    } else {
+                        // Safe here because delayed messages should always be less than batch messages
+                        let prev_entry = &streamer_queue[index - 1];
+                        prev_entry.message_with_meta.delayed_messages_read
+                    };
+
+                    if prev_delayed_message_read + 1
+                        != streamer_queue[index]
+                            .message_with_meta
+                            .delayed_messages_read
+                    {
+                        tracing::warn!(
+                            "delayed messages read count does not match streamer queue entry"
+                        );
+                        return false;
+                    }
+                }
+            }
+        }
+        true
     }
 }
 
 impl Nitro {
-    pub fn new(sequencer_addresses: Vec<Address>) -> Self {
+    pub fn new(
+        sequencer_addresses: Vec<Address>,
+        last_batch_info_receiver: mpsc::Receiver<LastBatchInfo>,
+    ) -> Self {
         Self {
             sequencer_addresses,
+            last_batch_info_receiver,
         }
     }
     /// Checks if the signature on the message hash is valid and
@@ -216,6 +281,183 @@ pub mod testing {
     use base64::Engine;
     use base64::engine::general_purpose;
     use espresso_types::{NamespaceId, Transaction};
+    use tokio::sync::mpsc;
+
+    use alloy::primitives::Bytes as AlloyBytes;
+
+    fn make_entry_with_l2msg(
+        l2msg: &[u8],
+        delayed_messages_read: u64,
+        pos: u64,
+    ) -> NitroRollupQueueEntry {
+        use crate::rollups::nitro::types::L1IncomingMessage;
+        NitroRollupQueueEntry {
+            message_with_meta: MessageWithMetadata {
+                message: Some(L1IncomingMessage {
+                    header: None,
+                    l2msg: AlloyBytes::copy_from_slice(l2msg),
+                    legacy_batch_gas_cost: None,
+                    batch_data_stats: None,
+                }),
+                delayed_messages_read,
+            },
+            pos,
+            hotshot_height: 1,
+        }
+    }
+
+    fn make_entry_no_message(delayed_messages_read: u64, pos: u64) -> NitroRollupQueueEntry {
+        NitroRollupQueueEntry {
+            message_with_meta: MessageWithMetadata {
+                message: None,
+                delayed_messages_read,
+            },
+            pos,
+            hotshot_height: 1,
+        }
+    }
+
+    fn make_nitro() -> Nitro {
+        let (_tx, rx) = mpsc::channel(1);
+        Nitro::new(vec![], rx)
+    }
+
+    #[test]
+    fn test_verify_batch_more_batch_than_streamer() {
+        let nitro = make_nitro();
+        let ctx = VerificationContext {
+            last_batch_delayed_messages_read: 0,
+        };
+        let batch = vec![BatchMessage::DelayedMsg, BatchMessage::DelayedMsg];
+        let queue = vec![make_entry_no_message(1, 0)];
+        assert!(!nitro.verify_batch_messages(&batch, &queue, &ctx));
+    }
+
+    #[test]
+    fn test_verify_batch_l2msg_match() {
+        let nitro = make_nitro();
+        let ctx = VerificationContext {
+            last_batch_delayed_messages_read: 0,
+        };
+        let content = b"hello world";
+        let batch = vec![BatchMessage::L2Msg(AlloyBytes::copy_from_slice(content))];
+        let queue = vec![make_entry_with_l2msg(content, 0, 0)];
+        assert!(nitro.verify_batch_messages(&batch, &queue, &ctx));
+    }
+
+    #[test]
+    fn test_verify_batch_l2msg_mismatch() {
+        let nitro = make_nitro();
+        let ctx = VerificationContext {
+            last_batch_delayed_messages_read: 0,
+        };
+        let batch = vec![BatchMessage::L2Msg(AlloyBytes::copy_from_slice(b"hello"))];
+        let queue = vec![make_entry_with_l2msg(b"world", 0, 0)];
+        assert!(!nitro.verify_batch_messages(&batch, &queue, &ctx));
+    }
+
+    #[test]
+    fn test_verify_batch_l2msg_none_message() {
+        let nitro = make_nitro();
+        let ctx = VerificationContext {
+            last_batch_delayed_messages_read: 0,
+        };
+        let batch = vec![BatchMessage::L2Msg(AlloyBytes::copy_from_slice(b"hello"))];
+        let queue = vec![make_entry_no_message(0, 0)];
+        assert!(!nitro.verify_batch_messages(&batch, &queue, &ctx));
+    }
+
+    #[test]
+    fn test_verify_batch_delayed_msg_first_entry_valid() {
+        let nitro = make_nitro();
+        let ctx = VerificationContext {
+            last_batch_delayed_messages_read: 5,
+        };
+        let batch = vec![BatchMessage::DelayedMsg];
+        let queue = vec![make_entry_no_message(6, 0)];
+        assert!(nitro.verify_batch_messages(&batch, &queue, &ctx));
+    }
+
+    #[test]
+    fn test_verify_batch_delayed_msg_first_entry_invalid() {
+        let nitro = make_nitro();
+        let ctx = VerificationContext {
+            last_batch_delayed_messages_read: 5,
+        };
+        let batch = vec![BatchMessage::DelayedMsg];
+        // delayed_messages_read should be 6 (5+1), but it's 7
+        let queue = vec![make_entry_no_message(7, 0)];
+        assert!(!nitro.verify_batch_messages(&batch, &queue, &ctx));
+    }
+
+    #[test]
+    fn test_verify_batch_delayed_msg_subsequent_entry_valid() {
+        let nitro = make_nitro();
+        let ctx = VerificationContext {
+            last_batch_delayed_messages_read: 0,
+        };
+        let batch = vec![
+            BatchMessage::L2Msg(AlloyBytes::copy_from_slice(b"tx1")),
+            BatchMessage::DelayedMsg,
+        ];
+        let queue = vec![
+            make_entry_with_l2msg(b"tx1", 10, 0),
+            make_entry_no_message(11, 1),
+        ];
+        assert!(nitro.verify_batch_messages(&batch, &queue, &ctx));
+    }
+
+    #[test]
+    fn test_verify_batch_delayed_msg_subsequent_entry_invalid() {
+        let nitro = make_nitro();
+        let ctx = VerificationContext {
+            last_batch_delayed_messages_read: 0,
+        };
+        let batch = vec![
+            BatchMessage::L2Msg(AlloyBytes::copy_from_slice(b"tx1")),
+            BatchMessage::DelayedMsg,
+        ];
+        let queue = vec![
+            make_entry_with_l2msg(b"tx1", 10, 0),
+            // Should be 11 (10+1), but it's 13
+            make_entry_no_message(13, 1),
+        ];
+        assert!(!nitro.verify_batch_messages(&batch, &queue, &ctx));
+    }
+
+    #[test]
+    fn test_verify_batch_mixed_messages() {
+        let nitro = make_nitro();
+        let ctx = VerificationContext {
+            last_batch_delayed_messages_read: 5,
+        };
+        let batch = vec![
+            BatchMessage::DelayedMsg,
+            BatchMessage::L2Msg(AlloyBytes::copy_from_slice(b"data")),
+            BatchMessage::DelayedMsg,
+        ];
+        let queue = vec![
+            make_entry_no_message(6, 0),
+            make_entry_with_l2msg(b"data", 6, 1),
+            make_entry_no_message(7, 2),
+        ];
+        assert!(nitro.verify_batch_messages(&batch, &queue, &ctx));
+    }
+
+    #[test]
+    fn test_verify_batch_streamer_has_extra_entries() {
+        let nitro = make_nitro();
+        let ctx = VerificationContext {
+            last_batch_delayed_messages_read: 0,
+        };
+        let batch = vec![BatchMessage::L2Msg(AlloyBytes::copy_from_slice(b"tx"))];
+        let queue = vec![
+            make_entry_with_l2msg(b"tx", 0, 0),
+            make_entry_with_l2msg(b"extra", 0, 1),
+        ];
+        // batch has fewer entries than queue - should still pass
+        assert!(nitro.verify_batch_messages(&batch, &queue, &ctx));
+    }
 
     #[test]
     fn test_parse_message_with_legacy_message() {
@@ -228,7 +470,8 @@ pub mod testing {
             .expect("failed to decode base64 tx");
         let sequencer_address = Address::from_str("0x91B62241cCec21Cebb3AbD24599855c009864e1E")
             .expect("failed to parse sequencer address");
-        let nitro = Nitro::new(vec![sequencer_address]);
+        let (_tx, rx) = mpsc::channel(1);
+        let nitro = Nitro::new(vec![sequencer_address], rx);
         let namespace_transactions_in_range = NamespaceTransactionsInRange {
             transactions: vec![Transaction::new(namespace_id, tx_bytes)],
             proof: None,
