@@ -2,6 +2,7 @@ use alloy::primitives::{Address, B256, Bytes, FixedBytes, U256};
 use alloy_rlp::{Decodable, Error, PayloadView, RlpDecodable, RlpEncodable};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct MessageWithMetadata {
@@ -9,6 +10,18 @@ pub struct MessageWithMetadata {
     pub message: Option<L1IncomingMessage>,
     #[serde(rename = "delayedMessagesRead")]
     pub delayed_messages_read: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BatchMessage {
+    L2Msg(Bytes),
+    DelayedMsg,
+}
+
+pub struct VerificationContext {
+    // Should be read from L1 on startup and cached in memory,
+    // updated when new batches are read from L1.
+    pub last_batch_delayed_messages_read: u64,
 }
 
 impl Decodable for MessageWithMetadata {
@@ -162,9 +175,18 @@ pub struct NitroRollupQueueEntry {
     pub hotshot_height: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy)]
+pub struct LastBatchInfo {
+    pub delayed_messages_read: u64,
+    pub last_message_pos: u64,
+    pub hotshot_height: u64,
+}
+
+#[derive(Debug)]
 pub struct Nitro {
     pub sequencer_addresses: Vec<Address>,
+
+    pub last_batch_info_receiver: mpsc::Receiver<LastBatchInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

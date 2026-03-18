@@ -34,6 +34,7 @@ serde_json = "1.0.145"
 thiserror = "2.0.18"
 jsonrpsee = {version="0.26.0", features = ["macros", "http-client", "async-client", "server","jsonrpsee-core"] }
 async-trait = "0.1.89"
+brotli = "7"
 
 [dev-dependencies]
 wiremock = "0.6.5"

@@ -22,9 +22,20 @@ impl RollupQueueEntry for MockEntry {
 }
 
 pub struct MockRollup;
+pub struct MockVerificationContext;
+pub struct MockBatchMessage;
+
+fn mock_parse_batch(_: alloy::primitives::Bytes) -> anyhow::Result<Vec<MockBatchMessage>> {
+    Ok(vec![])
+}
 
 impl Rollup for MockRollup {
     type Entry = MockEntry;
+    type BatchMessage = MockBatchMessage;
+    type VerificationContext = MockVerificationContext;
+    const PARSE_BATCH_FN: fn(alloy::primitives::Bytes) -> anyhow::Result<Vec<MockBatchMessage>> =
+        mock_parse_batch;
+
     fn parse_hotshot_transactions(
         &self,
         entries: Vec<NamespaceTransactionsInRange>,
@@ -56,7 +67,12 @@ impl Rollup for MockRollup {
         todo!()
     }
 
-    fn verify_batch(&self) -> bool {
+    fn verify_batch_messages(
+        &self,
+        _batch_messages: &[Self::BatchMessage],
+        _streamer_queue: &[Self::Entry],
+        _context: &Self::VerificationContext,
+    ) -> bool {
         todo!()
     }
 }
