@@ -33,6 +33,9 @@ pub enum DaApiError {
     #[error("certificate validation failed: unsupported DA type {0:#x}")]
     UnsupportedDaType(Bytes),
 
+    #[error("failed to decode input data: {0}")]
+    DecoderError(String),
+
     // Infrastructure errors - these stop syncing
     #[error("downstream DA error: {0}")]
     DownstreamDa(String),

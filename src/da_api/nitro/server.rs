@@ -155,7 +155,6 @@ impl DaApiServer for NitroDaServer {
         if sequencer_msg.len() <= 40 {
             return Err(DaApiError::InvalidSequencerMessageLength(40, sequencer_msg.len()).into());
         }
-
         let da_endpoint = self
             .router
             .get(&self.current_da_provider.load(Ordering::Relaxed))
@@ -399,6 +398,7 @@ impl DaApiServer for NitroDaServer {
                     &batch_data,
                     &result.serialized_da_certificate.clone(),
                 )?;
+
                 //reset to primary DA provider after a successful store
                 self.current_da_provider.store(0, Ordering::Relaxed);
 
@@ -625,10 +625,8 @@ mod tests {
             .build(format!("http://{addr}"))
             .unwrap();
 
-        // sequencer_msg: 40 bytes padding + header byte 0x80 + certificate bytes
-        let mut sequencer_msg = vec![0u8; 40];
-        sequencer_msg.push(0x05); // header byte matching da_providers config
-        sequencer_msg.extend_from_slice(b"0x200100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d6f4495acb1e8e0c5583a2357178fffd13f0cec5b216542b40027999633d72f000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1b740050eab36712d4b0f427ba6c02c9b55561fadf70a6a9cb8d1c5f801ad48f6d5b70695d5b2bf4f89cc393fdddc152fa30c2011592f27a3680eaddbf23d25455");
+        // sequencer_msg: 40 bytes padding + certificate bytes
+        let sequencer_msg = Bytes::from_str("0x000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d6f4495acb1e8e0c5583a2357178fffd13f0cec5b216542b40027999633d72f000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1bc5981b980a01a85bb7c5299545170e1126a6a84b1c9e83719562fbe022d24ae126266b22c4717b69f9b4771a8b0c1d28681ddd0582a55b9fd76286be70cf54dc").unwrap();
 
         let response: Result<RecoverPayloadResult, _> = client
             .request(
@@ -642,6 +640,7 @@ mod tests {
             .await;
 
         assert!(response.is_ok());
+        assert_eq!(response.unwrap().payload,"0x3e5aa08200000000000000000000000000000000000000000000000000000000001249c4000000000000000000000000000000000000000000000000000000000024370b000000000000000000000000e64a54e2533fd126c2e452c5fab544d80e2e4eb50000000000000000000000000000000000000000000000000000000018eab6750000000000000000000000000000000000000000000000000000000018eab845".to_string());
     }
 
     #[tokio::test]

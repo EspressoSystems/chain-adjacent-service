@@ -125,8 +125,7 @@ async fn test_nitro_reference_da_store_and_recover(my_addr: String) {
         .as_str()
         .unwrap();
 
-    let mut sequencer_msg = vec![0u8; 41];
-    sequencer_msg[40] = 0x01;
+    let mut sequencer_msg = vec![0u8; 40];
     sequencer_msg.extend_from_slice(&Bytes::from_str(espresso_da_cert).unwrap());
 
     let recover_payload: Result<Value, _> = client
