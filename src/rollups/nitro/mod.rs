@@ -1,5 +1,5 @@
 mod batch_parsing;
-pub mod broadcaster_client;
+pub mod broadcast;
 mod decompress;
 pub mod nitro;
 pub mod types;

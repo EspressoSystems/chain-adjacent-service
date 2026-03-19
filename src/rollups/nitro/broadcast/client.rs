@@ -11,7 +11,7 @@ use yawc::{
     CompressionLevel, DeflateOptions, HttpRequest, Options, TcpWebSocket, WebSocket, WebSocketError,
 };
 
-use super::message_types::{BroadcastFeedMessage, BroadcastMessage};
+use super::message::{BroadcastFeedMessage, BroadcastMessage};
 use crate::rollups::nitro::types::Nitro;
 use crate::utils::exponential_backoff;
 
@@ -526,11 +526,11 @@ pub mod testing {
     use crate::config::StreamerConfig;
     use crate::espresso_e2e::espresso_dev_node::EspressoDevNode;
     use crate::rollups::nitro::{
-        broadcaster_client::{
-            broadcaster_client::{
+        broadcast::{
+            client::{
                 BroadcasterClient, BroadcasterClientConfig, BroadcasterClientError,
             },
-            message_types::BroadcastMessage,
+            message::BroadcastMessage,
         },
         types::Nitro,
     };
@@ -571,7 +571,7 @@ pub mod testing {
     #[tokio::test]
     #[ignore] // requires network access to live Arbitrum feed and espresso dev node
     async fn test_live_arbitrum_feed_e2e() {
-        use super::{FEED_CLIENT_VERSION, HEADER_FEED_CLIENT_VERSION, HEADER_REQUESTED_SEQ_NUM};
+        use client::{FEED_CLIENT_VERSION, HEADER_FEED_CLIENT_VERSION, HEADER_REQUESTED_SEQ_NUM};
         use futures::StreamExt;
         use yawc::frame::OpCode;
         use yawc::{CompressionLevel, DeflateOptions, HttpRequest, Options, WebSocket};
