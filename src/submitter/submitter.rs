@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -38,43 +39,79 @@ pub enum SubmitterError {
 }
 
 /// Submitter is responsible for submitting transactions to Espresso
-/// by reading transactions from `unsubmitted_txs` mpsc channel.
+/// by reading messages from `unsubmitted_msgs` mpsc channel and converting
+/// them into transactions via `tx_ctor`.
 /// After submitting a transaction, it checks for its finalization status.
 /// before submitting the next transaction.
-pub struct Submitter {
+pub struct Submitter<M, F>
+where
+    F: Fn(Vec<M>) -> Vec<Transaction> + 'static,
+{
     client: EspressoClient,
-    unsubmitted_txs: mpsc::Receiver<Transaction>,
+    unsubmitted_txs: VecDeque<Transaction>,
+    unsubmitted_msgs: mpsc::Receiver<M>,
     config: SubmitterConfig,
     pub(crate) sem: Arc<Semaphore>,
+
+    tx_ctor: F,
 }
 
-impl Submitter {
+impl<M, F> Submitter<M, F>
+where
+    F: Fn(Vec<M>) -> Vec<Transaction> + 'static,
+{
     pub fn new(
         client: EspressoClient,
-        channel: mpsc::Receiver<Transaction>,
+        channel: mpsc::Receiver<M>,
         config: SubmitterConfig,
+        tx_ctor: F,
     ) -> Self {
         let sem = Arc::new(Semaphore::new(config.max_in_flight));
         Self {
             client,
-            unsubmitted_txs: channel,
+            unsubmitted_msgs: channel,
+            unsubmitted_txs: VecDeque::new(),
             config,
             sem,
+            tx_ctor,
         }
     }
-    /// Submit transactions first reads transactions from the `unsubmitted_txs` channel.
+    /// Submit transactions first reads messages from the `unsubmitted_msgs` channel,
+    /// converts them into transactions, and stores them in `unsubmitted_txs`.
     ///
     /// Then it acquires a permit from the semaphore, blocking if all max_in_flight is hit.
     ///
     /// Finally, it submits the transaction to Espresso and checks the finalization of the transaction.
     pub async fn submit_transactions(&mut self) -> Result<(), SubmitterError> {
         loop {
-            // First try to fetch a transaction from the channel
-            let tx = self
-                .unsubmitted_txs
-                .recv()
-                .await
-                .ok_or(SubmitterError::ChannelClosed)?;
+            let mut pending_msgs = Vec::new();
+
+            if self.unsubmitted_txs.is_empty() {
+                let first_msg = self
+                    .unsubmitted_msgs
+                    .recv()
+                    .await
+                    .ok_or(SubmitterError::ChannelClosed)?;
+                pending_msgs.push(first_msg);
+            }
+
+            while let Ok(msg) = self.unsubmitted_msgs.try_recv() {
+                pending_msgs.push(msg);
+            }
+
+            if !pending_msgs.is_empty() {
+                let txs = (self.tx_ctor)(pending_msgs);
+                if txs.is_empty() {
+                    tracing::warn!("tx_ctor produced no transactions, skipping message batch");
+                } else {
+                    self.unsubmitted_txs.extend(txs);
+                }
+            }
+
+            let Some(tx) = self.unsubmitted_txs.pop_front() else {
+                continue;
+            };
+
             // Acquire a permit from semaphore, block if all max_in_flight is hit
             let permit = self
                 .sem
@@ -174,7 +211,12 @@ pub mod testing {
         };
         // Max 256 transactions at a time in the channel
         let (sender, reciever) = mpsc::channel(256);
-        let mut submitter = Submitter::new(espresso_node.client.clone(), reciever, config);
+        let mut submitter = Submitter::new(
+            espresso_node.client.clone(),
+            reciever,
+            config,
+            |txs: Vec<espresso_types::Transaction>| txs,
+        );
         let sem = submitter.sem.clone();
 
         // Spawn a task to send 20 transactions at ~20 tx/sec

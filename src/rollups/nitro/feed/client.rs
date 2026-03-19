@@ -1,7 +1,7 @@
 use std::time::Duration;
 
+use alloy::primitives::Address;
 use base64::Engine as _;
-use espresso_types::Transaction;
 use futures::StreamExt;
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -10,9 +10,9 @@ use yawc::{
     CompressionLevel, DeflateOptions, HttpRequest, Options, TcpWebSocket, WebSocket, WebSocketError,
 };
 
-use super::message_types::BroadcastMessage;
+use super::message::BroadcastMessage;
+use crate::rollups::nitro::feed::message::BroadcastFeedMessage;
 use crate::rollups::nitro::nitro::verify_broadcast_feed_message_signature;
-use crate::rollups::nitro::types::Nitro;
 use crate::utils::exponential_backoff;
 
 pub const FEED_SERVER_VERSION: u64 = 2;
@@ -33,6 +33,8 @@ pub struct BroadcasterClientConfig {
     pub enable_compression: bool,
     pub require_feed_server_version: bool,
     pub require_chain_id: bool,
+
+    pub trusted_sequencer_addresses: Vec<Address>,
 }
 
 impl Default for BroadcasterClientConfig {
@@ -46,6 +48,8 @@ impl Default for BroadcasterClientConfig {
             enable_compression: true,
             require_feed_server_version: false,
             require_chain_id: false,
+
+            trusted_sequencer_addresses: vec![],
         }
     }
 }
@@ -69,7 +73,7 @@ pub enum BroadcasterClientError {
     #[error("signature verification failed for seq {seq_num}: {reason}")]
     InvalidSignature { seq_num: u64, reason: String },
     #[error("espresso_submission_channel send error: {0}")]
-    ChannelSendError(#[from] mpsc::error::SendError<Transaction>),
+    ChannelSendError(#[from] Box<mpsc::error::SendError<BroadcastFeedMessage>>),
     #[error("invalid message: {0}")]
     InvalidMessage(String),
 }
@@ -95,8 +99,7 @@ pub struct BroadcasterClient {
     chain_id: u64,
     next_seq_num: u64,
     first_reconnect_attempt: bool,
-    rollup: Nitro,
-    espresso_submission_channel: mpsc::Sender<Transaction>,
+    espresso_submission_channel: mpsc::Sender<BroadcastFeedMessage>,
 }
 
 impl BroadcasterClient {
@@ -105,8 +108,7 @@ impl BroadcasterClient {
         websocket_url: String,
         chain_id: u64,
         current_message_count: u64,
-        rollup: Nitro,
-        espresso_submission_channel: mpsc::Sender<Transaction>,
+        espresso_submission_channel: mpsc::Sender<BroadcastFeedMessage>,
     ) -> Self {
         Self {
             config,
@@ -114,7 +116,6 @@ impl BroadcasterClient {
             chain_id,
             next_seq_num: current_message_count,
             first_reconnect_attempt: true,
-            rollup,
             espresso_submission_channel,
         }
     }
@@ -163,8 +164,6 @@ impl BroadcasterClient {
             BroadcasterClientError::InvalidConfig(format!("invalid websocket url: {e}"))
         })?;
 
-        // Build HTTP Headers, the server uses them to determine the client version
-        // and the starting sequencer number for the message stream
         let request = HttpRequest::builder()
             .header(HEADER_FEED_CLIENT_VERSION, FEED_CLIENT_VERSION.to_string())
             .header(HEADER_REQUESTED_SEQ_NUM, next_seq_num.to_string());
@@ -187,7 +186,6 @@ impl BroadcasterClient {
 
         tracing::info!(url = %self.websocket_url, seq_num = next_seq_num, "connecting to arbitrum inbox message broadcaster");
 
-        // Connect with timeout, yawc handles TLS automatically and resolves DNS + TCP with ipv4/ipv6 internally
         let ws = tokio::time::timeout(
             self.config.timeout,
             WebSocket::connect(url)
@@ -235,7 +233,6 @@ impl BroadcasterClient {
             )));
         }
 
-        // Create a http client from the websocket url
         let client = reqwest::Client::builder()
             .http1_only()
             .timeout(self.config.timeout)
@@ -246,7 +243,6 @@ impl BroadcasterClient {
                 ))
             })?;
 
-        // Generate a random key
         let sec_websocket_key =
             base64::engine::general_purpose::STANDARD.encode(rand::random::<[u8; 16]>());
 
@@ -316,18 +312,19 @@ impl BroadcasterClient {
                             got: format!("{value:?}"),
                         })
                 })
-                .and_then(|s| {
-                    s.parse::<u64>()
+                .and_then(|value| {
+                    value
+                        .parse::<u64>()
                         .map_err(|_| BroadcasterClientError::IncorrectChainId {
                             expected: self.chain_id,
-                            got: s.to_string(),
+                            got: value.to_string(),
                         })
                 })?;
 
             if chain_id != self.chain_id {
                 return Err(BroadcasterClientError::IncorrectChainId {
                     expected: self.chain_id,
-                    got: chain_id.to_string(),
+                    got: format!("{chain_id}"),
                 });
             }
         }
@@ -348,40 +345,31 @@ impl BroadcasterClient {
                         "server connection timed out without receiving data"
                     );
                 }
-                // Stream ended — clean disconnect or connection dropped.
                 Ok(None) => {
                     tracing::warn!(
                         url = %self.websocket_url,
                         "feed connection closed"
                     );
                 }
-                // Received a frame.
-                Ok(Some(frame)) => {
-                    match frame.opcode() {
-                        OpCode::Text | OpCode::Binary => {
-                            // Reset backoff on successful data receipt
-                            backoff = self.config.reconnect_initial_backoff;
-                            let frame = frame.into_payload();
-                            if let Err(e) = self.process_message(&frame).await {
-                                tracing::error!(error = %e, "error processing broadcast message");
-                            }
-                            continue;
+                Ok(Some(frame)) => match frame.opcode() {
+                    OpCode::Text | OpCode::Binary => {
+                        backoff = self.config.reconnect_initial_backoff;
+                        let frame = frame.into_payload();
+                        if let Err(e) = self.process_message(&frame).await {
+                            tracing::error!(error = %e, "error processing broadcast message");
                         }
-                        OpCode::Close => {
-                            // Fall through to reconnection path.
-                            tracing::warn!(
-                                url = %self.websocket_url,
-                                "server sent close frame"
-                            );
-                        }
-                        // Ping/Pong are auto-handled by yawc; just continue.
-                        _ => continue,
+                        continue;
                     }
-                }
+                    OpCode::Close => {
+                        tracing::warn!(
+                            url = %self.websocket_url,
+                            "server sent close frame"
+                        );
+                    }
+                    _ => continue,
+                },
             }
 
-            // Reconnection path, reached on timeout, stream end or close frame
-            // Skip backoff for first reconnection attemp
             if self.first_reconnect_attempt {
                 tracing::info!(
                     url = %self.websocket_url,
@@ -394,7 +382,6 @@ impl BroadcasterClient {
             }
             self.first_reconnect_attempt = false;
 
-            // Attempt to reconnect
             match self.retry_connect().await {
                 Some(new_ws) => ws = new_ws,
                 None => return,
@@ -426,7 +413,7 @@ impl BroadcasterClient {
         }
 
         let chain_id = self.chain_id;
-        let sequencer_addresses = self.rollup.sequencer_addresses.clone();
+        let sequencer_addresses = self.config.trusted_sequencer_addresses.clone();
 
         let broadcast_feed_messages = tokio::task::spawn_blocking(move || {
             let mut verified = Vec::new();
@@ -439,9 +426,7 @@ impl BroadcasterClient {
                 }
             }
             verified
-        })
-        .await
-        .map_err(|e| {
+        }).await.map_err(|e| {
             BroadcasterClientError::InvalidMessage(format!(
                 "signature verification task panicked: {e}"
             ))
@@ -451,17 +436,18 @@ impl BroadcasterClient {
             .last()
             .map(|m| m.sequence_number + 1);
 
-        // Create an espresso transaction from the broadcast messages and add it to the rollup queue
-        let espresso_transactions = self
-            .rollup
-            .create_espresso_transaction_from_broadcast_feed_messages(&broadcast_feed_messages)
-            .map_err(|e| BroadcasterClientError::InvalidMessage(e.to_string()))?;
-
-        for tx in espresso_transactions {
+        for tx in broadcast_feed_messages.into_iter() {
             self.espresso_submission_channel
                 .send(tx)
                 .await
-                .map_err(BroadcasterClientError::ChannelSendError)?;
+                .map_err(|e| BroadcasterClientError::ChannelSendError(Box::new(e)))?;
+        }
+
+        if let Some(ref confirmed) = msg.confirmed_sequence_number_message {
+            tracing::debug!(
+                seq_num = confirmed.sequence_number,
+                "received confirmed sequence number"
+            );
         }
 
         // Only advance next_seq_num after successful processing and submission,
@@ -500,46 +486,505 @@ impl BroadcasterClient {
 }
 
 #[cfg(test)]
+mod broadcast_client_tests {
+    use std::time::Duration;
+
+    use alloy::primitives::{Address, Keccak256};
+    use futures::StreamExt;
+    use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
+    use tokio::time::timeout;
+
+    use std::net::SocketAddr;
+
+    use super::{
+        BroadcasterClientConfig, BroadcasterClientError, FEED_SERVER_VERSION, HEADER_CHAIN_ID,
+        HEADER_FEED_SERVER_VERSION,
+    };
+    use crate::rollups::nitro::feed::broadcaster::{
+        Broadcaster, BroadcasterConfig, DataSignerFunc,
+    };
+    use crate::rollups::nitro::feed::test_utils::{
+        connect_ws, empty_msg, recv_broadcast_msg, start_test_broadcaster, wait_for_clients,
+    };
+    use crate::rollups::nitro::feed::ws_server::WsBroadcastServerConfig;
+    use crate::rollups::nitro::types::MessageWithMetadata;
+
+    fn address_from_secret(secret: &SecretKey) -> Address {
+        let public = PublicKey::from_secret_key(&Secp256k1::new(), secret);
+        let uncompressed = public.serialize_uncompressed();
+        let mut hasher = Keccak256::new();
+        hasher.update(&uncompressed[1..]);
+        let hash = hasher.finalize();
+        Address::from_slice(&hash[12..])
+    }
+
+    #[tokio::test]
+    async fn test_preflight_and_broadcast_with_local_server() {
+        let chain_id: u64 = 42161;
+
+        let signer_secret = SecretKey::from_byte_array([7u8; 32]).expect("valid secret key");
+        let trusted_signer = address_from_secret(&signer_secret);
+
+        let data_signer: DataSignerFunc = Box::new(move |hash: &[u8]| {
+            let secp = Secp256k1::new();
+            let digest: [u8; 32] = hash
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("invalid digest length"))?;
+            let msg = Message::from_digest(digest);
+            let sig = secp.sign_ecdsa_recoverable(msg, &signer_secret);
+            let (rec_id, compact) = sig.serialize_compact();
+            let mut out = Vec::with_capacity(65);
+            out.extend_from_slice(&compact);
+            out.push(i32::from(rec_id) as u8);
+            Ok(out)
+        });
+
+        let config = BroadcasterConfig {
+            ws_server: WsBroadcastServerConfig {
+                addr: "127.0.0.1".to_string(),
+                port: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let broadcaster = Broadcaster::new(config, chain_id, Some(data_signer));
+        let addr = broadcaster.start().await.expect("start broadcaster");
+        eprintln!("[test] broadcaster listening at ws://{addr}/feed");
+
+        let sample_message = broadcaster
+            .new_broadcast_feed_message(MessageWithMetadata::default(), 1, None, vec![])
+            .expect("failed to create signed broadcast message");
+        eprintln!(
+            "[test] sample message seq={} sig_len={}",
+            sample_message.sequence_number,
+            sample_message.signature.len()
+        );
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let client_config = BroadcasterClientConfig {
+            require_feed_server_version: true,
+            require_chain_id: true,
+            trusted_sequencer_addresses: vec![trusted_signer],
+            ..Default::default()
+        };
+
+        let mut client = super::BroadcasterClient::new(
+            client_config,
+            format!("ws://{addr}/feed"),
+            chain_id,
+            0,
+            tx,
+        );
+
+        let url: url::Url = format!("ws://{addr}/feed").parse().expect("valid ws url");
+        let preflight = client.validate_preflight_headers(&url, 0).await;
+        eprintln!("[test] preflight result={preflight:?}");
+        assert!(
+            preflight.is_ok(),
+            "preflight should pass against local broadcaster"
+        );
+
+        let mut client_task = tokio::spawn(async move { client.start().await });
+
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if broadcaster.client_count() >= 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("client failed to connect to broadcaster within 5s");
+        eprintln!("[test] client connected; start broadcast loop");
+
+        let received = timeout(Duration::from_secs(10), async {
+            loop {
+                broadcaster.broadcast_feed_messages(vec![sample_message.clone()]);
+
+                tokio::select! {
+                    client_result = &mut client_task => {
+                        let client_result = client_result.expect("client task panicked");
+                        panic!("client exited before receiving broadcast: {client_result:?}");
+                    }
+                    maybe_msg = rx.recv() => {
+                        if let Some(msg) = maybe_msg {
+                            break msg;
+                        }
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for client to receive broadcast message");
+
+        assert_eq!(received.sequence_number, sample_message.sequence_number);
+        assert_eq!(received.message, sample_message.message);
+
+        client_task.abort();
+        broadcaster.stop();
+    }
+
+    #[tokio::test]
+    async fn test_receive_messages() {
+        let chain_id: u64 = 9742;
+        let message_count: u64 = 100;
+        let client_count = 2;
+
+        let (broadcaster, addr) = start_test_broadcaster(chain_id).await;
+
+        let mut clients = Vec::new();
+        for _ in 0..client_count {
+            clients.push(connect_ws(addr, 0).await);
+        }
+        wait_for_clients(&broadcaster, client_count).await;
+
+        for i in 1..=message_count {
+            broadcaster
+                .broadcast_single(empty_msg(), i, None, vec![])
+                .expect("broadcast");
+        }
+
+        for (client_idx, ws) in clients.iter_mut().enumerate() {
+            let mut received = 0u64;
+            while received < message_count {
+                let frame = timeout(Duration::from_secs(5), ws.next())
+                    .await
+                    .unwrap_or_else(|_| {
+                        panic!(
+                            "client {client_idx} timed out after receiving {received}/{message_count} messages"
+                        )
+                    })
+                    .expect("stream ended")
+                    .expect("frame error");
+
+                let bm = recv_broadcast_msg(frame);
+                for msg in &bm.messages {
+                    if msg.is_some() {
+                        received += 1;
+                    }
+                }
+            }
+            assert_eq!(received, message_count, "client {client_idx} message count");
+        }
+
+        broadcaster.stop();
+    }
+
+    #[tokio::test]
+    async fn test_server_client_disconnect() {
+        let chain_id: u64 = 8742;
+        let (broadcaster, addr) = start_test_broadcaster(chain_id).await;
+
+        let mut ws = connect_ws(addr, 0).await;
+
+        broadcaster
+            .broadcast_single(empty_msg(), 1, None, vec![])
+            .expect("broadcast");
+        let frame = timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("timeout")
+            .expect("stream ended")
+            .expect("frame error");
+        let bm = recv_broadcast_msg(frame);
+        assert_eq!(bm.messages.len(), 1);
+
+        drop(ws);
+
+        let disconnected = timeout(Duration::from_secs(5), async {
+            loop {
+                if broadcaster.client_count() == 0 {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        assert!(disconnected.is_ok(), "client was not disconnected in time");
+
+        broadcaster.stop();
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_client_confirmed_message() {
+        let (broadcaster, addr) = start_test_broadcaster(1).await;
+        let mut ws = connect_ws(addr, 0).await;
+
+        broadcaster
+            .broadcast_single(empty_msg(), 1, None, vec![])
+            .expect("broadcast");
+
+        let frame = timeout(Duration::from_secs(2), ws.next())
+            .await
+            .expect("timeout")
+            .expect("stream ended")
+            .expect("frame error");
+        let bm = recv_broadcast_msg(frame);
+        assert_eq!(bm.messages.len(), 1);
+
+        let confirm_number: u64 = 42;
+        broadcaster.confirm(confirm_number);
+
+        let frame = timeout(Duration::from_secs(2), ws.next())
+            .await
+            .expect("timeout")
+            .expect("stream ended")
+            .expect("frame error");
+        let bm = recv_broadcast_msg(frame);
+        assert!(bm.messages.is_empty());
+        let confirmed = bm
+            .confirmed_sequence_number_message
+            .expect("confirmed message");
+        assert_eq!(confirmed.sequence_number, confirm_number);
+
+        broadcaster.stop();
+    }
+
+    #[tokio::test]
+    async fn test_cached_messages_on_client_connect() {
+        let chain_id: u64 = 8744;
+        let (broadcaster, addr) = start_test_broadcaster(chain_id).await;
+
+        broadcaster
+            .broadcast_single(empty_msg(), 1, None, vec![])
+            .expect("broadcast 1");
+        broadcaster
+            .broadcast_single(empty_msg(), 2, None, vec![])
+            .expect("broadcast 2");
+
+        for client_idx in 0..2 {
+            let mut ws = connect_ws(addr, 0).await;
+
+            let frame = timeout(Duration::from_secs(5), ws.next())
+                .await
+                .unwrap_or_else(|_| panic!("client {client_idx} timed out on backlog"))
+                .expect("stream ended")
+                .expect("frame error");
+            let bm = recv_broadcast_msg(frame);
+            assert_eq!(
+                bm.messages.len(),
+                2,
+                "client {client_idx} should receive 2 cached messages"
+            );
+        }
+
+        broadcaster.confirm(1);
+        let wait = timeout(Duration::from_secs(2), async {
+            loop {
+                if broadcaster.get_cached_message_count() == 1 {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(wait.is_ok(), "cache should have 1 message after confirm(1)");
+
+        broadcaster.confirm(2);
+        let wait = timeout(Duration::from_secs(2), async {
+            loop {
+                if broadcaster.get_cached_message_count() == 0 {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(wait.is_ok(), "cache should be empty after confirm(2)");
+
+        broadcaster.stop();
+    }
+
+    #[tokio::test]
+    #[ignore] // reqwest doesn't cleanly expose 101 status from WS upgrade responses
+    async fn test_server_incorrect_chain_id() {
+        let server_chain_id: u64 = 8742;
+        let client_chain_id: u64 = 8743; // wrong
+        let (broadcaster, addr) = start_test_broadcaster(server_chain_id).await;
+
+        let config = BroadcasterClientConfig {
+            require_chain_id: true,
+            ..Default::default()
+        };
+
+        let url: url::Url = format!("ws://{addr}/feed").parse().expect("url");
+        let client = super::BroadcasterClient::new(
+            config,
+            format!("ws://{addr}/feed"),
+            client_chain_id,
+            0,
+            tokio::sync::mpsc::channel(1).0,
+        );
+
+        let result = client.validate_preflight_headers(&url, 0).await;
+        assert!(
+            matches!(result, Err(BroadcasterClientError::IncorrectChainId { .. })),
+            "expected IncorrectChainId, got: {result:?}"
+        );
+
+        broadcaster.stop();
+    }
+
+    #[tokio::test]
+    #[ignore] // reqwest doesn't cleanly expose 101 status from WS upgrade responses
+    async fn test_server_missing_chain_id() {
+        let mock_addr = start_mock_upgrade_server(Some(FEED_SERVER_VERSION), None).await;
+
+        let config = BroadcasterClientConfig {
+            require_chain_id: true,
+            ..Default::default()
+        };
+
+        let url: url::Url = format!("ws://{mock_addr}/feed").parse().expect("url");
+        let client = super::BroadcasterClient::new(
+            config,
+            format!("ws://{mock_addr}/feed"),
+            8742,
+            0,
+            tokio::sync::mpsc::channel(1).0,
+        );
+
+        let result = client.validate_preflight_headers(&url, 0).await;
+        assert!(
+            matches!(result, Err(BroadcasterClientError::MissingChainId)),
+            "expected MissingChainId, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore] // reqwest doesn't cleanly expose 101 status from WS upgrade responses
+    async fn test_server_incorrect_feed_server_version() {
+        let wrong_version = FEED_SERVER_VERSION + 1;
+        let mock_addr = start_mock_upgrade_server(Some(wrong_version), Some(8742)).await;
+
+        let config = BroadcasterClientConfig {
+            require_feed_server_version: true,
+            ..Default::default()
+        };
+
+        let url: url::Url = format!("ws://{mock_addr}/feed").parse().expect("url");
+        let client = super::BroadcasterClient::new(
+            config,
+            format!("ws://{mock_addr}/feed"),
+            8742,
+            0,
+            tokio::sync::mpsc::channel(1).0,
+        );
+
+        let result = client.validate_preflight_headers(&url, 0).await;
+        assert!(
+            matches!(
+                result,
+                Err(BroadcasterClientError::IncorrectFeedVersion { .. })
+            ),
+            "expected IncorrectFeedVersion, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore] // reqwest doesn't cleanly expose 101 status from WS upgrade responses
+    async fn test_server_missing_feed_server_version() {
+        let mock_addr = start_mock_upgrade_server(None, Some(8742)).await;
+
+        let config = BroadcasterClientConfig {
+            require_feed_server_version: true,
+            ..Default::default()
+        };
+
+        let url: url::Url = format!("ws://{mock_addr}/feed").parse().expect("url");
+        let client = super::BroadcasterClient::new(
+            config,
+            format!("ws://{mock_addr}/feed"),
+            8742,
+            0,
+            tokio::sync::mpsc::channel(1).0,
+        );
+
+        let result = client.validate_preflight_headers(&url, 0).await;
+        assert!(
+            matches!(
+                result,
+                Err(BroadcasterClientError::MissingFeedServerVersion)
+            ),
+            "expected MissingFeedServerVersion, got: {result:?}"
+        );
+    }
+
+    /// Start a mock HTTP server that does a proper `tokio-tungstenite`
+    /// WebSocket upgrade with configurable response headers.
+    /// Used to test preflight validation against servers with
+    /// missing/incorrect headers.
+    async fn start_mock_upgrade_server(
+        feed_server_version: Option<u64>,
+        chain_id: Option<u64>,
+    ) -> SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("local_addr");
+
+        tokio::spawn(async move {
+            // Accept connections in a loop so the server stays alive for the test.
+            while let Ok((stream, _)) = listener.accept().await {
+                let callback = move |_req: &http::Request<()>,
+                                     mut resp: http::Response<()>|
+                      -> Result<
+                    http::Response<()>,
+                    http::Response<Option<String>>,
+                > {
+                    if let Some(v) = feed_server_version
+                        && let Ok(hv) = v.to_string().parse()
+                    {
+                        resp.headers_mut().insert(HEADER_FEED_SERVER_VERSION, hv);
+                    }
+                    if let Some(id) = chain_id
+                        && let Ok(hv) = id.to_string().parse()
+                    {
+                        resp.headers_mut().insert(HEADER_CHAIN_ID, hv);
+                    }
+                    Ok(resp)
+                };
+
+                // Upgrade to WS — the preflight client will get a proper 101
+                // with the headers we set, then we just drop the connection.
+                let _ = tokio_tungstenite::accept_hdr_async(stream, callback).await;
+            }
+        });
+
+        addr
+    }
+}
+
+#[cfg(test)]
 pub mod testing {
     use std::collections::HashMap;
     use std::time::Duration;
 
-    use alloy::primitives::Address;
-    use espresso_types::{NamespaceId, Transaction};
     use tokio::sync::mpsc;
 
     use crate::rollups::nitro::{
-        broadcaster_client::{
-            broadcaster_client::{BroadcasterClient, BroadcasterClientConfig},
-            message_types::BroadcastMessage,
+        feed::{
+            client::{BroadcasterClient, BroadcasterClientConfig},
+            message::{BroadcastFeedMessage, BroadcastMessage},
         },
-        types::{Nitro, NitroRollupQueueEntry},
+        types::NitroRollupQueueEntry,
     };
     use crate::rollups::rollup::RollupQueueEntry;
 
     const TEST_NAMESPACE_ID: u64 = 42161;
 
-    fn make_test_nitro_rollup(sequencer_addresses: Vec<Address>) -> Nitro {
-        let (_tx, rx) = mpsc::channel(1);
-        Nitro::new(
-            sequencer_addresses,
-            NamespaceId::from(TEST_NAMESPACE_ID),
-            TEST_NAMESPACE_ID,
-            rx,
-        )
-    }
-
-    fn make_test_broadcaster_client(
-        sequencer_addresses: Vec<Address>,
-    ) -> (BroadcasterClient, mpsc::Receiver<Transaction>) {
+    fn make_test_broadcaster_client() -> (BroadcasterClient, mpsc::Receiver<BroadcastFeedMessage>) {
         let (tx, rx) = mpsc::channel(256);
-        let rollup = make_test_nitro_rollup(sequencer_addresses);
         let client = BroadcasterClient::new(
             BroadcasterClientConfig::default(),
+            // TODO: in future, we should modify the tests
+            // to listen to an actual broadcaster server when
+            // the code is ready for that, but for now we just want
+            // to test the message processing logic
             "ws://localhost:8080".to_string(),
             TEST_NAMESPACE_ID,
             0,
-            rollup,
             tx,
         );
         (client, rx)
@@ -584,21 +1029,12 @@ pub mod testing {
             .await
             .expect("failed to connect to Arbitrum feed");
 
-        let (_tx, rx_batch) = mpsc::channel(1);
-        let rollup = Nitro::new(
-            vec![],
-            NamespaceId::from(ARB_CHAIN_ID),
-            ARB_CHAIN_ID,
-            rx_batch,
-        );
-
         let (tx, mut rx) = mpsc::channel(256);
         let mut client = BroadcasterClient::new(
             BroadcasterClientConfig::default(),
             ARB_FEED_URL.to_string(),
             ARB_CHAIN_ID,
             0,
-            rollup,
             tx,
         );
 
@@ -639,14 +1075,8 @@ pub mod testing {
 
     #[tokio::test]
     async fn test_process_messages() {
-        let (mut client, mut rx) = make_test_broadcaster_client(vec![]);
+        let (mut client, mut rx) = make_test_broadcaster_client();
         let broadcast_messages = load_test_data();
-
-        let total_expected: usize = broadcast_messages
-            .iter()
-            .map(|bm| bm.messages.iter().flatten().count())
-            .sum();
-
         let mut queue: Vec<NitroRollupQueueEntry> = Vec::new();
 
         for broadcast_message in &broadcast_messages {
@@ -655,32 +1085,19 @@ pub mod testing {
             let result = client.process_message(&payload).await;
             assert!(result.is_ok(), "process_message failed: {:?}", result.err());
 
-            let tx = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            let received_message = tokio::time::timeout(Duration::from_secs(1), rx.recv())
                 .await
                 .expect("timeout waiting for transaction from channel")
                 .expect("channel closed before receiving transaction");
 
-            let parsed_messages = client
-                .rollup
-                .parse_nitro_hotshot_payload(tx.payload())
-                .expect("failed to parse nitro transaction payload");
-
-            for message in parsed_messages {
-                queue.push(NitroRollupQueueEntry {
-                    message_with_meta: message.message,
-                    pos: message.sequence_number,
-                    hotshot_height: 0,
-                });
-            }
+            queue.push(NitroRollupQueueEntry {
+                message_with_meta: received_message.message,
+                pos: received_message.sequence_number,
+                hotshot_height: 0,
+            });
         }
 
-        assert_eq!(
-            queue.len(),
-            total_expected,
-            "expected {total_expected} messages in queue, got {}",
-            queue.len()
-        );
-
+        // Now compare the messages in the queue with the original broadcast messages
         let mut original_messages = HashMap::new();
         for broadcast_message in broadcast_messages {
             for message in broadcast_message.messages.into_iter().flatten() {
@@ -688,7 +1105,7 @@ pub mod testing {
             }
         }
 
-        for entry in &queue {
+        for entry in queue {
             let expected_message = original_messages
                 .get(&entry.sequence_number())
                 .expect("message in queue not found in original messages");

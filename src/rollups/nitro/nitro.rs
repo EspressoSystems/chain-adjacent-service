@@ -1,5 +1,5 @@
 use crate::espresso_client::types::NamespaceTransactionsInRange;
-use crate::rollups::nitro::broadcaster_client::message_types::BroadcastFeedMessage;
+use crate::rollups::nitro::feed::message::BroadcastFeedMessage;
 use crate::rollups::nitro::types::BatchMessage;
 use crate::rollups::nitro::types::LastBatchInfo;
 use crate::rollups::nitro::types::LegacyParsedNitroEspressoTransaction;
@@ -8,13 +8,13 @@ use crate::rollups::nitro::types::Nitro;
 use crate::rollups::nitro::types::NitroHeader;
 use crate::rollups::nitro::types::NitroRollupQueueEntry;
 use crate::rollups::nitro::types::VerificationContext;
+use crate::rollups::nitro::utils::recover_signer_address;
 use crate::rollups::rollup::Rollup;
 use crate::rollups::rollup::RollupQueueEntry;
 use alloy::primitives::Bytes;
-use alloy::primitives::{Address, B256, FixedBytes, Keccak256, Signature};
+use alloy::primitives::{Address, Keccak256};
 use anyhow::Result;
 use espresso_types::NamespaceId;
-use espresso_types::Transaction;
 use std::collections::VecDeque;
 use tokio::sync::mpsc;
 
@@ -36,6 +36,8 @@ impl Rollup for Nitro {
     type VerificationContext = VerificationContext;
     const PARSE_BATCH_FN: fn(Bytes) -> Result<Vec<BatchMessage>> =
         super::batch_parsing::parse_batch;
+    const ESPRESSO_TX_PAYLOAD_BUILD_FN: fn(&mut Vec<Self::Entry>) -> Vec<u8> =
+        build_espresso_tx_payload;
 
     fn parse_hotshot_transactions(
         &self,
@@ -129,17 +131,21 @@ impl Rollup for Nitro {
         }
         true
     }
+
+    fn namespace_id(&self) -> NamespaceId {
+        self.namespace_id
+    }
 }
 
 impl Nitro {
     pub fn new(
-        sequencer_addresses: Vec<Address>,
+        legacy_signer_addresses: Vec<Address>,
         namespace_id: NamespaceId,
         chain_id: u64,
         last_batch_info_receiver: mpsc::Receiver<LastBatchInfo>,
     ) -> Self {
         Self {
-            sequencer_addresses,
+            legacy_signer_addresses,
             namespace_id,
             chain_id,
             last_batch_info_receiver,
@@ -147,46 +153,11 @@ impl Nitro {
     }
 
     pub fn verify_broadcast_feed_message(&self, message: &BroadcastFeedMessage) -> Result<()> {
-        verify_broadcast_feed_message_signature(self.chain_id, &self.sequencer_addresses, message)
-    }
-
-    /// Checks if the signature on the message hash is valid and
-    /// is from a sequencer in the `sequencer_addresses` list.
-    pub fn signature_from_known_sequencer(
-        &self,
-        messages_hash: FixedBytes<32>,
-        signature: &[u8],
-    ) -> bool {
-        // Signature should always be 65 bytes length
-        if signature.len() != 65 {
-            tracing::warn!("invalid signature length: {}", signature.len());
-            return false;
-        }
-
-        // Extract the parity byte from the signature
-        let parity = match signature[64] {
-            0 | 27 => false,
-            1 | 28 => true,
-            v => {
-                tracing::warn!("invalid signature value: {}", v);
-                return false;
-            }
-        };
-
-        let signature = Signature::from_bytes_and_parity(&signature[..64], parity);
-
-        if signature.r().is_zero() || signature.s().is_zero() {
-            tracing::warn!("invalid signature");
-            return false;
-        }
-
-        let hash = B256::from_slice(messages_hash.as_slice());
-        let Ok(signer) = signature.recover_address_from_prehash(&hash) else {
-            tracing::warn!("failed to recover signer");
-            return false;
-        };
-        // Check that the signer is indeed part of the sequencer address array
-        self.sequencer_addresses.contains(&signer)
+        verify_broadcast_feed_message_signature(
+            self.chain_id,
+            &self.legacy_signer_addresses,
+            message,
+        )
     }
 
     /// Parses a legacy Nitro hotshot payload (binary format with batch poster signature)
@@ -204,7 +175,15 @@ impl Nitro {
             }
         };
 
-        if !self.signature_from_known_sequencer(parsed.messages_hash, &parsed.signature) {
+        if let Ok(signer) = recover_signer_address(parsed.messages_hash, &parsed.signature) {
+            if !self.legacy_signer_addresses.contains(&signer) {
+                tracing::warn!(
+                    "recovered signer: {:?} is not in the list of legacy signer addresses",
+                    signer
+                );
+                return Vec::new();
+            }
+        } else {
             tracing::warn!(
                 "invalid signature: {:?} on message hash: {:?}",
                 parsed.signature,
@@ -299,28 +278,6 @@ impl Nitro {
         })
     }
 
-    // Creates an Espresso Transaction from an array of MessageWithMetadata
-    pub fn create_espresso_transaction_from_broadcast_feed_messages(
-        &self,
-        messages: &[BroadcastFeedMessage],
-    ) -> Result<Vec<Transaction>> {
-        let mut payload = Vec::new();
-        // Add a header indicating NitroHeader V1
-        let header = NitroHeader::V1;
-        let encoded_header = serde_json::to_vec(&header)
-            .map_err(|e| anyhow::anyhow!("failed to encode header into json: {e}"))?;
-        payload.extend_from_slice(&(encoded_header.len() as u64).to_be_bytes());
-        payload.extend_from_slice(&encoded_header);
-
-        for msg in messages {
-            let encoded_msg = serde_json::to_vec(&msg)
-                .map_err(|e| anyhow::anyhow!("failed to encode msg into json: {e}"))?;
-            payload.extend_from_slice(&(encoded_msg.len() as u64).to_be_bytes());
-            payload.extend_from_slice(&encoded_msg);
-        }
-        Ok(vec![Transaction::new(self.namespace_id, payload)])
-    }
-
     // Parses the payload of an Espresso transaction into an array of BroadcastFeedMessage
     pub fn parse_nitro_hotshot_payload(
         &self,
@@ -377,6 +334,36 @@ pub fn verify_broadcast_feed_message_signature(
 ) -> Result<()> {
     // TODO: will implement in another PR
     Ok(())
+}
+
+// TODO: consider the Espresso transaction size limit
+fn build_espresso_tx_payload(entries: &mut Vec<NitroRollupQueueEntry>) -> Vec<u8> {
+    let mut payload = Vec::new();
+    // Add a header indicating NitroHeader V1
+    let header = NitroHeader::V1;
+    let encoded_header = match serde_json::to_vec(&header) {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::error!("failed to encode header into json: {e}");
+            return payload;
+        }
+    };
+    payload.extend_from_slice(&(encoded_header.len() as u64).to_be_bytes());
+    payload.extend_from_slice(&encoded_header);
+
+    for entry in entries {
+        let message = entry.message_with_meta.clone();
+        match serde_json::to_vec(&message) {
+            Ok(encoded_msg) => {
+                payload.extend_from_slice(&(encoded_msg.len() as u64).to_be_bytes());
+                payload.extend_from_slice(&encoded_msg);
+            }
+            Err(e) => {
+                tracing::error!(seq = entry.pos, "failed to encode message into json: {e}");
+            }
+        }
+    }
+    payload
 }
 
 #[cfg(test)]

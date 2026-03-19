@@ -6,7 +6,7 @@ use serde_with::{base64::Base64, serde_as};
 use std::collections::VecDeque;
 use tokio::sync::mpsc;
 
-use crate::rollups::nitro::broadcaster_client::message_types::BroadcastFeedMessage;
+use crate::rollups::nitro::feed::message::BroadcastFeedMessage;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct MessageWithMetadata {
@@ -18,7 +18,7 @@ pub struct MessageWithMetadata {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BatchMessage {
-    L2Msg(Bytes),
+    L2Msg(alloy::primitives::Bytes),
     DelayedMsg,
 }
 
@@ -192,7 +192,7 @@ pub struct LastBatchInfo {
 
 #[derive(Debug)]
 pub struct Nitro {
-    pub sequencer_addresses: Vec<Address>,
+    pub legacy_signer_addresses: Vec<Address>,
     pub namespace_id: NamespaceId,
     pub chain_id: u64,
     pub last_batch_info_receiver: mpsc::Receiver<LastBatchInfo>,
