@@ -541,7 +541,8 @@ pub mod testing {
     const TEST_NAMESPACE_ID: u64 = 42161;
 
     fn make_test_nitro_rollup() -> Nitro {
-        Nitro::new(vec![], NamespaceId::from(TEST_NAMESPACE_ID))
+        let (_tx, rx) = mpsc::channel(1);
+        Nitro::new(vec![], NamespaceId::from(TEST_NAMESPACE_ID), rx)
     }
 
     fn make_test_broadcaster_client() -> (BroadcasterClient, mpsc::Receiver<Transaction>) {
@@ -602,8 +603,10 @@ pub mod testing {
             .await
             .expect("failed to connect to Arbitrum feed");
 
+        let (_tx, rx_batch) = mpsc::channel(1);
+        let rollup = Nitro::new(vec![], NamespaceId::from(ARB_CHAIN_ID), rx_batch);
+
         let (tx, rx) = mpsc::channel(256);
-        let rollup = Nitro::new(vec![], NamespaceId::from(ARB_CHAIN_ID));
         let mut client = BroadcasterClient::new(
             BroadcasterClientConfig::default(),
             ARB_FEED_URL.to_string(),
