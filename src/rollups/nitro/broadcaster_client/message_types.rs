@@ -8,14 +8,12 @@ use serde_with::{base64::Base64, serde_as};
 /// Top-level broadcast message from the Arbitrum feed server.
 /// Matches Go struct `BroadcastMessage` in broadcastclient/message/message.go
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BroadcastMessage {
     pub version: i32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub messages: Vec<Option<BroadcastFeedMessage>>,
-    #[serde(
-        rename = "confirmedSequenceNumberMessage",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub confirmed_sequence_number_message: Option<ConfirmedSequenceNumberMessage>,
 }
 
@@ -23,31 +21,26 @@ pub struct BroadcastMessage {
 /// Matches Go struct `BroadcastFeedMessage`
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BroadcastFeedMessage {
-    #[serde(rename = "sequenceNumber")]
     pub sequence_number: u64,
-    #[serde(rename = "message")]
     pub message: MessageWithMetadata,
     #[serde_as(as = "serde_with::DefaultOnNull<Base64>")]
     #[serde(default)]
     pub signature: Vec<u8>,
     #[serde_as(as = "serde_with::DefaultOnNull<Base64>")]
-    #[serde(
-        default,
-        rename = "blockMetadata",
-        skip_serializing_if = "Vec::is_empty"
-    )]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub block_metadata: Vec<u8>,
     #[serde(skip)]
     pub cumulative_sum_msg_size: u64,
-    #[serde(default, rename = "blockHash", skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub block_hash: Option<B256>,
 }
 
 /// Confirmed sequence number from the feed server.
 /// Matches Go struct `ConfirmedSequenceNumberMessage`
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConfirmedSequenceNumberMessage {
-    #[serde(rename = "sequenceNumber")]
     pub sequence_number: u64,
 }
