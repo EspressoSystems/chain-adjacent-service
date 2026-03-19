@@ -5,18 +5,16 @@
 // [36..39]    : end_message_pos
 // [40..43]    : start_hotshot_block
 // [44..47]    : min_hotshot_block_still_in_streamer_queue
-// [48..79]    : keccak256(batchData) (32 bytes)
-// [80..144]   : CAS ECDSA signature (65 bytes)
+// [48..112]   : CAS ECDSA signature (65 bytes)
 //
-// [145]       : 0x01  (DA API header)
-// [146]       : 0x05  (Celestia indicator)
-// [147-...]   : downstream DA certificate
+// [113]       : 0x01  (DA API header)
+// [114]       : 0x05  (Celestia indicator)
+// [115-...]   : downstream DA certificate
 
 use crate::da_api::{
     error::{DaApiError, DaApiResult},
     nitro::types::DAStoreResponse,
 };
-use alloy::primitives::Keccak256;
 use serde::{Deserialize, Serialize};
 mod utils;
 use utils::{Decoder, Encoder};
@@ -27,13 +25,13 @@ pub const DA_CERTIFICATE_MESSAGE_HEADER_FLAG: u8 = 0x01;
 
 pub const MESSAGE_POS_SIZE: usize = 4; // u32
 pub const HOTSHOT_BLOCK_SIZE: usize = 4; // u32
-pub const BATCH_HASH_SIZE: usize = 32; // keccak256
+
 pub const CAS_SIG_SIZE: usize = 65; // ECDSA (r,s,v)
 //DA header position calculation:
-// CERT_DA_HEADER_FLAG_POS = CERT_HEADER_SIZE + MESSAGE_POS_SIZE + MESSAGE_POS_SIZE + HOTSHOT_BLOCK_SIZE + HOTSHOT_BLOCK_SIZE + BATCH_HASH_SIZE + CAS_SIG_SIZE
+// CERT_DA_HEADER_FLAG_POS = CERT_HEADER_SIZE + MESSAGE_POS_SIZE + MESSAGE_POS_SIZE + HOTSHOT_BLOCK_SIZE + HOTSHOT_BLOCK_SIZE + CAS_SIG_SIZE
 
 // Certificate minimum size:
-//CERT_MINIMUM_SIZE = CERT_HEADER_SIZE + MESSAGE_POS_SIZE + MESSAGE_POS_SIZE + HOTSHOT_BLOCK_SIZE + HOTSHOT_BLOCK_SIZE + BATCH_HASH_SIZE + CAS_SIG_SIZE + 2
+//CERT_MINIMUM_SIZE = CERT_HEADER_SIZE + MESSAGE_POS_SIZE + MESSAGE_POS_SIZE + HOTSHOT_BLOCK_SIZE + HOTSHOT_BLOCK_SIZE  + CAS_SIG_SIZE + 2
 
 /// Expected header size for CAS V1 (32 bytes as per certificate layout)
 pub const CERT_HEADER_SIZE_V1: usize = 32;
@@ -69,8 +67,6 @@ pub struct CasCertificate {
     pub start_hotshot_block: u32,
     pub min_hotshot_block_still_in_streamer_queue: u32,
     #[serde(with = "serde_bytes")]
-    pub batch_data_hash: [u8; 32],
-    #[serde(with = "serde_bytes")]
     pub cas_signature: [u8; 65],
     pub da_api_header_flag: u8,
     pub da_provider_flag: u8,
@@ -96,7 +92,6 @@ impl CasCertificate {
             && self.end_message_pos == 0
             && self.start_hotshot_block == 0
             && self.min_hotshot_block_still_in_streamer_queue == 0
-            && self.batch_data_hash == [0; 32]
             && self.cas_signature == [0; 65]
             && self.da_api_header_flag == 0
             && self.da_provider_flag == 0
@@ -109,7 +104,6 @@ impl CasCertificate {
             + MESSAGE_POS_SIZE
             + HOTSHOT_BLOCK_SIZE
             + HOTSHOT_BLOCK_SIZE
-            + BATCH_HASH_SIZE
             + CAS_SIG_SIZE
             + 2
     }
@@ -121,7 +115,6 @@ impl CasCertificate {
             + MESSAGE_POS_SIZE
             + HOTSHOT_BLOCK_SIZE
             + HOTSHOT_BLOCK_SIZE
-            + BATCH_HASH_SIZE
             + CAS_SIG_SIZE
     }
 
@@ -160,7 +153,6 @@ impl CasCertificate {
         enc.push_bytes(&self.start_hotshot_block.to_be_bytes());
         enc.push_bytes(&self.min_hotshot_block_still_in_streamer_queue.to_be_bytes());
 
-        enc.push_bytes(&self.batch_data_hash);
         enc.push_bytes(&self.cas_signature);
 
         if self.da_api_header_flag != DA_CERTIFICATE_MESSAGE_HEADER_FLAG {
@@ -211,7 +203,6 @@ impl CasCertificate {
         let start_hotshot_block = dec.read_u32()?;
         let min_hotshot_block_still_in_streamer_queue = dec.read_u32()?;
 
-        let batch_data_hash = dec.read_fixed::<BATCH_HASH_SIZE>()?;
         let cas_signature = dec.read_fixed::<CAS_SIG_SIZE>()?;
 
         let da_api_header_flag = dec.read_u8()?;
@@ -229,7 +220,6 @@ impl CasCertificate {
             end_message_pos,
             start_hotshot_block,
             min_hotshot_block_still_in_streamer_queue,
-            batch_data_hash,
             cas_signature,
             da_api_header_flag,
             da_provider_flag,
@@ -252,10 +242,6 @@ impl CasCertificate {
             return Err(DaApiError::InvalidCertificateLength(downstream_cert.len()));
         }
 
-        let mut keccak_hasher = Keccak256::new();
-        keccak_hasher.update(batch_data);
-        let batch_data_hash = keccak_hasher.finalize();
-
         //TODO: hardcoded size here
         let mut header = vec![0u8; 32];
         header[0] = CASCertificateVersion::V1 as u8;
@@ -275,7 +261,6 @@ impl CasCertificate {
             end_message_pos,
             start_hotshot_block,
             min_hotshot_block_still_in_streamer_queue,
-            batch_data_hash: *batch_data_hash,
             cas_signature,
 
             da_api_header_flag: downstream_cert[0],
@@ -308,7 +293,7 @@ mod tests {
 
     use super::*;
     use alloy::primitives::Bytes;
-    const CERT_DA_HEADER_FLAG_POS: usize = 145;
+    const CERT_DA_HEADER_FLAG_POS: usize = 113;
 
     // Helper to create a dummy certificate
     fn create_mock_cert() -> CasCertificate {
@@ -319,7 +304,6 @@ mod tests {
             end_message_pos: 200,
             start_hotshot_block: 10,
             min_hotshot_block_still_in_streamer_queue: 5,
-            batch_data_hash: [0xBB; 32],
             cas_signature: [0xCC; 65],
             da_api_header_flag: 0x01,
             da_provider_flag: 0x05,
@@ -338,7 +322,6 @@ mod tests {
         assert_eq!(original.header, recovered.header);
         assert_eq!(original.start_message_pos, recovered.start_message_pos);
         assert_eq!(original.end_message_pos, recovered.end_message_pos);
-        assert_eq!(original.batch_data_hash, recovered.batch_data_hash);
         assert_eq!(original.da_provider_flag, recovered.da_provider_flag);
         assert_eq!(
             original.downstream_certificate,
@@ -354,6 +337,7 @@ mod tests {
         bytes[CERT_DA_HEADER_FLAG_POS] = 0xFE;
 
         let result = CasCertificate::from_bytes(&bytes);
+
         assert!(result.is_err(), "Should fail when the flag is incorrect");
     }
 
@@ -364,7 +348,7 @@ mod tests {
 
         let espresso_da_cert =
             CasCertificate::build_espresso_certificate(0, 0, 0, 0, &da_cert, &da_cert).unwrap();
-        // cas certificate created: "0x200100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d6f4495acb1e8e0c5583a2357178fffd13f0cec5b216542b40027999633d72f000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1c4a3a991487b304c790fd36d080c164f21b819b1ac35393e92940165f3934e130775b12208c995cd6675c5f33c181b19c3657910f4260cc0d115e413d62223db2"
+        // cas certificate created: "0x010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1cb94dcff2136dfab4d1d4506cc5160a3b58c9481a87513c71882526ae8ac6e30e3f4a9d56da07893bf5245fd0ff0c50e2a66b52067d8e8b23beb3c8e4f8230743"
 
         let mut sequencer_msg = vec![0u8; 41];
         sequencer_msg[40] = 0x63;
@@ -379,6 +363,6 @@ mod tests {
             sequencer_msg.len(),
             41 + espresso_da_cert.to_bytes().unwrap().len()
         );
-        assert_eq!(sequencer_msg.len(), 287);
+        assert_eq!(sequencer_msg.len(), 255);
     }
 }

@@ -38,3 +38,4 @@ brotli = "7"
 
 [dev-dependencies]
 wiremock = "0.6.5"
+hex = "0.4.3"

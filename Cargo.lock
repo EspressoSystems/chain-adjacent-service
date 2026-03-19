@@ -2591,6 +2591,7 @@ dependencies = [
  "brotli",
  "committable",
  "espresso-types",
+ "hex",
  "hotshot-types",
  "jsonrpsee",
  "reqwest 0.13.2",
