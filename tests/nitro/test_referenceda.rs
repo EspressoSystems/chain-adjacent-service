@@ -1,5 +1,3 @@
-mod common;
-
 use alloy::primitives::Bytes;
 use serde_json::{Value, json};
 use std::{collections::HashMap, net::SocketAddr, str::FromStr, time::Duration};
@@ -13,7 +11,7 @@ use chain_agnostic_service::{
     },
 };
 
-use common::nitro_node::NitroNode;
+use crate::nitro_node::nitro_node::NitroNode;
 
 #[allow(clippy::unwrap_used)]
 fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {

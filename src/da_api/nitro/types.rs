@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use alloy::primitives::{Bytes, FixedBytes};
 use serde::{Deserialize, Serialize};
 
-use crate::da_api::{certificate::nitro::CasCertificate, error::DaApiError};
+use crate::da_api::{error::DaApiError, nitro::certificate::CasCertificate};
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]

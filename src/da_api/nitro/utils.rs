@@ -1,8 +1,8 @@
 use alloy::primitives::Bytes;
 
 use crate::da_api::{
-    certificate::nitro::{CASCertificateVersion, CERT_HEADER_SIZE_V1, CasCertificate},
     error::DaApiError,
+    nitro::certificate::{CASCertificateVersion, CERT_HEADER_SIZE_V1, CasCertificate},
 };
 
 const SEQUENCER_HEADER_LEN: usize = 40;
@@ -38,7 +38,6 @@ pub fn extract_da_sequencer_msg_from_espresso_da_certificate(
     let res = [seq_msg, da_cert].concat();
     Ok(res.into())
 }
-
 
 // mock function
 pub fn verify_batch_data(message: Bytes) -> (u32, u32, u32, u32, Vec<u8>) {

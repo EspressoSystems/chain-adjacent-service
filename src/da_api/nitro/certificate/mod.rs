@@ -90,17 +90,12 @@ impl CasCertificate {
     }
 
     pub fn certificate_minimum_size(header_size: usize) -> usize {
-        header_size
-            + HOTSHOT_BLOCK_SIZE
-            + CAS_SIG_SIZE
-            + 2
+        header_size + HOTSHOT_BLOCK_SIZE + CAS_SIG_SIZE + 2
     }
 
     // position where espresso metadata ends and da certificate starts
     pub fn da_header_start_position(header_size: usize) -> usize {
-        header_size
-            + HOTSHOT_BLOCK_SIZE
-            + CAS_SIG_SIZE
+        header_size + HOTSHOT_BLOCK_SIZE + CAS_SIG_SIZE
     }
 
     /// Serialise the certificate into its wire format.

@@ -4,14 +4,12 @@ use std::{
 };
 
 use crate::da_api::{
-    certificate::nitro::CasCertificate,
     config::DaProviderConfig,
     error::DaApiError,
+    nitro::certificate::CasCertificate,
     nitro::{
         types::{
-            DAStoreResponse, GenerateCertificateValidityProofResponse,
-            GenerateReadPreimageProofResponse, JsonRpcResponse, MaxMessageSizeResult,
-            PreImagesResult, RecoverPayloadAndPreimagesResult, RecoverPayloadResult,
+            DAStoreResponse, JsonRpcResponse, MaxMessageSizeResult, RecoverPayloadResult,
             SupportedHeaderBytesResult,
         },
         utils::{extract_da_sequencer_msg_from_espresso_da_certificate, verify_batch_data},
@@ -41,22 +39,6 @@ pub trait DaApi: Send + Sync {
         sequencer_msg: Bytes,
     ) -> RpcResult<RecoverPayloadResult>;
 
-    #[method(name = "collectPreimages")]
-    async fn collect_preimages(
-        &self,
-        batch_num: U64,
-        batch_block_hash: FixedBytes<32>,
-        sequencer_msg: Bytes,
-    ) -> RpcResult<PreImagesResult>;
-
-    #[method(name = "recoverPayloadAndPreimages")]
-    async fn recover_payload_and_preimages(
-        &self,
-        batch_num: U64,
-        batch_block_hash: FixedBytes<32>,
-        sequencer_msg: Bytes,
-    ) -> RpcResult<RecoverPayloadAndPreimagesResult>;
-
     // /// Writer methods ///
 
     #[method(name = "getMaxMessageSize")]
@@ -64,20 +46,6 @@ pub trait DaApi: Send + Sync {
 
     #[method(name = "store")]
     async fn store(&self, message: Bytes, timeout: U64) -> RpcResult<DAStoreResponse>;
-
-    #[method(name = "generateReadPreimageProof")]
-    async fn generate_read_preimage_proof(
-        &self,
-        cert_hash: [u8; 32],
-        offset: U64,
-        certificate: Bytes,
-    ) -> RpcResult<GenerateReadPreimageProofResponse>;
-
-    #[method(name = "generateCertificateValidityProof")]
-    async fn generate_certificate_validity_proof(
-        &self,
-        certificate: Bytes,
-    ) -> RpcResult<GenerateCertificateValidityProofResponse>;
 }
 
 #[derive(Debug)]
@@ -203,111 +171,6 @@ impl DaApiServer for NitroDaServer {
         }
     }
 
-    async fn collect_preimages(
-        &self,
-        batch_num: U64,
-        batch_block_hash: FixedBytes<32>,
-        sequencer_msg: Bytes,
-    ) -> RpcResult<PreImagesResult> {
-        if sequencer_msg.len() <= 40 {
-            return Err(DaApiError::InvalidSequencerMessageLength(40, sequencer_msg.len()).into());
-        }
-
-        let da_endpoint = self
-            .router
-            .get(&self.current_da_provider.load(Ordering::Relaxed))
-            .map(|config| config.endpoint_url.clone())
-            .ok_or(DaApiError::NoDaProvidersConfigured)?;
-
-        let da_certificate_format =
-            extract_da_sequencer_msg_from_espresso_da_certificate(&sequencer_msg).map_err(
-                |err| ErrorObjectOwned::from(DaApiError::CertificateValidation(err.to_string())),
-            )?;
-
-        let request_body = json!({
-            "jsonrpc": "2.0",
-            "method": "daprovider_collectPreimages",
-            "params": [
-                batch_num,
-                batch_block_hash,
-                da_certificate_format
-                ],
-            "id": 1
-        });
-        let result = self
-            .client
-            .post(&da_endpoint)
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|err| ErrorObjectOwned::from(DaApiError::Rpc(err.to_string())))?
-            .json::<JsonRpcResponse<PreImagesResult>>()
-            .await
-            .map_err(|err| ErrorObjectOwned::from(DaApiError::Rpc(err.to_string())))?;
-
-        match result {
-            JsonRpcResponse::Success { result } => Ok(result),
-            JsonRpcResponse::Error { error } => Err(ErrorObjectOwned::owned(
-                error.code,
-                error.message,
-                None::<()>,
-            )),
-        }
-    }
-
-    async fn recover_payload_and_preimages(
-        &self,
-        batch_num: U64,
-        batch_block_hash: FixedBytes<32>,
-        sequencer_msg: Bytes,
-    ) -> RpcResult<RecoverPayloadAndPreimagesResult> {
-        if sequencer_msg.len() <= 40 {
-            return Err(DaApiError::InvalidSequencerMessageLength(40, sequencer_msg.len()).into());
-        }
-        // let header_byte = Bytes::from_str(&format!("0x{:02x}", sequencer_msg[40])).unwrap();
-
-        let da_endpoint = self
-            .router
-            .get(&self.current_da_provider.load(Ordering::Relaxed))
-            .map(|config| config.endpoint_url.clone())
-            .ok_or(DaApiError::NoDaProvidersConfigured)?;
-
-        let da_certificate_format =
-            extract_da_sequencer_msg_from_espresso_da_certificate(&sequencer_msg).map_err(
-                |err| ErrorObjectOwned::from(DaApiError::CertificateValidation(err.to_string())),
-            )?;
-
-        let request_body = json!({
-            "jsonrpc": "2.0",
-            "method": "daprovider_recoverPayloadAndPreimages",
-            "params": [
-                batch_num,
-                batch_block_hash,
-                da_certificate_format
-                ],
-            "id": 1
-        });
-        let result = self
-            .client
-            .post(&da_endpoint)
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|err| ErrorObjectOwned::from(DaApiError::Rpc(err.to_string())))?
-            .json::<JsonRpcResponse<RecoverPayloadAndPreimagesResult>>()
-            .await
-            .map_err(|err| ErrorObjectOwned::from(DaApiError::Rpc(err.to_string())))?;
-
-        match result {
-            JsonRpcResponse::Success { result } => Ok(result),
-            JsonRpcResponse::Error { error } => Err(ErrorObjectOwned::owned(
-                error.code,
-                error.message,
-                None::<()>,
-            )),
-        }
-    }
-
     /// Writer methods ///
     async fn get_max_message_size(&self) -> RpcResult<MaxMessageSizeResult> {
         let da_endpoint = self
@@ -408,18 +271,9 @@ impl DaApiServer for NitroDaServer {
                 let error_code = error.code;
                 let error_message = error.message.clone();
                 match DaApiError::from(error) {
-                    DaApiError::FallbackRequested(message) => {
-                        // Switch to next DA provider in the router if error is a fallback request, otherwise return the error
-                        let current_provider_index =
-                            self.current_da_provider.load(Ordering::Relaxed);
-                        if (current_provider_index + 1) < self.router.len() as u8 {
-                            self.current_da_provider
-                                .store(current_provider_index + 1, Ordering::Relaxed);
-                        } else {
-                            // TODO: all DAs failed; falling back to L1!
-                        }
-
-                        Err(ErrorObjectOwned::owned(error_code, message, None::<()>))
+                    DaApiError::FallbackRequested(_) => {
+                        // TODO: add da provider index tracking logic
+                        unimplemented!();
                     }
                     _ => Err(ErrorObjectOwned::owned(
                         error_code,
@@ -427,111 +281,6 @@ impl DaApiServer for NitroDaServer {
                         None::<()>,
                     )),
                 }
-            }
-        }
-    }
-
-    /// VALIDATOR METHODS ///
-    async fn generate_read_preimage_proof(
-        &self,
-        cert_hash: [u8; 32],
-        offset: U64,
-        certificate: Bytes,
-    ) -> RpcResult<GenerateReadPreimageProofResponse> {
-        // let header_byte = Bytes::from_str(&format!("0x{:02x}", certificate[150])).unwrap();
-
-        let da_endpoint = self
-            .router
-            .get(&self.current_da_provider.load(Ordering::Relaxed))
-            .map(|config| config.endpoint_url.clone())
-            .ok_or(DaApiError::NoDaProvidersConfigured)?;
-
-        let da_certificate_format =
-            extract_da_sequencer_msg_from_espresso_da_certificate(&certificate).map_err(|err| {
-                ErrorObjectOwned::from(DaApiError::CertificateValidation(err.to_string()))
-            })?;
-
-        let request_body = json!({
-            "jsonrpc": "2.0",
-            "method": "daprovider_generateReadPreimageProof",
-            "params": [
-                cert_hash,
-                offset,
-                da_certificate_format
-                ],
-            "id": 1
-        });
-
-        let result = self
-            .client
-            .post(&da_endpoint)
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|err| ErrorObjectOwned::from(DaApiError::Rpc(err.to_string())))?
-            .json::<JsonRpcResponse<GenerateReadPreimageProofResponse>>()
-            .await
-            .map_err(|err| ErrorObjectOwned::from(DaApiError::ParsingError(err.to_string())))?;
-
-        match result {
-            JsonRpcResponse::Success { result } => Ok(result),
-            JsonRpcResponse::Error { error } => {
-                let error_code = error.code;
-                let error_message = error.message.clone();
-                Err(ErrorObjectOwned::owned(
-                    error_code,
-                    error_message,
-                    None::<()>,
-                ))
-            }
-        }
-    }
-
-    async fn generate_certificate_validity_proof(
-        &self,
-        certificate: Bytes,
-    ) -> RpcResult<GenerateCertificateValidityProofResponse> {
-        let da_endpoint = self
-            .router
-            .get(&self.current_da_provider.load(Ordering::Relaxed))
-            .map(|config| config.endpoint_url.clone())
-            .ok_or(DaApiError::NoDaProvidersConfigured)?;
-
-        let da_certificate_format =
-            extract_da_sequencer_msg_from_espresso_da_certificate(&certificate).map_err(|err| {
-                ErrorObjectOwned::from(DaApiError::CertificateValidation(err.to_string()))
-            })?;
-
-        let request_body = json!({
-            "jsonrpc": "2.0",
-            "method": "daprovider_generateCertificateValidityProof",
-            "params": [
-                da_certificate_format
-                ],
-            "id": 1
-        });
-
-        let result = self
-            .client
-            .post(&da_endpoint)
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|err| ErrorObjectOwned::from(DaApiError::Rpc(err.to_string())))?
-            .json::<JsonRpcResponse<GenerateCertificateValidityProofResponse>>()
-            .await
-            .map_err(|err| ErrorObjectOwned::from(DaApiError::ParsingError(err.to_string())))?;
-
-        match result {
-            JsonRpcResponse::Success { result } => Ok(result),
-            JsonRpcResponse::Error { error } => {
-                let error_code = error.code;
-                let error_message = error.message.clone();
-                Err(ErrorObjectOwned::owned(
-                    error_code,
-                    error_message,
-                    None::<()>,
-                ))
             }
         }
     }
@@ -548,8 +297,8 @@ mod tests {
 
     use crate::da_api::{
         RollupType,
-        certificate::nitro::CasCertificate,
         config::{DaApiConfig, DaProviderConfig},
+        nitro::certificate::CasCertificate,
         nitro::types::{DAStoreResponse, RecoverPayloadResult},
         run,
     };
@@ -768,72 +517,6 @@ mod tests {
         assert!(
             err.contains("storage backend unavailable"),
             "unexpected error: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_store_fallback_error_switches_to_next_provider() {
-        let primary_mock = MockServer::start().await;
-        let fallback_mock = MockServer::start().await;
-
-        // Primary returns FallbackRequested
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "error": {
-                    "code": -32001, // TODO: replace with the actual FallbackRequested code from DaApiError
-                    "message": "DA provider requests fallback to next writer: storage temporarily unavailable"
-                }
-            })))
-            .mount(&primary_mock)
-            .await;
-
-        // Fallback returns success
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "result": {
-                    "serialized-da-cert": mock_downstream_cert_hex()
-                }
-            })))
-            .mount(&fallback_mock)
-            .await;
-
-        let addr: SocketAddr = "127.0.0.1:9966".parse().unwrap();
-        let _server =
-            spawn_server_with_endpoint(addr, primary_mock.uri(), Some(fallback_mock.uri()));
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        let client = HttpClientBuilder::default()
-            .build(format!("http://{addr}"))
-            .unwrap();
-
-        // First call hits primary → gets FallbackRequested → increments provider index
-        let first: Result<CasCertificate, _> = client
-            .request("daprovider_store", rpc_params![valid_message(), 5000u64])
-            .await;
-        assert!(
-            first.is_err(),
-            "first call should return the fallback error to caller"
-        );
-
-        // Second call should now hit the fallback provider
-        // NOTE: remove ignore once build_and_sign_payload is implemented
-        let second: Result<DAStoreResponse, _> = client
-            .request("daprovider_store", rpc_params![valid_message(), 5000u64])
-            .await;
-        assert!(
-            second.is_ok(),
-            "second call should succeed via fallback provider"
-        );
-
-        // Verify exactly 1 request hit the primary, 0 hit the fallback (for now)
-        let primary_hits = primary_mock.received_requests().await.unwrap().len();
-        assert_eq!(
-            primary_hits, 1,
-            "primary should have received exactly 1 request"
         );
     }
 }
