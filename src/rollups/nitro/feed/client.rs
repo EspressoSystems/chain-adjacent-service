@@ -1,8 +1,7 @@
 use std::time::Duration;
 
-use alloy::primitives::Keccak256;
+use alloy::primitives::{Address, FixedBytes, Keccak256};
 use base64::Engine as _;
-use espresso_types::Transaction;
 use futures::StreamExt;
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -12,7 +11,7 @@ use yawc::{
 };
 
 use super::message::{BroadcastFeedMessage, BroadcastMessage};
-use crate::rollups::nitro::types::Nitro;
+use crate::rollups::nitro::utils::recover_signer_address;
 use crate::utils::exponential_backoff;
 
 pub const FEED_SERVER_VERSION: u64 = 2;
@@ -33,6 +32,8 @@ pub struct BroadcasterClientConfig {
     pub enable_compression: bool,
     pub require_feed_server_version: bool,
     pub require_chain_id: bool,
+
+    pub trusted_sequencer_addresses: Vec<Address>,
 }
 
 impl Default for BroadcasterClientConfig {
@@ -46,6 +47,8 @@ impl Default for BroadcasterClientConfig {
             enable_compression: true,
             require_feed_server_version: false,
             require_chain_id: false,
+
+            trusted_sequencer_addresses: vec![],
         }
     }
 }
@@ -69,7 +72,7 @@ pub enum BroadcasterClientError {
     #[error("signature verification failed for seq {seq_num}: {reason}")]
     InvalidSignature { seq_num: u64, reason: String },
     #[error("espresso_submission_channel send error: {0}")]
-    ChannelSendError(#[from] mpsc::error::SendError<Transaction>),
+    ChannelSendError(#[from] mpsc::error::SendError<BroadcastFeedMessage>),
     #[error("invalid message: {0}")]
     InvalidMessage(String),
 }
@@ -95,8 +98,7 @@ pub struct BroadcasterClient {
     chain_id: u64,
     next_seq_num: u64,
     first_reconnect_attempt: bool,
-    rollup: Nitro,
-    espresso_submission_channel: mpsc::Sender<Transaction>,
+    espresso_submission_channel: mpsc::Sender<BroadcastFeedMessage>,
 }
 
 impl BroadcasterClient {
@@ -105,8 +107,7 @@ impl BroadcasterClient {
         websocket_url: String,
         chain_id: u64,
         current_message_count: u64,
-        rollup: Nitro,
-        espresso_submission_channel: mpsc::Sender<Transaction>,
+        espresso_submission_channel: mpsc::Sender<BroadcastFeedMessage>,
     ) -> Self {
         Self {
             config,
@@ -114,7 +115,6 @@ impl BroadcasterClient {
             chain_id,
             next_seq_num: current_message_count,
             first_reconnect_attempt: true,
-            rollup,
             espresso_submission_channel,
         }
     }
@@ -419,12 +419,7 @@ impl BroadcasterClient {
                 }
             }
 
-            let espresso_transactions = self
-                .rollup
-                .create_espresso_transaction_from_broadcast_feed_messages(validated_messages)
-                .map_err(|e| BroadcasterClientError::InvalidMessage(e.to_string()))?;
-
-            for tx in espresso_transactions {
+            for tx in validated_messages {
                 self.espresso_submission_channel
                     .send(tx)
                     .await
@@ -485,10 +480,7 @@ impl BroadcasterClient {
         hasher.update(&serialized_message);
         let message_hash = hasher.finalize();
 
-        if !(self
-            .rollup
-            .signature_from_known_sequencer(message_hash, &message.signature))
-        {
+        if !(self.signature_from_known_sequencer(message_hash, &message.signature)) {
             return Err(BroadcasterClientError::InvalidSignature {
                 seq_num: message.sequence_number,
                 reason: "signature not verified: signer not approved".into(),
@@ -497,6 +489,22 @@ impl BroadcasterClient {
 
         Ok(())
     }
+
+    /// Checks if the signature on the message hash is valid and
+    /// is from a sequencer in the `trusted_sequencer_addresses` list.
+    pub fn signature_from_known_sequencer(
+        &self,
+        messages_hash: FixedBytes<32>,
+        signature: &[u8],
+    ) -> bool {
+        match recover_signer_address(messages_hash, signature) {
+            Ok(signer) => self.config.trusted_sequencer_addresses.contains(&signer),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to recover signer address from message signature");
+                false
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -504,7 +512,9 @@ mod broadcast_client_tests {
     use std::net::SocketAddr;
     use std::time::Duration;
 
+    use alloy::primitives::{Address, Keccak256};
     use futures::StreamExt;
+    use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
     use tokio::time::timeout;
 
     use super::{
@@ -512,7 +522,9 @@ mod broadcast_client_tests {
         HEADER_CHAIN_ID, HEADER_FEED_CLIENT_VERSION, HEADER_FEED_SERVER_VERSION,
         HEADER_REQUESTED_SEQ_NUM,
     };
-    use crate::rollups::nitro::feed::broadcaster::{Broadcaster, BroadcasterConfig};
+    use crate::rollups::nitro::feed::broadcaster::{
+        Broadcaster, BroadcasterConfig, DataSignerFunc,
+    };
     use crate::rollups::nitro::feed::message::BroadcastMessage;
     use crate::rollups::nitro::feed::ws_server::WsBroadcastServerConfig;
     use crate::rollups::nitro::types::MessageWithMetadata;
@@ -583,6 +595,148 @@ mod broadcast_client_tests {
                 broadcaster.client_count()
             )
         });
+    }
+
+    fn address_from_secret(secret: &SecretKey) -> Address {
+        let public = PublicKey::from_secret_key(&Secp256k1::new(), secret);
+        let uncompressed = public.serialize_uncompressed();
+        let mut hasher = Keccak256::new();
+        hasher.update(&uncompressed[1..]);
+        let hash = hasher.finalize();
+        Address::from_slice(&hash[12..])
+    }
+
+    fn message_hash(
+        message: &super::BroadcastFeedMessage,
+        chain_id: u64,
+    ) -> alloy::primitives::FixedBytes<32> {
+        let serialized_message =
+            serde_json::to_vec(&message.message).expect("failed to serialize message");
+        let mut hasher = Keccak256::new();
+        hasher.update(b"Arbitrum Nitro Feed:");
+        hasher.update(&message.sequence_number.to_be_bytes());
+        hasher.update(&chain_id.to_be_bytes());
+        hasher.update(&serialized_message);
+        hasher.finalize()
+    }
+
+    #[tokio::test]
+    async fn test_preflight_and_broadcast_with_local_server() {
+        let chain_id: u64 = 42161;
+
+        let signer_secret = SecretKey::from_byte_array([7u8; 32]).expect("valid secret key");
+        let trusted_signer = address_from_secret(&signer_secret);
+
+        let data_signer: DataSignerFunc = Box::new(move |hash: &[u8]| {
+            let secp = Secp256k1::new();
+            let digest: [u8; 32] = hash
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("invalid digest length"))?;
+            let msg = Message::from_digest(digest);
+            let sig = secp.sign_ecdsa_recoverable(msg, &signer_secret);
+            let (rec_id, compact) = sig.serialize_compact();
+            let mut out = Vec::with_capacity(65);
+            out.extend_from_slice(&compact);
+            out.push(i32::from(rec_id) as u8);
+            Ok(out)
+        });
+
+        let config = BroadcasterConfig {
+            ws_server: WsBroadcastServerConfig {
+                addr: "127.0.0.1".to_string(),
+                port: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let broadcaster = Broadcaster::new(config, chain_id, Some(data_signer));
+        let addr = broadcaster.start().await.expect("start broadcaster");
+        eprintln!("[test] broadcaster listening at ws://{addr}/feed");
+
+        let sample_message = broadcaster
+            .new_broadcast_feed_message(MessageWithMetadata::default(), 1, None, vec![])
+            .expect("failed to create signed broadcast message");
+        eprintln!(
+            "[test] sample message seq={} sig_len={}",
+            sample_message.sequence_number,
+            sample_message.signature.len()
+        );
+
+        let recovered = super::recover_signer_address(
+            message_hash(&sample_message, chain_id),
+            &sample_message.signature,
+        )
+        .expect("failed to recover signer from generated sample message");
+        eprintln!("[test] trusted signer={trusted_signer:?}, recovered signer={recovered:?}");
+        assert_eq!(
+            recovered, trusted_signer,
+            "generated signature signer does not match trusted signer"
+        );
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let client_config = BroadcasterClientConfig {
+            require_feed_server_version: true,
+            require_chain_id: true,
+            trusted_sequencer_addresses: vec![trusted_signer],
+            ..Default::default()
+        };
+
+        let mut client = super::BroadcasterClient::new(
+            client_config,
+            format!("ws://{addr}/feed"),
+            chain_id,
+            0,
+            tx,
+        );
+
+        let url: url::Url = format!("ws://{addr}/feed").parse().expect("valid ws url");
+        let preflight = client.validate_preflight_headers(&url, 0).await;
+        eprintln!("[test] preflight result={preflight:?}");
+        assert!(
+            preflight.is_ok(),
+            "preflight should pass against local broadcaster"
+        );
+
+        let mut client_task = tokio::spawn(async move { client.start().await });
+
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if broadcaster.client_count() >= 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("client failed to connect to broadcaster within 5s");
+        eprintln!("[test] client connected; start broadcast loop");
+
+        let received = timeout(Duration::from_secs(10), async {
+            loop {
+                broadcaster.broadcast_feed_messages(vec![sample_message.clone()]);
+
+                tokio::select! {
+                    client_result = &mut client_task => {
+                        let client_result = client_result.expect("client task panicked");
+                        panic!("client exited before receiving broadcast: {client_result:?}");
+                    }
+                    maybe_msg = rx.recv() => {
+                        if let Some(msg) = maybe_msg {
+                            break msg;
+                        }
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for client to receive broadcast message");
+
+        assert_eq!(received.sequence_number, sample_message.sequence_number);
+        assert_eq!(received.message, sample_message.message);
+
+        client_task.abort();
+        broadcaster.stop();
     }
 
     #[tokio::test]
@@ -773,7 +927,6 @@ mod broadcast_client_tests {
             format!("ws://{addr}/feed"),
             client_chain_id,
             0,
-            make_dummy_nitro(),
             tokio::sync::mpsc::channel(1).0,
         );
 
@@ -802,7 +955,6 @@ mod broadcast_client_tests {
             format!("ws://{mock_addr}/feed"),
             8742,
             0,
-            make_dummy_nitro(),
             tokio::sync::mpsc::channel(1).0,
         );
 
@@ -830,7 +982,6 @@ mod broadcast_client_tests {
             format!("ws://{mock_addr}/feed"),
             8742,
             0,
-            make_dummy_nitro(),
             tokio::sync::mpsc::channel(1).0,
         );
 
@@ -857,7 +1008,6 @@ mod broadcast_client_tests {
             format!("ws://{mock_addr}/feed"),
             8742,
             0,
-            make_dummy_nitro(),
             tokio::sync::mpsc::channel(1).0,
         );
 
@@ -869,17 +1019,6 @@ mod broadcast_client_tests {
             ),
             "expected MissingFeedServerVersion, got: {result:?}"
         );
-    }
-
-    // -- Helpers --
-
-    fn make_dummy_nitro() -> crate::rollups::nitro::types::Nitro {
-        let (_tx, rx) = tokio::sync::mpsc::channel(1);
-        crate::rollups::nitro::types::Nitro::new(
-            vec![],
-            espresso_types::NamespaceId::from(42161u64),
-            rx,
-        )
     }
 
     /// Start a mock HTTP server that does a proper `tokio-tungstenite`
@@ -932,28 +1071,21 @@ pub mod testing {
     use std::collections::HashMap;
     use std::time::Duration;
 
-    use espresso_types::{NamespaceId, Transaction};
     use tokio::sync::mpsc;
 
     use crate::rollups::nitro::{
         feed::{
-            client::{BroadcasterClient, BroadcasterClientConfig, BroadcasterClientError},
-            message::BroadcastMessage,
+            client::{BroadcasterClient, BroadcasterClientConfig},
+            message::{BroadcastFeedMessage, BroadcastMessage},
         },
-        types::{Nitro, NitroRollupQueueEntry},
+        types::NitroRollupQueueEntry,
     };
     use crate::rollups::rollup::RollupQueueEntry;
 
     const TEST_NAMESPACE_ID: u64 = 42161;
 
-    fn make_test_nitro_rollup() -> Nitro {
-        let (_tx, rx) = mpsc::channel(1);
-        Nitro::new(vec![], NamespaceId::from(TEST_NAMESPACE_ID), rx)
-    }
-
-    fn make_test_broadcaster_client() -> (BroadcasterClient, mpsc::Receiver<Transaction>) {
+    fn make_test_broadcaster_client() -> (BroadcasterClient, mpsc::Receiver<BroadcastFeedMessage>) {
         let (tx, rx) = mpsc::channel(256);
-        let rollup = make_test_nitro_rollup();
         let client = BroadcasterClient::new(
             BroadcasterClientConfig::default(),
             // TODO: in future, we should modify the tests
@@ -963,7 +1095,6 @@ pub mod testing {
             "ws://localhost:8080".to_string(),
             TEST_NAMESPACE_ID,
             0,
-            rollup,
             tx,
         );
         (client, rx)
@@ -1008,16 +1139,12 @@ pub mod testing {
             .await
             .expect("failed to connect to Arbitrum feed");
 
-        let (_tx, rx_batch) = mpsc::channel(1);
-        let rollup = Nitro::new(vec![], NamespaceId::from(ARB_CHAIN_ID), rx_batch);
-
         let (tx, mut rx) = mpsc::channel(256);
         let mut client = BroadcasterClient::new(
             BroadcasterClientConfig::default(),
             ARB_FEED_URL.to_string(),
             ARB_CHAIN_ID,
             0,
-            rollup,
             tx,
         );
 
@@ -1068,23 +1195,16 @@ pub mod testing {
             let result = client.process_message(&payload).await;
             assert!(result.is_ok(), "process_message failed: {:?}", result.err());
 
-            let tx = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            let received_message = tokio::time::timeout(Duration::from_secs(1), rx.recv())
                 .await
                 .expect("timeout waiting for transaction from channel")
                 .expect("channel closed before receiving transaction");
 
-            let parsed_messages = client
-                .rollup
-                .parse_nitro_hotshot_payload(tx.payload())
-                .expect("failed to parse nitro transaction payload");
-
-            for message in parsed_messages {
-                queue.push(NitroRollupQueueEntry {
-                    message_with_meta: message.message,
-                    pos: message.sequence_number,
-                    hotshot_height: 0,
-                });
-            }
+            queue.push(NitroRollupQueueEntry {
+                message_with_meta: received_message.message,
+                pos: received_message.sequence_number,
+                hotshot_height: 0,
+            });
         }
 
         // Now compare the messages in the queue with the original broadcast messages

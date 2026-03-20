@@ -103,27 +103,6 @@ impl Broadcaster {
         self.broadcast_feed_messages(vec![bfm]);
     }
 
-    pub fn broadcast_messages(
-        &self,
-        messages: Vec<MessageWithBlockInfo>,
-        first_msg_idx: u64,
-    ) -> Result<(), anyhow::Error> {
-        let mut feed_messages = Vec::with_capacity(messages.len());
-        for (i, msg) in messages.into_iter().enumerate() {
-            #[expect(clippy::arithmetic_side_effects)]
-            let seq = first_msg_idx + i as u64;
-            let bfm = self.new_broadcast_feed_message(
-                msg.message_with_meta,
-                seq,
-                msg.block_hash,
-                msg.block_metadata,
-            )?;
-            feed_messages.push(bfm);
-        }
-        self.broadcast_feed_messages(feed_messages);
-        Ok(())
-    }
-
     pub fn broadcast_feed_messages(&self, messages: Vec<BroadcastFeedMessage>) {
         let bm = BroadcastMessage {
             version: 1,
@@ -329,27 +308,6 @@ mod tests {
 
         assert!(bfm.signature.is_empty());
         assert_eq!(bfm.sequence_number, 5);
-    }
-
-    #[tokio::test]
-    async fn test_broadcast_messages_batch() {
-        let b = Broadcaster::new(BroadcasterConfig::default(), 1, None);
-
-        let batch = vec![
-            MessageWithBlockInfo {
-                message_with_meta: empty_message_with_metadata(),
-                block_hash: None,
-                block_metadata: vec![],
-            },
-            MessageWithBlockInfo {
-                message_with_meta: empty_message_with_metadata(),
-                block_hash: None,
-                block_metadata: vec![],
-            },
-        ];
-
-        b.broadcast_messages(batch, 10).expect("broadcast batch");
-        assert_eq!(b.get_cached_message_count(), 2);
     }
 
     #[test]

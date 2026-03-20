@@ -1,5 +1,6 @@
 use alloy::primitives::Bytes;
 use anyhow::Result;
+use espresso_types::NamespaceId;
 
 use crate::espresso_client::types::NamespaceTransactionsInRange;
 
@@ -13,6 +14,9 @@ pub trait Rollup {
     type BatchMessage;
     type VerificationContext;
     const PARSE_BATCH_FN: fn(Bytes) -> Result<Vec<Self::BatchMessage>>;
+    const ESPRESSO_TX_PAYLOAD_BUILD_FN: fn(&mut Vec<Self::Entry>) -> Vec<u8>;
+
+    fn namespace_id(&self) -> NamespaceId;
 
     fn parse_hotshot_transactions(
         &self,

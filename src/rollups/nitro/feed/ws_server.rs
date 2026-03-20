@@ -199,11 +199,11 @@ impl WsBroadcastServer {
         ))
         .await?;
         let local_addr = listener.local_addr()?;
-        let cancel = CancellationToken::new();
 
         tracing::info!(addr = %local_addr, "broadcast server listening");
 
         let shared = self.shared.clone();
+        let cancel = CancellationToken::new();
         let accept_cancel = cancel.clone();
         tokio::spawn(async move {
             accept_loop(listener, shared, accept_cancel).await;
