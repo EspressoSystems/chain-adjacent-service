@@ -3,6 +3,10 @@ name = "chain-agnostic-service"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "chain_agnostic_service"
+path = "src/lib.rs"
+
 [lints.clippy]
 let_and_return = "warn"
 uninlined_format_args = "warn"
@@ -11,7 +15,6 @@ unwrap_used = "deny"
 useless_let_if_seq = "warn"
 wildcard_imports = "warn"
 module_inception = "allow"
-
 
 [dependencies]
 reqwest = { version = "0.13", features = ["json"] }
@@ -29,4 +32,10 @@ tracing = "0.1.43"
 tracing-subscriber = { version = "0.3.22",  features = ["fmt", "json"] }
 serde_json = "1.0.145"
 thiserror = "2.0.18"
+jsonrpsee = {version="0.26.0", features = ["macros", "http-client", "async-client", "server","jsonrpsee-core"] }
+async-trait = "0.1.89"
 brotli = "7"
+
+[dev-dependencies]
+wiremock = "0.6.5"
+hex = "0.4.3"
