@@ -227,10 +227,7 @@ impl WsBroadcastServer {
     }
 
     pub(super) fn started(&self) -> bool {
-        self.state
-            .lock()
-            .map(|s| s.is_some())
-            .unwrap_or(false)
+        self.state.lock().map(|s| s.is_some()).unwrap_or(false)
     }
 
     pub(super) fn listener_addr(&self) -> Option<SocketAddr> {
@@ -262,11 +259,7 @@ impl WsBroadcastServer {
     }
 }
 
-async fn accept_loop(
-    listener: TcpListener,
-    shared: Arc<SharedState>,
-    cancel: CancellationToken,
-) {
+async fn accept_loop(listener: TcpListener, shared: Arc<SharedState>, cancel: CancellationToken) {
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
@@ -309,47 +302,45 @@ async fn handle_connection(
     let chain_id = shared.chain_id;
     let require_version = shared.config.require_version;
 
-    let callback =
-        move |req: &http::Request<()>,
-              mut resp: http::Response<()>|
-              -> Result<http::Response<()>, http::Response<Option<String>>> {
-            if let Some(val) = req.headers().get(HEADER_REQUESTED_SEQ_NUM) {
-                if let Ok(s) = val.to_str() {
-                    if let Ok(n) = s.parse::<u64>() {
-                        if let Ok(mut guard) = seq_num_capture.lock() {
-                            *guard = n;
-                        }
+    let callback = move |req: &http::Request<()>,
+                         mut resp: http::Response<()>|
+          -> Result<http::Response<()>, http::Response<Option<String>>> {
+        if let Some(val) = req.headers().get(HEADER_REQUESTED_SEQ_NUM) {
+            if let Ok(s) = val.to_str() {
+                if let Ok(n) = s.parse::<u64>() {
+                    if let Ok(mut guard) = seq_num_capture.lock() {
+                        *guard = n;
                     }
                 }
             }
+        }
 
-            if require_version {
-                let version_ok = req
-                    .headers()
-                    .get(HEADER_FEED_CLIENT_VERSION)
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .is_some_and(|v| v >= FEED_CLIENT_VERSION);
-                if !version_ok {
-                    let mut err_resp = http::Response::new(Some(format!(
-                        "Missing or invalid {}",
-                        HEADER_FEED_CLIENT_VERSION
-                    )));
-                    *err_resp.status_mut() = http::StatusCode::BAD_REQUEST;
-                    return Err(err_resp);
-                }
+        if require_version {
+            let version_ok = req
+                .headers()
+                .get(HEADER_FEED_CLIENT_VERSION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .is_some_and(|v| v >= FEED_CLIENT_VERSION);
+            if !version_ok {
+                let mut err_resp = http::Response::new(Some(format!(
+                    "Missing or invalid {}",
+                    HEADER_FEED_CLIENT_VERSION
+                )));
+                *err_resp.status_mut() = http::StatusCode::BAD_REQUEST;
+                return Err(err_resp);
             }
+        }
 
-            if let Ok(v) = FEED_SERVER_VERSION.to_string().parse() {
-                resp.headers_mut()
-                    .insert(HEADER_FEED_SERVER_VERSION, v);
-            }
-            if let Ok(v) = chain_id.to_string().parse() {
-                resp.headers_mut().insert(HEADER_CHAIN_ID, v);
-            }
+        if let Ok(v) = FEED_SERVER_VERSION.to_string().parse() {
+            resp.headers_mut().insert(HEADER_FEED_SERVER_VERSION, v);
+        }
+        if let Ok(v) = chain_id.to_string().parse() {
+            resp.headers_mut().insert(HEADER_CHAIN_ID, v);
+        }
 
-            Ok(resp)
-        };
+        Ok(resp)
+    };
 
     let ws_stream = tokio_tungstenite::accept_hdr_async(stream, callback).await?;
     let seq_num = requested_seq_num.lock().map(|g| *g).unwrap_or(0);
@@ -457,10 +448,10 @@ fn should_send(bm: &BroadcastMessage, last_sent_seq: Option<u64>) -> bool {
     }
     match last_sent_seq {
         None => !bm.messages.is_empty(),
-        Some(last) => bm.messages.iter().any(|m| {
-            m.as_ref()
-                .is_some_and(|msg| msg.sequence_number > last)
-        }),
+        Some(last) => bm
+            .messages
+            .iter()
+            .any(|m| m.as_ref().is_some_and(|msg| msg.sequence_number > last)),
     }
 }
 
@@ -480,10 +471,8 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::rollups::nitro::broadcast::client::{
-        FEED_CLIENT_VERSION, HEADER_FEED_CLIENT_VERSION,
-    };
-    use crate::rollups::nitro::broadcast::server::{Broadcaster, BroadcasterConfig};
+    use crate::rollups::nitro::feed::broadcaster::{Broadcaster, BroadcasterConfig};
+    use crate::rollups::nitro::feed::client::{FEED_CLIENT_VERSION, HEADER_FEED_CLIENT_VERSION};
     use crate::rollups::nitro::types::MessageWithMetadata;
     use futures::StreamExt;
     use tokio::time::timeout;
@@ -509,9 +498,8 @@ mod tests {
     async fn connect_client(
         addr: SocketAddr,
         requested_seq_num: u64,
-    ) -> tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    > {
+    ) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>
+    {
         let url = format!("ws://{addr}/feed");
         let request = http::Request::builder()
             .uri(&url)
@@ -523,10 +511,7 @@ mod tests {
                 "Sec-WebSocket-Key",
                 tokio_tungstenite::tungstenite::handshake::client::generate_key(),
             )
-            .header(
-                HEADER_FEED_CLIENT_VERSION,
-                FEED_CLIENT_VERSION.to_string(),
-            )
+            .header(HEADER_FEED_CLIENT_VERSION, FEED_CLIENT_VERSION.to_string())
             .header(HEADER_REQUESTED_SEQ_NUM, requested_seq_num.to_string())
             .body(())
             .expect("build request");
@@ -557,10 +542,7 @@ mod tests {
         assert_eq!(bm.version, 1);
         assert_eq!(bm.messages.len(), 1);
         assert_eq!(
-            bm.messages[0]
-                .as_ref()
-                .expect("non-null")
-                .sequence_number,
+            bm.messages[0].as_ref().expect("non-null").sequence_number,
             1
         );
 
@@ -586,10 +568,7 @@ mod tests {
             serde_json::from_str(frame.to_text().expect("text")).expect("json");
         assert_eq!(bm.messages.len(), 1);
         assert_eq!(
-            bm.messages[0]
-                .as_ref()
-                .expect("non-null")
-                .sequence_number,
+            bm.messages[0].as_ref().expect("non-null").sequence_number,
             0
         );
 
@@ -643,10 +622,7 @@ mod tests {
             serde_json::from_str(frame.to_text().expect("text")).expect("json");
         assert_eq!(bm.messages.len(), 3);
         assert_eq!(
-            bm.messages[0]
-                .as_ref()
-                .expect("non-null")
-                .sequence_number,
+            bm.messages[0].as_ref().expect("non-null").sequence_number,
             3
         );
 

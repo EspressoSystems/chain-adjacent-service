@@ -192,7 +192,7 @@ fn compute_message_hash(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rollups::nitro::broadcast::message::BroadcastFeedMessage;
+    use crate::rollups::nitro::feed::message::BroadcastFeedMessage;
     use crate::rollups::nitro::types::MessageWithMetadata;
     use std::time::Duration;
     use tokio::time::timeout;
