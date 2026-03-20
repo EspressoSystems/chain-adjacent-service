@@ -5,7 +5,7 @@ use crate::da_api::{
     nitro::certificate::{CASCertificateVersion, CERT_HEADER_SIZE_V1, CasCertificate},
 };
 
-const SEQUENCER_HEADER_LEN: usize = 40;
+pub const SEQUENCER_HEADER_LEN: usize = 40;
 // const CERT_START: usize = SEQUENCER_HEADER_LEN + DA_CERT_FLAG_LEN;
 // const ESPRESSO_CERT_LEN: usize = 1401; // 0..100 inclusive
 
@@ -37,11 +37,6 @@ pub fn extract_da_sequencer_msg_from_espresso_da_certificate(
 
     let res = [seq_msg, da_cert].concat();
     Ok(res.into())
-}
-
-// mock function
-pub fn verify_batch_data(message: Bytes) -> (u32, u32, u32, u32, Vec<u8>) {
-    (0, 0, 0, 0, message.to_vec())
 }
 
 #[cfg(test)]

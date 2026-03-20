@@ -6,13 +6,14 @@ use std::{
 use crate::da_api::{
     config::DaProviderConfig,
     error::DaApiError,
-    nitro::certificate::CasCertificate,
     nitro::{
+        certificate::CasCertificate,
+        test_utils::verify_batch_data,
         types::{
             DAStoreResponse, JsonRpcResponse, MaxMessageSizeResult, RecoverPayloadResult,
             SupportedHeaderBytesResult,
         },
-        utils::{extract_da_sequencer_msg_from_espresso_da_certificate, verify_batch_data},
+        utils::{SEQUENCER_HEADER_LEN, extract_da_sequencer_msg_from_espresso_da_certificate},
     },
 };
 use alloy::primitives::{Bytes, FixedBytes, U64};
@@ -120,7 +121,7 @@ impl DaApiServer for NitroDaServer {
             batch_num, batch_block_hash, sequencer_msg
         );
 
-        if sequencer_msg.len() <= 40 {
+        if sequencer_msg.len() <= SEQUENCER_HEADER_LEN {
             return Err(DaApiError::InvalidSequencerMessageLength(40, sequencer_msg.len()).into());
         }
         let da_endpoint = self
