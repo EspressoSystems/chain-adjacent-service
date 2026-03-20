@@ -23,7 +23,6 @@ fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
         DaProviderConfig {
             da_type_byte: Bytes::from_str("0x01").unwrap(),
             endpoint_url: da_provider_url,
-            auth_token: None,
         },
     );
 

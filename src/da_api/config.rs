@@ -20,13 +20,6 @@ pub struct DaProviderConfig {
     pub da_type_byte: Bytes,
 
     pub endpoint_url: String,
-
-    pub auth_token: Option<String>,
-}
-
-#[derive(Default, Debug, Clone, Deserialize, Serialize)]
-pub struct ZkConfig {
-    pub mock_zk: bool,
 }
 
 #[derive(Default, Debug, Clone, Deserialize, Serialize)]

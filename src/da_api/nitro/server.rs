@@ -14,7 +14,7 @@ use crate::da_api::{
             PreImagesResult, RecoverPayloadAndPreimagesResult, RecoverPayloadResult,
             SupportedHeaderBytesResult,
         },
-        utils::extract_da_sequencer_msg_from_espresso_da_certificate,
+        utils::{extract_da_sequencer_msg_from_espresso_da_certificate, verify_batch_data},
     },
 };
 use alloy::primitives::{Bytes, FixedBytes, U64};
@@ -24,7 +24,7 @@ use jsonrpsee::{
     types::ErrorObjectOwned,
 };
 use serde_json::json;
-use tracing::info;
+use tracing::{debug, info};
 
 #[rpc(server, namespace = "daprovider")]
 pub trait DaApi: Send + Sync {
@@ -104,7 +104,7 @@ impl NitroDaServer {
 #[async_trait]
 impl DaApiServer for NitroDaServer {
     async fn get_supported_header_bytes(&self) -> RpcResult<SupportedHeaderBytesResult> {
-        info!("Received get_supported_header_bytes request");
+        debug!("Received get_supported_header_bytes request");
 
         // Get the current DA provider to route this to
         let da_endpoint = self
@@ -537,11 +537,6 @@ impl DaApiServer for NitroDaServer {
     }
 }
 
-// mock function
-pub fn verify_batch_data(message: Bytes) -> (u32, u32, u32, u32, Vec<u8>) {
-    (0, 0, 0, 0, message.to_vec())
-}
-
 #[cfg(test)]
 mod tests {
     use alloy::primitives::{Bytes, b256};
@@ -578,7 +573,6 @@ mod tests {
             DaProviderConfig {
                 da_type_byte: Bytes::from_str("0x05").unwrap(),
                 endpoint_url: endpoint.clone(),
-                auth_token: None,
             },
         );
         da_providers.insert(
@@ -586,7 +580,6 @@ mod tests {
             DaProviderConfig {
                 da_type_byte: Bytes::from_str("0x80").unwrap(),
                 endpoint_url: fallback_uri.unwrap_or(endpoint.clone()),
-                auth_token: None,
             },
         );
         let config = DaApiConfig {
@@ -675,9 +668,6 @@ mod tests {
         let cas_cert =
             CasCertificate::try_from(response.unwrap()).expect("should convert to CasCertificate");
         // verify_batch_data returns (0,0,0,0,...) so all positions are 0
-        assert_eq!(cas_cert.start_message_pos, 0);
-        assert_eq!(cas_cert.end_message_pos, 0);
-        assert_eq!(cas_cert.start_hotshot_block, 0);
         assert_eq!(cas_cert.min_hotshot_block_still_in_streamer_queue, 0);
         assert_eq!(cas_cert.da_api_header_flag, 0x01);
         assert_eq!(cas_cert.da_provider_flag, 0x05);
