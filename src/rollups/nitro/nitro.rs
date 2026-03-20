@@ -423,7 +423,7 @@ pub mod testing {
             last_batch_delayed_messages_read: 0,
         };
         let content = b"hello world";
-        let batch = vec![BatchMessage::L2Msg(content.to_vec())];
+        let batch = vec![BatchMessage::L2Msg(content.to_vec().into())];
         let queue = vec![make_entry_with_l2msg(content, 0, 0)];
         assert!(nitro.verify_batch_messages(&batch, &queue, &ctx));
     }
