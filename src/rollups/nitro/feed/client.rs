@@ -330,25 +330,23 @@ impl BroadcasterClient {
                         "feed connection closed"
                     );
                 }
-                Ok(Some(frame)) => {
-                    match frame.opcode() {
-                        OpCode::Text | OpCode::Binary => {
-                            backoff = self.config.reconnect_initial_backoff;
-                            let frame = frame.into_payload();
-                            if let Err(e) = self.process_message(&frame).await {
-                                tracing::error!(error = %e, "error processing broadcast message");
-                            }
-                            continue;
+                Ok(Some(frame)) => match frame.opcode() {
+                    OpCode::Text | OpCode::Binary => {
+                        backoff = self.config.reconnect_initial_backoff;
+                        let frame = frame.into_payload();
+                        if let Err(e) = self.process_message(&frame).await {
+                            tracing::error!(error = %e, "error processing broadcast message");
                         }
-                        OpCode::Close => {
-                            tracing::warn!(
-                                url = %self.websocket_url,
-                                "server sent close frame"
-                            );
-                        }
-                        _ => continue,
+                        continue;
                     }
-                }
+                    OpCode::Close => {
+                        tracing::warn!(
+                            url = %self.websocket_url,
+                            "server sent close frame"
+                        );
+                    }
+                    _ => continue,
+                },
             }
 
             if self.first_reconnect_attempt {
@@ -397,7 +395,10 @@ impl BroadcasterClient {
             let mut validated_messages = Vec::new();
             for message in &msg.messages {
                 if message.is_none() {
-                    tracing::warn!(payload_len = payload.len(), "skipping null message in broadcast");
+                    tracing::warn!(
+                        payload_len = payload.len(),
+                        "skipping null message in broadcast"
+                    );
                     continue;
                 }
                 let message = message.as_ref().expect("checked is_none above");
@@ -432,7 +433,10 @@ impl BroadcasterClient {
         }
 
         if let Some(ref confirmed) = msg.confirmed_sequence_number_message {
-            tracing::debug!(seq_num = confirmed.sequence_number, "received confirmed sequence number");
+            tracing::debug!(
+                seq_num = confirmed.sequence_number,
+                "received confirmed sequence number"
+            );
         }
 
         Ok(())
@@ -508,9 +512,9 @@ mod broadcast_client_tests {
         HEADER_CHAIN_ID, HEADER_FEED_CLIENT_VERSION, HEADER_FEED_SERVER_VERSION,
         HEADER_REQUESTED_SEQ_NUM,
     };
-    use crate::rollups::nitro::broadcast::message::BroadcastMessage;
-    use crate::rollups::nitro::broadcast::server::{Broadcaster, BroadcasterConfig};
-    use crate::rollups::nitro::broadcast::ws_server::WsBroadcastServerConfig;
+    use crate::rollups::nitro::feed::broadcaster::{Broadcaster, BroadcasterConfig};
+    use crate::rollups::nitro::feed::message::BroadcastMessage;
+    use crate::rollups::nitro::feed::ws_server::WsBroadcastServerConfig;
     use crate::rollups::nitro::types::MessageWithMetadata;
 
     fn empty_msg() -> MessageWithMetadata {
@@ -534,9 +538,8 @@ mod broadcast_client_tests {
     async fn connect_ws_client(
         addr: SocketAddr,
         requested_seq_num: u64,
-    ) -> tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    > {
+    ) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>
+    {
         let url = format!("ws://{addr}/feed");
         let request = http::Request::builder()
             .uri(&url)
@@ -548,10 +551,7 @@ mod broadcast_client_tests {
                 "Sec-WebSocket-Key",
                 tokio_tungstenite::tungstenite::handshake::client::generate_key(),
             )
-            .header(
-                HEADER_FEED_CLIENT_VERSION,
-                FEED_CLIENT_VERSION.to_string(),
-            )
+            .header(HEADER_FEED_CLIENT_VERSION, FEED_CLIENT_VERSION.to_string())
             .header(HEADER_REQUESTED_SEQ_NUM, requested_seq_num.to_string())
             .body(())
             .expect("build request");
@@ -562,9 +562,7 @@ mod broadcast_client_tests {
         ws
     }
 
-    fn recv_broadcast_msg(
-        frame: tokio_tungstenite::tungstenite::Message,
-    ) -> BroadcastMessage {
+    fn recv_broadcast_msg(frame: tokio_tungstenite::tungstenite::Message) -> BroadcastMessage {
         serde_json::from_str(frame.to_text().expect("text frame")).expect("valid json")
     }
 
@@ -819,8 +817,7 @@ mod broadcast_client_tests {
     #[ignore] // reqwest doesn't cleanly expose 101 status from WS upgrade responses
     async fn test_server_incorrect_feed_server_version() {
         let wrong_version = FEED_SERVER_VERSION + 1;
-        let mock_addr =
-            start_mock_upgrade_server(Some(wrong_version), Some(8742)).await;
+        let mock_addr = start_mock_upgrade_server(Some(wrong_version), Some(8742)).await;
 
         let config = BroadcasterClientConfig {
             require_feed_server_version: true,
@@ -903,12 +900,13 @@ mod broadcast_client_tests {
             while let Ok((stream, _)) = listener.accept().await {
                 let callback = move |_req: &http::Request<()>,
                                      mut resp: http::Response<()>|
-                      -> Result<http::Response<()>, http::Response<Option<String>>>
-                {
+                      -> Result<
+                    http::Response<()>,
+                    http::Response<Option<String>>,
+                > {
                     if let Some(v) = feed_server_version {
                         if let Ok(hv) = v.to_string().parse() {
-                            resp.headers_mut()
-                                .insert(HEADER_FEED_SERVER_VERSION, hv);
+                            resp.headers_mut().insert(HEADER_FEED_SERVER_VERSION, hv);
                         }
                     }
                     if let Some(id) = chain_id {
@@ -938,10 +936,8 @@ pub mod testing {
     use tokio::sync::mpsc;
 
     use crate::rollups::nitro::{
-        broadcast::{
-            client::{
-                BroadcasterClient, BroadcasterClientConfig, BroadcasterClientError,
-            },
+        feed::{
+            client::{BroadcasterClient, BroadcasterClientConfig, BroadcasterClientError},
             message::BroadcastMessage,
         },
         types::{Nitro, NitroRollupQueueEntry},

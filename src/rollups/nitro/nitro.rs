@@ -1,5 +1,5 @@
 use crate::espresso_client::types::NamespaceTransactionsInRange;
-use crate::rollups::nitro::broadcast::message::BroadcastFeedMessage;
+use crate::rollups::nitro::feed::message::BroadcastFeedMessage;
 use crate::rollups::nitro::types::BatchMessage;
 use crate::rollups::nitro::types::LastBatchInfo;
 use crate::rollups::nitro::types::LegacyParsedNitroEspressoTransaction;

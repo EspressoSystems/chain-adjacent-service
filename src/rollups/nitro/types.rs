@@ -6,7 +6,7 @@ use serde_with::{base64::Base64, serde_as};
 use std::collections::VecDeque;
 use tokio::sync::mpsc;
 
-use crate::rollups::nitro::broadcast::message::{BroadcastFeedMessage, BroadcastMessage};
+use crate::rollups::nitro::feed::message::{BroadcastFeedMessage, BroadcastMessage};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct MessageWithMetadata {
