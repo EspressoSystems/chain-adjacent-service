@@ -38,6 +38,7 @@ serde_json = { version = "1.0.145", features = ["raw_value"] }
 serde_with = { version = "3.17.0", features = ["base64"] }
 thiserror = "2.0.18"
 tokio = { version = "1.49.0", features = ["time", "macros", "rt-multi-thread", "sync", "net"] }
+tokio-tungstenite = "0.26"
 tokio-util = { version = "0.7", features = ["codec"] }
 tracing = "0.1.43"
 tracing-subscriber = { version = "0.3.22",  features = ["fmt", "json"] }
