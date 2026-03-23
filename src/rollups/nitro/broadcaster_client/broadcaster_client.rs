@@ -173,7 +173,6 @@ impl BroadcasterClient {
                     level: CompressionLevel::best(),
                     server_no_context_takeover: true,
                     client_no_context_takeover: true,
-                    ..Default::default()
                 }),
                 no_delay: true,
                 ..Default::default()
@@ -200,7 +199,7 @@ impl BroadcasterClient {
                 self.websocket_url, self.config.timeout
             ))
         })?
-        .map_err(|e| BroadcasterClientError::WebSocket(e))?;
+        .map_err(BroadcasterClientError::WebSocket)?;
 
         self.first_reconnect_attempt = true;
         tracing::info!(
@@ -409,22 +408,22 @@ impl BroadcasterClient {
 
         let mut broadcast_feed_messages = Vec::new();
         for message in &msg.messages {
-            if message.is_none() {
+            if let Some(message) = message {
+                match self.is_valid_signature(message) {
+                    Ok(_) => (),
+                    Err(e) => {
+                        tracing::error!(seq_num = message.sequence_number, error = %e, "invalid signature for broadcast message, skipping");
+                        continue;
+                    }
+                }
+                broadcast_feed_messages.push(message.clone());
+            } else {
                 tracing::warn!(
                     payload_len = payload.len(),
                     "skipping null message in broadcast"
                 );
                 continue;
             }
-            let message = message.as_ref().unwrap();
-            match self.is_valid_signature(message) {
-                Ok(_) => (),
-                Err(e) => {
-                    tracing::error!(seq_num = message.sequence_number, error = %e, "invalid signature for broadcast message, skipping");
-                    continue;
-                }
-            }
-            broadcast_feed_messages.push(message.clone());
         }
 
         // Create an espresso transaction from the broadcast messages and add it to the rollup queue
@@ -437,13 +436,11 @@ impl BroadcasterClient {
             self.espresso_submission_channel
                 .send(tx)
                 .await
-                .map_err(|e| BroadcasterClientError::ChannelSendError(e))?;
+                .map_err(BroadcasterClientError::ChannelSendError)?;
         }
 
-        for message in &msg.messages {
-            if let Some(message) = message {
-                self.next_seq_num = message.sequence_number + 1;
-            }
+        for message in msg.messages.iter().flatten() {
+            self.next_seq_num = message.sequence_number + 1;
         }
 
         Ok(())
@@ -491,12 +488,12 @@ impl BroadcasterClient {
         // Sequencer number is u64 and will occupt an array of 8 bytes
         let mut seq_bytes = [0u8; 8];
         seq_bytes.copy_from_slice(&message.sequence_number.to_be_bytes());
-        hasher.update(&seq_bytes);
+        hasher.update(seq_bytes);
 
         // ChainId is also u64 and will occupy an array of 8 bytes
         let mut chain_id_bytes = [0u8; 8];
         chain_id_bytes.copy_from_slice(&self.chain_id.to_be_bytes());
-        hasher.update(&chain_id_bytes);
+        hasher.update(chain_id_bytes);
 
         hasher.update(&serialized_message);
         let message_hash = hasher.finalize();
@@ -585,7 +582,6 @@ pub mod testing {
                 level: CompressionLevel::best(),
                 server_no_context_takeover: true,
                 client_no_context_takeover: true,
-                ..Default::default()
             }),
             no_delay: true,
             ..Default::default()
@@ -679,10 +675,8 @@ pub mod testing {
         // Now compare the messages in the queue with the original broadcast messages
         let mut original_messages = HashMap::new();
         for broadcast_message in broadcast_messages {
-            for message in broadcast_message.messages {
-                if let Some(message) = message {
-                    original_messages.insert(message.sequence_number, message.message);
-                }
+            for message in broadcast_message.messages.into_iter().flatten() {
+                original_messages.insert(message.sequence_number, message.message);
             }
         }
 

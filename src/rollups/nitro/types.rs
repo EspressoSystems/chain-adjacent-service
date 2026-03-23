@@ -1,4 +1,4 @@
-use alloy::primitives::{Address, B256, FixedBytes, U256, Bytes};
+use alloy::primitives::{Address, B256, Bytes, FixedBytes, U256};
 use alloy_rlp::{Decodable, Error, PayloadView, RlpDecodable, RlpEncodable};
 use espresso_types::NamespaceId;
 use serde::{Deserialize, Serialize};
@@ -6,9 +6,7 @@ use serde_with::{base64::Base64, serde_as};
 use std::collections::VecDeque;
 use tokio::sync::mpsc;
 
-use crate::rollups::nitro::broadcaster_client::message_types::{
-    BroadcastFeedMessage,
-};
+use crate::rollups::nitro::broadcaster_client::message_types::BroadcastFeedMessage;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct MessageWithMetadata {

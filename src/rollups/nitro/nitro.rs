@@ -307,7 +307,7 @@ impl Nitro {
             payload.extend_from_slice(&(encoded_msg.len() as u64).to_be_bytes());
             payload.extend_from_slice(&encoded_msg);
         }
-        return Ok(vec![Transaction::new(self.namespace_id, payload)]);
+        Ok(vec![Transaction::new(self.namespace_id, payload)])
     }
 
     // Parses the payload of an Espresso transaction into an array of BroadcastFeedMessage
