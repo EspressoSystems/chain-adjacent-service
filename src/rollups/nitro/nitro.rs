@@ -217,15 +217,19 @@ impl Nitro {
 
         let mut entries = Vec::new();
         for (index, msg) in parsed.messages.into_iter().enumerate() {
-            let Ok(message_with_meta) = alloy_rlp::decode_exact::<MessageWithMetadata>(&msg) else {
-                tracing::warn!("failed to decode message with metadata");
-                continue;
+            let data = alloy_rlp::decode_exact::<MessageWithMetadata>(&msg);
+            match data {
+                Ok(message_with_meta) => {
+                    entries.push(NitroRollupQueueEntry {
+                        message_with_meta,
+                        pos: parsed.indices[index],
+                        hotshot_height,
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!("failed to decode message with metadata: {e}");
+                }
             };
-            entries.push(NitroRollupQueueEntry {
-                message_with_meta,
-                pos: parsed.indices[index],
-                hotshot_height,
-            });
         }
         entries
     }

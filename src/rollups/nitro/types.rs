@@ -87,7 +87,7 @@ impl Decodable for L1IncomingMessage {
 
         let header =
             decode_optional_field::<L1IncomingMessageHeader>(fields[0], NilPolicy::EmptyListOnly)?;
-        let l2msg = alloy_rlp::decode_exact::<Vec<u8>>(fields[1])?;
+        let l2msg = alloy_rlp::decode_exact::<Bytes>(fields[1])?.to_vec();
         let legacy_batch_gas_cost = if fields.len() > 2 {
             decode_optional_field::<u64>(fields[2], NilPolicy::EmptyStringOnly)?
         } else {
