@@ -3,7 +3,7 @@ use std::time::Duration;
 use alloy::primitives::Keccak256;
 use base64::Engine as _;
 use espresso_types::Transaction;
-use futures::{StreamExt, TryFutureExt};
+use futures::StreamExt;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use yawc::frame::OpCode;
@@ -517,26 +517,20 @@ impl BroadcasterClient {
 
 #[cfg(test)]
 pub mod testing {
-    use std::collections::BTreeMap;
+    use std::collections::HashMap;
     use std::time::Duration;
 
     use espresso_types::{NamespaceId, Transaction};
     use tokio::sync::mpsc;
 
-    use crate::config::StreamerConfig;
-    use crate::espresso_e2e::espresso_dev_node::EspressoDevNode;
     use crate::rollups::nitro::{
         broadcaster_client::{
-            broadcaster_client::{
-                BroadcasterClient, BroadcasterClientConfig, BroadcasterClientError,
-            },
+            broadcaster_client::{BroadcasterClient, BroadcasterClientConfig},
             message_types::BroadcastMessage,
         },
-        types::Nitro,
+        types::{Nitro, NitroRollupQueueEntry},
     };
     use crate::rollups::rollup::RollupQueueEntry;
-    use crate::streamer::streamer::Streamer;
-    use crate::submitter::submitter::{Submitter, SubmitterConfig, SubmitterError};
 
     const TEST_NAMESPACE_ID: u64 = 42161;
 
@@ -578,7 +572,7 @@ pub mod testing {
 
         const ARB_FEED_URL: &str = "wss://arb1-feed.arbitrum.io/feed";
         const ARB_CHAIN_ID: u64 = 42161;
-        const NUM_MESSAGES: usize = 5;
+        const MAX_MESSAGES: usize = 5;
         const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
         let url: url::Url = ARB_FEED_URL.parse().expect("invalid feed url");
@@ -606,7 +600,7 @@ pub mod testing {
         let (_tx, rx_batch) = mpsc::channel(1);
         let rollup = Nitro::new(vec![], NamespaceId::from(ARB_CHAIN_ID), rx_batch);
 
-        let (tx, rx) = mpsc::channel(256);
+        let (tx, mut rx) = mpsc::channel(256);
         let mut client = BroadcasterClient::new(
             BroadcasterClientConfig::default(),
             ARB_FEED_URL.to_string(),
@@ -617,7 +611,8 @@ pub mod testing {
         );
 
         let mut messages_processed = 0;
-        while messages_processed < NUM_MESSAGES {
+        let mut received_one = false;
+        while messages_processed < MAX_MESSAGES && !received_one {
             let frame = tokio::time::timeout(READ_TIMEOUT, ws.next())
                 .await
                 .expect("timeout waiting for feed message")
@@ -633,34 +628,20 @@ pub mod testing {
                         result.err()
                     );
                     messages_processed += 1;
+
+                    if let Ok(Some(_tx)) =
+                        tokio::time::timeout(Duration::from_secs(1), rx.recv()).await
+                    {
+                        received_one = true;
+                    }
                 }
                 _ => continue,
             }
         }
 
-        let espresso_node = EspressoDevNode::start().await;
-
-        let submitter_config = SubmitterConfig::default();
-        let mut submitter = Submitter::new(espresso_node.client.clone(), rx, submitter_config);
-
-        tokio::time::sleep(Duration::from_secs(10)).await;
-
-        let mut streamer = Streamer::new(
-            espresso_node.client.clone(),
-            make_test_nitro_rollup(),
-            0,
-            StreamerConfig::default(),
-        );
-
-        streamer.poll_hotshot_blocks(NamespaceId::from(ARB_CHAIN_ID), 1);
-
-        tokio::time::sleep(Duration::from_secs(10)).await;
-        let queue = streamer.queue_entries();
-
-        println!(
-            "processed {} live feed messages, {} entries in streamer queue",
-            messages_processed,
-            queue.len()
+        assert!(
+            received_one,
+            "did not receive any transaction on rx channel after processing {messages_processed} messages"
         );
     }
 
@@ -668,39 +649,35 @@ pub mod testing {
     async fn test_process_messages() {
         let (mut client, mut rx) = make_test_broadcaster_client();
         let broadcast_messages = load_test_data();
+        let mut queue: Vec<NitroRollupQueueEntry> = Vec::new();
 
         for broadcast_message in &broadcast_messages {
             let payload =
                 serde_json::to_vec(broadcast_message).expect("failed to serialize test message");
             let result = client.process_message(&payload).await;
             assert!(result.is_ok(), "process_message failed: {:?}", result.err());
+
+            let tx = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .expect("timeout waiting for transaction from channel")
+                .expect("channel closed before receiving transaction");
+
+            let parsed_messages = client
+                .rollup
+                .parse_nitro_hotshot_payload(tx.payload())
+                .expect("failed to parse nitro transaction payload");
+
+            for message in parsed_messages {
+                queue.push(NitroRollupQueueEntry {
+                    message_with_meta: message.message,
+                    pos: message.sequence_number,
+                    hotshot_height: 0,
+                });
+            }
         }
 
-        // Start the espresso dev node
-        let espresso_node = EspressoDevNode::start().await;
-
-        let submitter_config = SubmitterConfig::default();
-        let mut submitter = Submitter::new(espresso_node.client.clone(), rx, submitter_config);
-
-        // Wait for 10 seconds to let submitter process the transactions
-        tokio::time::sleep(Duration::from_secs(10)).await;
-
-        // Now we will use the streamer to read from Espresso and compare messages
-        let mut streamer = Streamer::new(
-            espresso_node.client.clone(),
-            make_test_nitro_rollup(),
-            0,
-            StreamerConfig::default(),
-        );
-
-        streamer.poll_hotshot_blocks(NamespaceId::from(TEST_NAMESPACE_ID), 1);
-
-        // Wait for 10 seconds to let streamer process the hotshot blocks
-        tokio::time::sleep(Duration::from_secs(10)).await;
-        let queue = streamer.queue_entries();
-
         // Now compare the messages in the queue with the original broadcast messages
-        let mut original_messages = BTreeMap::new();
+        let mut original_messages = HashMap::new();
         for broadcast_message in broadcast_messages {
             for message in broadcast_message.messages {
                 if let Some(message) = message {

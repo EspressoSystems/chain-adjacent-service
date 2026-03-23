@@ -5,7 +5,6 @@ use crate::rollups::nitro::types::LastBatchInfo;
 use crate::rollups::nitro::types::LegacyParsedNitroEspressoTransaction;
 use crate::rollups::nitro::types::MessageWithMetadata;
 use crate::rollups::nitro::types::Nitro;
-use crate::rollups::nitro::types::NitroBroadcastMessages;
 use crate::rollups::nitro::types::NitroHeader;
 use crate::rollups::nitro::types::NitroRollupQueueEntry;
 use crate::rollups::nitro::types::VerificationContext;
@@ -350,6 +349,7 @@ impl Nitro {
                 .map_err(|e| anyhow::anyhow!("failed to parse nitro hotshot message: {e}"))?;
             // TODO: we need to add message signature check here
             messages.push(message);
+            let _ = current_pos;
         }
 
         Ok(messages)
@@ -423,7 +423,7 @@ pub mod testing {
             last_batch_delayed_messages_read: 0,
         };
         let content = b"hello world";
-        let batch = vec![BatchMessage::L2Msg(content.to_vec())];
+        let batch = vec![BatchMessage::L2Msg(AlloyBytes::copy_from_slice(content))];
         let queue = vec![make_entry_with_l2msg(content, 0, 0)];
         assert!(nitro.verify_batch_messages(&batch, &queue, &ctx));
     }

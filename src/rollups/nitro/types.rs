@@ -1,4 +1,4 @@
-use alloy::primitives::{Address, B256, FixedBytes, U256};
+use alloy::primitives::{Address, B256, FixedBytes, U256, Bytes};
 use alloy_rlp::{Decodable, Error, PayloadView, RlpDecodable, RlpEncodable};
 use espresso_types::NamespaceId;
 use serde::{Deserialize, Serialize};
@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 use tokio::sync::mpsc;
 
 use crate::rollups::nitro::broadcaster_client::message_types::{
-    BroadcastFeedMessage, BroadcastMessage,
+    BroadcastFeedMessage,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
