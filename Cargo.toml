@@ -3,9 +3,17 @@ name = "chain-agnostic-service"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+e2e = []
+
 [lib]
 name = "chain_agnostic_service"
 path = "src/lib.rs"
+
+[[test]]
+name = "nitro"
+path = "tests/nitro/main.rs"
+required-features = ["e2e"]
 
 [lints.clippy]
 let_and_return = "warn"

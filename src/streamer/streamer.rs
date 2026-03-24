@@ -137,7 +137,7 @@ impl<R: Rollup> Streamer<R> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "e2e"))]
 pub mod testing {
     use crate::{
         config::StreamerConfig,
