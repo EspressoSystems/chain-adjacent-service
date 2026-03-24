@@ -52,10 +52,10 @@ impl Default for BroadcasterClientConfig {
 
 #[derive(Debug, Error)]
 pub enum BroadcasterClientError {
-    #[error("incorrect feed server version")]
-    IncorrectFeedVersion,
-    #[error("incorrect chain id")]
-    IncorrectChainId,
+    #[error("incorrect feed server version: expected {expected}, got {got}")]
+    IncorrectFeedVersion { expected: u64, got: String },
+    #[error("incorrect chain id: expected {expected}, got {got}")]
+    IncorrectChainId { expected: u64, got: String },
     #[error("missing chain id")]
     MissingChainId,
     #[error("missing feed server version")]
@@ -80,8 +80,8 @@ impl BroadcasterClientError {
     pub fn is_fatal(&self) -> bool {
         matches!(
             self,
-            Self::IncorrectFeedVersion
-                | Self::IncorrectChainId
+            Self::IncorrectFeedVersion { .. }
+                | Self::IncorrectChainId { .. }
                 | Self::MissingChainId
                 | Self::MissingFeedServerVersion
                 | Self::InvalidConfig(_)
@@ -124,22 +124,24 @@ impl BroadcasterClient {
         loop {
             let next_seq_num = self.next_seq_num;
             match self.connect(next_seq_num).await {
-                Err(e) if e.is_fatal() => {
-                    tracing::error!(
-                        url = self.websocket_url,
-                        error = %e,
-                        "fatal error connecting to sequencer broadcast"
-                    );
-                    return Err(e);
-                }
                 Err(e) => {
-                    tracing::warn!(
-                        url = self.websocket_url,
-                        error = %e,
-                        "failed to connect to sequencer broadcast, retrying"
-                    );
-                    backoff =
-                        exponential_backoff(backoff, self.config.reconnect_maximum_backoff).await;
+                    if e.is_fatal() {
+                        tracing::error!(
+                            url = self.websocket_url,
+                            error = %e,
+                            "fatal error connecting to sequencer broadcast"
+                        );
+                        return Err(e);
+                    } else {
+                        tracing::warn!(
+                            url = self.websocket_url,
+                            error = %e,
+                            "failed to connect to sequencer broadcast, retrying"
+                        );
+                        backoff =
+                            exponential_backoff(backoff, self.config.reconnect_maximum_backoff)
+                                .await;
+                    }
                 }
                 Ok(ws) => {
                     self.run_read_loop(ws).await;
@@ -157,8 +159,8 @@ impl BroadcasterClient {
             ));
         }
 
-        let url: url::Url = self.websocket_url.parse().map_err(|_| {
-            BroadcasterClientError::InvalidConfig("invalid websocket url".to_string())
+        let url: url::Url = self.websocket_url.parse().map_err(|e| {
+            BroadcasterClientError::InvalidConfig(format!("invalid websocket url: {e}"))
         })?;
 
         // Build HTTP Headers, the server uses them to determine the client version
@@ -280,15 +282,24 @@ impl BroadcasterClient {
                 .and_then(|value| {
                     value
                         .to_str()
-                        .map_err(|_| BroadcasterClientError::IncorrectFeedVersion)
+                        .map_err(|_| BroadcasterClientError::IncorrectFeedVersion {
+                            expected: FEED_SERVER_VERSION,
+                            got: format!("{:?}", value),
+                        })
                 })
                 .and_then(|s| {
                     s.parse::<u64>()
-                        .map_err(|_| BroadcasterClientError::IncorrectFeedVersion)
+                        .map_err(|_| BroadcasterClientError::IncorrectFeedVersion {
+                            expected: FEED_SERVER_VERSION,
+                            got: s.to_string(),
+                        })
                 })?;
 
             if feed_server_version != FEED_SERVER_VERSION {
-                return Err(BroadcasterClientError::IncorrectFeedVersion);
+                return Err(BroadcasterClientError::IncorrectFeedVersion {
+                    expected: FEED_SERVER_VERSION,
+                    got: feed_server_version.to_string(),
+                });
             }
         }
 
@@ -300,16 +311,24 @@ impl BroadcasterClient {
                 .and_then(|value| {
                     value
                         .to_str()
-                        .map_err(|_| BroadcasterClientError::IncorrectChainId)
+                        .map_err(|_| BroadcasterClientError::IncorrectChainId {
+                            expected: self.chain_id,
+                            got: format!("{:?}", value),
+                        })
                 })
-                .and_then(|value| {
-                    value
-                        .parse::<u64>()
-                        .map_err(|_| BroadcasterClientError::IncorrectChainId)
+                .and_then(|s| {
+                    s.parse::<u64>()
+                        .map_err(|_| BroadcasterClientError::IncorrectChainId {
+                            expected: self.chain_id,
+                            got: s.to_string(),
+                        })
                 })?;
 
             if chain_id != self.chain_id {
-                return Err(BroadcasterClientError::IncorrectChainId);
+                return Err(BroadcasterClientError::IncorrectChainId {
+                    expected: self.chain_id,
+                    got: chain_id.to_string(),
+                });
             }
         }
 
