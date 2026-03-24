@@ -284,7 +284,7 @@ impl BroadcasterClient {
                         .to_str()
                         .map_err(|_| BroadcasterClientError::IncorrectFeedVersion {
                             expected: FEED_SERVER_VERSION,
-                            got: format!("{:?}", value),
+                            got: format!("{value:?}"),
                         })
                 })
                 .and_then(|s| {
@@ -313,7 +313,7 @@ impl BroadcasterClient {
                         .to_str()
                         .map_err(|_| BroadcasterClientError::IncorrectChainId {
                             expected: self.chain_id,
-                            got: format!("{:?}", value),
+                            got: format!("{value:?}"),
                         })
                 })
                 .and_then(|s| {
