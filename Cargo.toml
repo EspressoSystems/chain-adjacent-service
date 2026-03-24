@@ -17,25 +17,34 @@ wildcard_imports = "warn"
 module_inception = "allow"
 
 [dependencies]
-reqwest = { version = "0.13", features = ["json"] }
-serde = { version = "1.0.228", features = ["derive"] }
-espresso-types = { git = "https://github.com/EspressoSystems/espresso-network.git" }
-committable = { git = "https://github.com/EspressoSystems/commit.git" }
-hotshot-types = { git = "https://github.com/EspressoSystems/espresso-network.git" }
 alloy = { version = "1.6.3", default-features = false, features = ["sol-types", "serde", "rlp"] }
 alloy-rlp = { version = "0.3.13", features = ["derive"] }
 anyhow = "1.0.101"
-tokio = { version = "1.49.0", features = ["time", "macros", "rt-multi-thread", "sync"] }
+async-trait = "0.1.89"
 base64 = "0.22.1"
+brotli = "7"
+bytes = "1.11.0"
+committable = { git = "https://github.com/EspressoSystems/commit.git" }
+espresso-types = { git = "https://github.com/EspressoSystems/espresso-network.git" }
+futures = "0.3"
+hotshot-types = { git = "https://github.com/EspressoSystems/espresso-network.git" }
+http = "1"
+jsonrpsee = {version="0.26.0", features = ["macros", "http-client", "async-client", "server","jsonrpsee-core"] }
+rand = "0.9"
+reqwest = { version = "0.13", features = ["json"] }
+serde = { version = "1.0.228", features = ["derive"] }
 serde_bytes = "0.11.19"
+serde_json = { version = "1.0.145", features = ["raw_value"] }
+serde_with = { version = "3.17.0", features = ["base64"] }
+thiserror = "2.0.18"
+tokio = { version = "1.49.0", features = ["time", "macros", "rt-multi-thread", "sync", "net"] }
+tokio-util = { version = "0.7", features = ["codec"] }
 tracing = "0.1.43"
 tracing-subscriber = { version = "0.3.22",  features = ["fmt", "json"] }
-serde_json = "1.0.145"
-thiserror = "2.0.18"
-jsonrpsee = {version="0.26.0", features = ["macros", "http-client", "async-client", "server","jsonrpsee-core"] }
-async-trait = "0.1.89"
-brotli = "7"
+url = "2"
+yawc = "0.3"
 
 [dev-dependencies]
 wiremock = "0.6.5"
 hex = "0.4.3"
+k256 = { version = "0.13", features = ["ecdsa"] }

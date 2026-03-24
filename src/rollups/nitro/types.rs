@@ -1,8 +1,12 @@
 use alloy::primitives::{Address, B256, Bytes, FixedBytes, U256};
 use alloy_rlp::{Decodable, Error, PayloadView, RlpDecodable, RlpEncodable};
+use espresso_types::NamespaceId;
 use serde::{Deserialize, Serialize};
+use serde_with::{base64::Base64, serde_as};
 use std::collections::VecDeque;
 use tokio::sync::mpsc;
+
+use crate::rollups::nitro::broadcaster_client::message_types::BroadcastFeedMessage;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct MessageWithMetadata {
@@ -53,12 +57,14 @@ impl Decodable for MessageWithMetadata {
     }
 }
 
+#[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct L1IncomingMessage {
     #[serde(rename = "header")]
     pub header: Option<L1IncomingMessageHeader>,
+    #[serde_as(as = "Base64")]
     #[serde(rename = "l2Msg")]
-    pub l2msg: Bytes,
+    pub l2msg: Vec<u8>,
     #[serde(rename = "batchGasCost", skip_serializing_if = "Option::is_none")]
     pub legacy_batch_gas_cost: Option<u64>,
     #[serde(rename = "batchDataTokens", skip_serializing_if = "Option::is_none")]
@@ -81,7 +87,7 @@ impl Decodable for L1IncomingMessage {
 
         let header =
             decode_optional_field::<L1IncomingMessageHeader>(fields[0], NilPolicy::EmptyListOnly)?;
-        let l2msg = alloy_rlp::decode_exact::<Bytes>(fields[1])?;
+        let l2msg = alloy_rlp::decode_exact::<Bytes>(fields[1])?.to_vec();
         let legacy_batch_gas_cost = if fields.len() > 2 {
             decode_optional_field::<u64>(fields[2], NilPolicy::EmptyStringOnly)?
         } else {
@@ -122,7 +128,9 @@ pub struct L1IncomingMessageHeader {
     pub timestamp: u64,
     #[serde(rename = "requestId")]
     pub request_id: Option<B256>,
-    #[serde(rename = "baseFeeL1")]
+    // Go's big.Int marshals as a bare JSON decimal number; alloy's U256 defaults to "0x…" hex.
+    // as a reason we had to write a custom serializer/deseralizer `go_bigint_u56`
+    #[serde(rename = "baseFeeL1", with = "go_bigint_u56")]
     pub l1_base_fee: Option<U256>,
 }
 
@@ -185,7 +193,8 @@ pub struct LastBatchInfo {
 #[derive(Debug)]
 pub struct Nitro {
     pub sequencer_addresses: Vec<Address>,
-
+    pub namespace_id: NamespaceId,
+    pub chain_id: u64,
     pub last_batch_info_receiver: mpsc::Receiver<LastBatchInfo>,
 }
 
@@ -195,6 +204,17 @@ pub struct LegacyParsedNitroEspressoTransaction {
     pub messages_hash: FixedBytes<32>,
     pub indices: Vec<u64>,
     pub messages: VecDeque<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NitroHeader {
+    V1,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NitroBroadcastMessages {
+    pub header_version: NitroHeader,
+    pub broadcast_messages: Vec<BroadcastFeedMessage>,
 }
 
 enum NilPolicy {
@@ -243,6 +263,42 @@ fn decode_optional_b256_allow_nil_list(buf: &[u8]) -> Result<Option<B256>, Error
             } else {
                 Err(Error::UnexpectedList)
             }
+        }
+    }
+}
+
+/// Custom serde for `Option<U256>` bridges Go's `*big.Int`. Go cannot parse hex strings and alloy
+/// doesn't emit decimal numbers as a reason we need this serializer/deserializer.
+mod go_bigint_u56 {
+    use alloy::primitives::U256;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
+
+    pub fn serialize<S: Serializer>(val: &Option<U256>, s: S) -> Result<S::Ok, S::Error> {
+        match val {
+            None => s.serialize_none(),
+            // Emit a bare JSON number (no quotes) so Go's big.Int.UnmarshalJSON can parse it.
+            Some(v) => {
+                let raw = serde_json::value::RawValue::from_string(v.to_string())
+                    .map_err(serde::ser::Error::custom)?;
+                raw.serialize(s)
+            }
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<U256>, D::Error> {
+        match Option::<serde_json::Value>::deserialize(d)? {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(serde_json::Value::Number(n)) => n
+                .to_string()
+                .parse::<U256>()
+                .map(Some)
+                .map_err(Error::custom),
+            Some(serde_json::Value::String(s)) => {
+                s.parse::<U256>().map(Some).map_err(Error::custom)
+            }
+            Some(v) => Err(Error::custom(format!(
+                "expected null, number, or string for U256, got {v}"
+            ))),
         }
     }
 }
