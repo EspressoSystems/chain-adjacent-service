@@ -135,7 +135,7 @@ impl EspressoClient {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "e2e"))]
 pub mod testing {
     use super::*;
     use crate::espresso_e2e::espresso_dev_node::EspressoDevNode;
