@@ -36,10 +36,6 @@ impl<R: Rollup> Streamer<R> {
         }
     }
 
-    // pub(crate) fn queue_entries(&self) -> &[R::Entry] {
-    //     &self.queue
-    // }
-
     /// Polls for hotshot blocks from the Espresso client and adds them to the queue.
     ///
     /// It uses exponential backoff to handle errors and retries and calls filter_messages

@@ -47,3 +47,4 @@ yawc = "0.3"
 [dev-dependencies]
 wiremock = "0.6.5"
 hex = "0.4.3"
+k256 = { version = "0.13", features = ["ecdsa"] }

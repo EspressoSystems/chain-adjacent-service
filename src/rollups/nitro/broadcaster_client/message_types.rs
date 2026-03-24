@@ -3,8 +3,6 @@ use alloy::primitives::B256;
 use serde::{Deserialize, Serialize};
 use serde_with::{base64::Base64, serde_as};
 
-// TODO: check types again for both elp and json encoding and decoding
-
 /// Top-level broadcast message from the Arbitrum feed server.
 /// Matches Go struct `BroadcastMessage` in broadcastclient/message/message.go
 #[derive(Debug, Clone, Serialize, Deserialize)]

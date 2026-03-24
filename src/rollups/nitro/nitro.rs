@@ -135,14 +135,21 @@ impl Nitro {
     pub fn new(
         sequencer_addresses: Vec<Address>,
         namespace_id: NamespaceId,
+        chain_id: u64,
         last_batch_info_receiver: mpsc::Receiver<LastBatchInfo>,
     ) -> Self {
         Self {
             sequencer_addresses,
             namespace_id,
+            chain_id,
             last_batch_info_receiver,
         }
     }
+
+    pub fn verify_broadcast_feed_message(&self, message: &BroadcastFeedMessage) -> Result<()> {
+        verify_broadcast_feed_message_signature(self.chain_id, &self.sequencer_addresses, message)
+    }
+
     /// Checks if the signature on the message hash is valid and
     /// is from a sequencer in the `sequencer_addresses` list.
     pub fn signature_from_known_sequencer(
@@ -295,7 +302,7 @@ impl Nitro {
     // Creates an Espresso Transaction from an array of MessageWithMetadata
     pub fn create_espresso_transaction_from_broadcast_feed_messages(
         &self,
-        messages: Vec<BroadcastFeedMessage>,
+        messages: &[BroadcastFeedMessage],
     ) -> Result<Vec<Transaction>> {
         let mut payload = Vec::new();
         // Add a header indicating NitroHeader V1
@@ -336,8 +343,8 @@ impl Nitro {
         }
 
         let mut messages: Vec<BroadcastFeedMessage> = Vec::new();
-        // After the header, we will have multiple messages, each message is prefixed with its length in the next 8 bytes
-        for mut current_pos in (LEN_SIZE + header_len as usize)..tx_payload.len() {
+        let mut current_pos = LEN_SIZE + header_len as usize;
+        while current_pos < tx_payload.len() {
             if tx_payload[current_pos..].len() < LEN_SIZE {
                 return Err(anyhow::anyhow!("payload too short to parse message size"));
             }
@@ -351,13 +358,25 @@ impl Nitro {
             current_pos += message_size as usize;
             let message: BroadcastFeedMessage = serde_json::from_slice(message_bytes)
                 .map_err(|e| anyhow::anyhow!("failed to parse nitro hotshot message: {e}"))?;
-            // TODO: we need to add message signature check here
-            messages.push(message);
-            let _ = current_pos;
+            match self.verify_broadcast_feed_message(&message) {
+                Ok(()) => messages.push(message),
+                Err(e) => {
+                    tracing::warn!(seq_num = message.sequence_number, error = %e, "skipping message with invalid signature in hotshot payload");
+                }
+            }
         }
 
         Ok(messages)
     }
+}
+
+pub fn verify_broadcast_feed_message_signature(
+    chain_id: u64,
+    sequencer_addresses: &[Address],
+    message: &BroadcastFeedMessage,
+) -> Result<()> {
+    // TODO: will implement in another PR
+    Ok(())
 }
 
 #[cfg(test)]
@@ -406,7 +425,7 @@ pub mod testing {
 
     fn make_nitro() -> Nitro {
         let (_tx, rx) = mpsc::channel(1);
-        Nitro::new(vec![], NamespaceId::default(), rx)
+        Nitro::new(vec![], NamespaceId::default(), 0, rx)
     }
 
     #[test]
@@ -558,7 +577,7 @@ pub mod testing {
         let sequencer_address = Address::from_str("0x91B62241cCec21Cebb3AbD24599855c009864e1E")
             .expect("failed to parse sequencer address");
         let (_tx, rx) = mpsc::channel(1);
-        let nitro = Nitro::new(vec![sequencer_address], namespace_id, rx);
+        let nitro = Nitro::new(vec![sequencer_address], namespace_id, 0, rx);
         let namespace_transactions_in_range = NamespaceTransactionsInRange {
             transactions: vec![Transaction::new(namespace_id, tx_bytes)],
             proof: None,

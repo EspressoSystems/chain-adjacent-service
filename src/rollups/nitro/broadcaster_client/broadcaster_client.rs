@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use alloy::primitives::Keccak256;
 use base64::Engine as _;
 use espresso_types::Transaction;
 use futures::StreamExt;
@@ -11,7 +10,8 @@ use yawc::{
     CompressionLevel, DeflateOptions, HttpRequest, Options, TcpWebSocket, WebSocket, WebSocketError,
 };
 
-use super::message_types::{BroadcastFeedMessage, BroadcastMessage};
+use super::message_types::BroadcastMessage;
+use crate::rollups::nitro::nitro::verify_broadcast_feed_message_signature;
 use crate::rollups::nitro::types::Nitro;
 use crate::utils::exponential_backoff;
 
@@ -406,30 +406,36 @@ impl BroadcasterClient {
             )));
         }
 
-        let mut broadcast_feed_messages = Vec::new();
-        for message in &msg.messages {
-            if let Some(message) = message {
-                match self.is_valid_signature(message) {
-                    Ok(_) => (),
+        let chain_id = self.chain_id;
+        let sequencer_addresses = self.rollup.sequencer_addresses.clone();
+
+        let broadcast_feed_messages = tokio::task::spawn_blocking(move || {
+            let mut verified = Vec::new();
+            for message in msg.messages.into_iter().flatten() {
+                match verify_broadcast_feed_message_signature(chain_id, &sequencer_addresses, &message) {
+                    Ok(()) => verified.push(message),
                     Err(e) => {
                         tracing::error!(seq_num = message.sequence_number, error = %e, "invalid signature for broadcast message, skipping");
-                        continue;
                     }
                 }
-                broadcast_feed_messages.push(message.clone());
-            } else {
-                tracing::warn!(
-                    payload_len = payload.len(),
-                    "skipping null message in broadcast"
-                );
-                continue;
             }
-        }
+            verified
+        })
+        .await
+        .map_err(|e| {
+            BroadcasterClientError::InvalidMessage(format!(
+                "signature verification task panicked: {e}"
+            ))
+        })?;
+
+        let verified_next_seq_num = broadcast_feed_messages
+            .last()
+            .map(|m| m.sequence_number + 1);
 
         // Create an espresso transaction from the broadcast messages and add it to the rollup queue
         let espresso_transactions = self
             .rollup
-            .create_espresso_transaction_from_broadcast_feed_messages(broadcast_feed_messages)
+            .create_espresso_transaction_from_broadcast_feed_messages(&broadcast_feed_messages)
             .map_err(|e| BroadcasterClientError::InvalidMessage(e.to_string()))?;
 
         for tx in espresso_transactions {
@@ -439,8 +445,10 @@ impl BroadcasterClient {
                 .map_err(BroadcasterClientError::ChannelSendError)?;
         }
 
-        for message in msg.messages.iter().flatten() {
-            self.next_seq_num = message.sequence_number + 1;
+        // Only advance next_seq_num after successful processing and submission,
+        // using only signature-verified messages.
+        if let Some(next) = verified_next_seq_num {
+            self.next_seq_num = next;
         }
 
         Ok(())
@@ -470,46 +478,6 @@ impl BroadcasterClient {
             }
         }
     }
-
-    fn is_valid_signature(
-        &self,
-        message: &BroadcastFeedMessage,
-    ) -> Result<(), BroadcasterClientError> {
-        // Construct the message hash
-        let serialized_message = serde_json::to_vec(&message.message).map_err(|e| {
-            BroadcasterClientError::InvalidSignature {
-                seq_num: message.sequence_number,
-                reason: format!("failed to serialize message: {e}"),
-            }
-        })?;
-        let mut hasher = Keccak256::new();
-        hasher.update(b"Arbitrum Nitro Feed:");
-
-        // Sequencer number is u64 and will occupt an array of 8 bytes
-        let mut seq_bytes = [0u8; 8];
-        seq_bytes.copy_from_slice(&message.sequence_number.to_be_bytes());
-        hasher.update(seq_bytes);
-
-        // ChainId is also u64 and will occupy an array of 8 bytes
-        let mut chain_id_bytes = [0u8; 8];
-        chain_id_bytes.copy_from_slice(&self.chain_id.to_be_bytes());
-        hasher.update(chain_id_bytes);
-
-        hasher.update(&serialized_message);
-        let message_hash = hasher.finalize();
-
-        if !(self
-            .rollup
-            .signature_from_known_sequencer(message_hash, &message.signature))
-        {
-            return Err(BroadcasterClientError::InvalidSignature {
-                seq_num: message.sequence_number,
-                reason: "signature not verified: signer not approved".into(),
-            });
-        }
-
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -517,13 +485,15 @@ pub mod testing {
     use std::collections::HashMap;
     use std::time::Duration;
 
+    use alloy::primitives::{Address, Keccak256};
     use espresso_types::{NamespaceId, Transaction};
+    use k256::ecdsa::SigningKey;
     use tokio::sync::mpsc;
 
     use crate::rollups::nitro::{
         broadcaster_client::{
             broadcaster_client::{BroadcasterClient, BroadcasterClientConfig},
-            message_types::BroadcastMessage,
+            message_types::{BroadcastFeedMessage, BroadcastMessage},
         },
         types::{Nitro, NitroRollupQueueEntry},
     };
@@ -531,20 +501,23 @@ pub mod testing {
 
     const TEST_NAMESPACE_ID: u64 = 42161;
 
-    fn make_test_nitro_rollup() -> Nitro {
+    fn make_test_nitro_rollup(sequencer_addresses: Vec<Address>) -> Nitro {
         let (_tx, rx) = mpsc::channel(1);
-        Nitro::new(vec![], NamespaceId::from(TEST_NAMESPACE_ID), rx)
+        Nitro::new(
+            sequencer_addresses,
+            NamespaceId::from(TEST_NAMESPACE_ID),
+            TEST_NAMESPACE_ID,
+            rx,
+        )
     }
 
-    fn make_test_broadcaster_client() -> (BroadcasterClient, mpsc::Receiver<Transaction>) {
+    fn make_test_broadcaster_client(
+        sequencer_addresses: Vec<Address>,
+    ) -> (BroadcasterClient, mpsc::Receiver<Transaction>) {
         let (tx, rx) = mpsc::channel(256);
-        let rollup = make_test_nitro_rollup();
+        let rollup = make_test_nitro_rollup(sequencer_addresses);
         let client = BroadcasterClient::new(
             BroadcasterClientConfig::default(),
-            // TODO: in future, we should modify the tests
-            // to listen to an actual broadcaster server when
-            // the code is ready for that, but for now we just want
-            // to test the message processing logic
             "ws://localhost:8080".to_string(),
             TEST_NAMESPACE_ID,
             0,
@@ -594,7 +567,12 @@ pub mod testing {
             .expect("failed to connect to Arbitrum feed");
 
         let (_tx, rx_batch) = mpsc::channel(1);
-        let rollup = Nitro::new(vec![], NamespaceId::from(ARB_CHAIN_ID), rx_batch);
+        let rollup = Nitro::new(
+            vec![],
+            NamespaceId::from(ARB_CHAIN_ID),
+            ARB_CHAIN_ID,
+            rx_batch,
+        );
 
         let (tx, mut rx) = mpsc::channel(256);
         let mut client = BroadcasterClient::new(
@@ -643,8 +621,14 @@ pub mod testing {
 
     #[tokio::test]
     async fn test_process_messages() {
-        let (mut client, mut rx) = make_test_broadcaster_client();
-        let broadcast_messages = load_test_data();
+        let (mut client, mut rx) = make_test_broadcaster_client(vec![]);
+        let mut broadcast_messages = load_test_data();
+
+        let total_expected: usize = broadcast_messages
+            .iter()
+            .map(|bm| bm.messages.iter().flatten().count())
+            .sum();
+
         let mut queue: Vec<NitroRollupQueueEntry> = Vec::new();
 
         for broadcast_message in &broadcast_messages {
@@ -672,7 +656,13 @@ pub mod testing {
             }
         }
 
-        // Now compare the messages in the queue with the original broadcast messages
+        assert_eq!(
+            queue.len(),
+            total_expected,
+            "expected {total_expected} messages in queue, got {}",
+            queue.len()
+        );
+
         let mut original_messages = HashMap::new();
         for broadcast_message in broadcast_messages {
             for message in broadcast_message.messages.into_iter().flatten() {
@@ -680,7 +670,7 @@ pub mod testing {
             }
         }
 
-        for entry in queue {
+        for entry in &queue {
             let expected_message = original_messages
                 .get(&entry.sequence_number())
                 .expect("message in queue not found in original messages");
