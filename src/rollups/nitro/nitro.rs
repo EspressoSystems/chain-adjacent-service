@@ -371,9 +371,9 @@ impl Nitro {
 }
 
 pub fn verify_broadcast_feed_message_signature(
-    chain_id: u64,
-    sequencer_addresses: &[Address],
-    message: &BroadcastFeedMessage,
+    _chain_id: u64,
+    _sequencer_addresses: &[Address],
+    _message: &BroadcastFeedMessage,
 ) -> Result<()> {
     // TODO: will implement in another PR
     Ok(())

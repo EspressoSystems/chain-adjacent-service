@@ -1,5 +1,5 @@
 use alloy::primitives::{Address, B256, Bytes, FixedBytes, U256};
-use alloy_rlp::{BufMut, Decodable, Encodable, Error, PayloadView, RlpDecodable, RlpEncodable};
+use alloy_rlp::{Decodable, Error, PayloadView, RlpDecodable, RlpEncodable};
 use espresso_types::NamespaceId;
 use serde::{Deserialize, Serialize};
 use serde_with::{base64::Base64, serde_as};

@@ -485,15 +485,14 @@ pub mod testing {
     use std::collections::HashMap;
     use std::time::Duration;
 
-    use alloy::primitives::{Address, Keccak256};
+    use alloy::primitives::Address;
     use espresso_types::{NamespaceId, Transaction};
-    use k256::ecdsa::SigningKey;
     use tokio::sync::mpsc;
 
     use crate::rollups::nitro::{
         broadcaster_client::{
             broadcaster_client::{BroadcasterClient, BroadcasterClientConfig},
-            message_types::{BroadcastFeedMessage, BroadcastMessage},
+            message_types::BroadcastMessage,
         },
         types::{Nitro, NitroRollupQueueEntry},
     };
@@ -622,7 +621,7 @@ pub mod testing {
     #[tokio::test]
     async fn test_process_messages() {
         let (mut client, mut rx) = make_test_broadcaster_client(vec![]);
-        let mut broadcast_messages = load_test_data();
+        let broadcast_messages = load_test_data();
 
         let total_expected: usize = broadcast_messages
             .iter()
