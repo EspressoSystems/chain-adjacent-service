@@ -82,20 +82,43 @@ pub enum DaApiError {
     FallbackRequested(String),
 }
 
+impl DaApiError {
+    pub fn jsonrpc_code(&self) -> i32 {
+        match self {
+            // Input validation → -32602 Invalid params
+            DaApiError::InvalidParams(_)
+            | DaApiError::InvalidHeaderByte(_)
+            | DaApiError::InvalidSequencerMessageLength(_, _)
+            | DaApiError::InvalidCertificateLength(_)
+            | DaApiError::CertificateValidation(_)
+            | DaApiError::InvalidCasSignature
+            | DaApiError::UnsupportedDaType(_)
+            | DaApiError::DecoderError(_) => -32602,
+
+            // Parse failures → -32700 Parse error
+            DaApiError::Json(_) | DaApiError::HexDecode(_) | DaApiError::ParsingError(_) => -32700,
+
+            // Everything else → -32603 Internal error
+            _ => -32603,
+        }
+    }
+}
+
 impl From<DaApiError> for ErrorObjectOwned {
     fn from(err: DaApiError) -> Self {
+        let code = err.jsonrpc_code();
         match err {
             DaApiError::InvalidHeaderByte(byte) => ErrorObjectOwned::owned(
-                -32602,
+                code,
                 format!("Invalid header byte: 0x{byte:02x}"),
                 None::<()>,
             ),
             DaApiError::InvalidSequencerMessageLength(expected, got) => ErrorObjectOwned::owned(
-                -32602,
+                code,
                 format!("Invalid sequencer message length: expected:{expected}, got:{got}"),
                 None::<()>,
             ),
-            _ => ErrorObjectOwned::owned(-32602, err.to_string(), None::<()>),
+            _ => ErrorObjectOwned::owned(code, err.to_string(), None::<()>),
         }
     }
 }
@@ -124,8 +147,10 @@ impl IntoResponse for DaApiError {
         let body = serde_json::json!({
             "jsonrpc": "2.0",
             "error": {
-                "code": status.as_u16(),
+                "code": self.jsonrpc_code(),
                 "message": self.to_string(),
+                // TODO: fix this
+                "id":null
             }
         });
         let bytes = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());

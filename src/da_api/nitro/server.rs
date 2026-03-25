@@ -60,7 +60,9 @@ async fn handle_rpc(State(state): State<ServerState>, body: Bytes) -> Result<Res
     let parsed: Value =
         serde_json::from_slice(&body).map_err(|e| DaApiError::InvalidParams(e.to_string()))?;
 
-    let method = parsed["method"].as_str().unwrap_or("");
+    let method = parsed["method"]
+        .as_str()
+        .ok_or(DaApiError::Rpc("missing method".to_string()))?;
 
     match method {
         STORE => handle_store(state, parsed).await,
