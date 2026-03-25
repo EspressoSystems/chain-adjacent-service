@@ -137,6 +137,7 @@ impl<R: Rollup> Streamer<R> {
     }
 }
 
+#[cfg(test)]
 pub mod testing {
     use crate::{
         config::StreamerConfig,

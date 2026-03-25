@@ -135,6 +135,7 @@ impl EspressoClient {
     }
 }
 
+#[cfg(test)]
 pub mod testing {
     use super::*;
     use crate::espresso_e2e::espresso_dev_node::EspressoDevNode;

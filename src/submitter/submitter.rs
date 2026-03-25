@@ -148,6 +148,7 @@ impl Submitter {
     }
 }
 
+#[cfg(test)]
 pub mod testing {
     use crate::{
         espresso_e2e::{
