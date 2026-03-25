@@ -148,7 +148,6 @@ impl Submitter {
     }
 }
 
-#[cfg(all(test, feature = "e2e"))]
 pub mod testing {
     use crate::{
         espresso_e2e::{
