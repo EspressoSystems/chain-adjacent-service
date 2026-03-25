@@ -549,21 +549,13 @@ mod broadcast_client_tests {
         };
         let broadcaster = Broadcaster::new(config, chain_id, Some(data_signer));
         let addr = broadcaster.start().await.expect("start broadcaster");
-        eprintln!("[test] broadcaster listening at ws://{addr}/feed");
 
         let sample_message = broadcaster
             .new_broadcast_feed_message(MessageWithMetadata::default(), 1, None, vec![])
             .expect("failed to create signed broadcast message");
-        eprintln!(
-            "[test] sample message seq={} sig_len={}",
-            sample_message.sequence_number,
-            sample_message.signature.len()
-        );
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         let client_config = BroadcasterClientConfig {
-            require_feed_server_version: true,
-            require_chain_id: true,
             trusted_sequencer_addresses: vec![trusted_signer],
             ..Default::default()
         };
@@ -578,7 +570,6 @@ mod broadcast_client_tests {
 
         let url: url::Url = format!("ws://{addr}/feed").parse().expect("valid ws url");
         let preflight = client.validate_preflight_headers(&url, 0).await;
-        eprintln!("[test] preflight result={preflight:?}");
         assert!(
             preflight.is_ok(),
             "preflight should pass against local broadcaster"
@@ -596,7 +587,6 @@ mod broadcast_client_tests {
         })
         .await
         .expect("client failed to connect to broadcaster within 5s");
-        eprintln!("[test] client connected; start broadcast loop");
 
         let received = timeout(Duration::from_secs(10), async {
             loop {
@@ -656,8 +646,7 @@ mod broadcast_client_tests {
                             "client {client_idx} timed out after receiving {received}/{message_count} messages"
                         )
                     })
-                    .expect("stream ended")
-                    .expect("frame error");
+                    .expect("stream ended");
 
                 let bm = recv_broadcast_msg(frame);
                 for msg in &bm.messages {
@@ -685,8 +674,7 @@ mod broadcast_client_tests {
         let frame = timeout(Duration::from_secs(5), ws.next())
             .await
             .expect("timeout")
-            .expect("stream ended")
-            .expect("frame error");
+            .expect("stream ended");
         let bm = recv_broadcast_msg(frame);
         assert_eq!(bm.messages.len(), 1);
 
@@ -718,8 +706,7 @@ mod broadcast_client_tests {
         let frame = timeout(Duration::from_secs(2), ws.next())
             .await
             .expect("timeout")
-            .expect("stream ended")
-            .expect("frame error");
+            .expect("stream ended");
         let bm = recv_broadcast_msg(frame);
         assert_eq!(bm.messages.len(), 1);
 
@@ -729,8 +716,7 @@ mod broadcast_client_tests {
         let frame = timeout(Duration::from_secs(2), ws.next())
             .await
             .expect("timeout")
-            .expect("stream ended")
-            .expect("frame error");
+            .expect("stream ended");
         let bm = recv_broadcast_msg(frame);
         assert!(bm.messages.is_empty());
         let confirmed = bm
@@ -759,8 +745,7 @@ mod broadcast_client_tests {
             let frame = timeout(Duration::from_secs(5), ws.next())
                 .await
                 .unwrap_or_else(|_| panic!("client {client_idx} timed out on backlog"))
-                .expect("stream ended")
-                .expect("frame error");
+                .expect("stream ended");
             let bm = recv_broadcast_msg(frame);
             assert_eq!(
                 bm.messages.len(),
@@ -911,8 +896,8 @@ mod broadcast_client_tests {
         );
     }
 
-    /// Start a mock HTTP server that does a proper `tokio-tungstenite`
-    /// WebSocket upgrade with configurable response headers.
+    /// Start a mock HTTP server that performs a WebSocket upgrade with
+    /// configurable response headers.
     /// Used to test preflight validation against servers with
     /// missing/incorrect headers.
     async fn start_mock_upgrade_server(
@@ -925,30 +910,45 @@ mod broadcast_client_tests {
         let addr = listener.local_addr().expect("local_addr");
 
         tokio::spawn(async move {
-            // Accept connections in a loop so the server stays alive for the test.
             while let Ok((stream, _)) = listener.accept().await {
-                let callback = move |_req: &http::Request<()>,
-                                     mut resp: http::Response<()>|
-                      -> Result<
-                    http::Response<()>,
-                    http::Response<Option<String>>,
-                > {
-                    if let Some(v) = feed_server_version
-                        && let Ok(hv) = v.to_string().parse()
-                    {
-                        resp.headers_mut().insert(HEADER_FEED_SERVER_VERSION, hv);
-                    }
-                    if let Some(id) = chain_id
-                        && let Ok(hv) = id.to_string().parse()
-                    {
-                        resp.headers_mut().insert(HEADER_CHAIN_ID, hv);
-                    }
-                    Ok(resp)
-                };
+                let service = hyper::service::service_fn(
+                    move |mut req: hyper::Request<hyper::body::Incoming>| async move {
+                        let (mut response, _upgrade_fut) = match yawc::WebSocket::upgrade(&mut req)
+                        {
+                            Ok(pair) => pair,
+                            Err(_) => {
+                                return Ok::<_, hyper::Error>(
+                                    hyper::Response::builder()
+                                        .status(hyper::StatusCode::BAD_REQUEST)
+                                        .body(http_body_util::Empty::<hyper::body::Bytes>::new())
+                                        .expect("build error response"),
+                                );
+                            }
+                        };
 
-                // Upgrade to WS — the preflight client will get a proper 101
-                // with the headers we set, then we just drop the connection.
-                let _ = tokio_tungstenite::accept_hdr_async(stream, callback).await;
+                        if let Some(v) = feed_server_version
+                            && let Ok(hv) = v.to_string().parse()
+                        {
+                            response
+                                .headers_mut()
+                                .insert(HEADER_FEED_SERVER_VERSION, hv);
+                        }
+                        if let Some(id) = chain_id
+                            && let Ok(hv) = id.to_string().parse()
+                        {
+                            response.headers_mut().insert(HEADER_CHAIN_ID, hv);
+                        }
+                        Ok(response)
+                    },
+                );
+
+                let io = hyper_util::rt::TokioIo::new(stream);
+                tokio::spawn(async move {
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(io, service)
+                        .with_upgrades()
+                        .await;
+                });
             }
         });
 
@@ -958,11 +958,6 @@ mod broadcast_client_tests {
 
 #[cfg(test)]
 pub mod testing {
-    use std::collections::HashMap;
-    use std::time::Duration;
-
-    use tokio::sync::mpsc;
-
     use crate::rollups::nitro::{
         feed::{
             client::{BroadcasterClient, BroadcasterClientConfig},
@@ -970,6 +965,26 @@ pub mod testing {
         },
         types::NitroRollupQueueEntry,
     };
+    use alloy::primitives::{Address, Keccak256};
+    use futures::StreamExt;
+    use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
+    use std::collections::HashMap;
+    use std::net::SocketAddr;
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+    use tokio::time::timeout;
+
+    use super::{
+        BroadcasterClientError, FEED_SERVER_VERSION, HEADER_CHAIN_ID, HEADER_FEED_SERVER_VERSION,
+    };
+    use crate::rollups::nitro::feed::broadcaster::{
+        Broadcaster, BroadcasterConfig, DataSignerFunc,
+    };
+    use crate::rollups::nitro::feed::test_utils::{
+        connect_ws, empty_msg, recv_broadcast_msg, start_test_broadcaster, wait_for_clients,
+    };
+    use crate::rollups::nitro::feed::ws_server::WsBroadcastServerConfig;
+    use crate::rollups::nitro::types::MessageWithMetadata;
     use crate::rollups::rollup::RollupQueueEntry;
 
     const TEST_NAMESPACE_ID: u64 = 42161;
@@ -993,6 +1008,452 @@ pub mod testing {
     fn load_test_data() -> Vec<BroadcastMessage> {
         let data = include_str!("../../../espresso_e2e/nitro_broadcast_test_data.json");
         serde_json::from_str(data).expect("failed to load test data")
+    }
+
+    fn address_from_secret(secret: &SecretKey) -> Address {
+        let public = PublicKey::from_secret_key(&Secp256k1::new(), secret);
+        let uncompressed = public.serialize_uncompressed();
+        let mut hasher = Keccak256::new();
+        hasher.update(&uncompressed[1..]);
+        let hash = hasher.finalize();
+        Address::from_slice(&hash[12..])
+    }
+
+    #[tokio::test]
+    async fn test_preflight_and_broadcast_with_local_server() {
+        let chain_id: u64 = 42161;
+
+        let signer_secret = SecretKey::from_byte_array([7u8; 32]).expect("valid secret key");
+        let trusted_signer = address_from_secret(&signer_secret);
+
+        let data_signer: DataSignerFunc = Box::new(move |hash: &[u8]| {
+            let secp = Secp256k1::new();
+            let digest: [u8; 32] = hash
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("invalid digest length"))?;
+            let msg = Message::from_digest(digest);
+            let sig = secp.sign_ecdsa_recoverable(msg, &signer_secret);
+            let (rec_id, compact) = sig.serialize_compact();
+            let mut out = Vec::with_capacity(65);
+            out.extend_from_slice(&compact);
+            out.push(i32::from(rec_id) as u8);
+            Ok(out)
+        });
+
+        let config = BroadcasterConfig {
+            ws_server: WsBroadcastServerConfig {
+                addr: "127.0.0.1".to_string(),
+                port: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let broadcaster = Broadcaster::new(config, chain_id, Some(data_signer));
+        let addr = broadcaster.start().await.expect("start broadcaster");
+
+        let sample_message = broadcaster
+            .new_broadcast_feed_message(MessageWithMetadata::default(), 1, None, vec![])
+            .expect("failed to create signed broadcast message");
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let client_config = BroadcasterClientConfig {
+            trusted_sequencer_addresses: vec![trusted_signer],
+            ..Default::default()
+        };
+
+        let mut client = super::BroadcasterClient::new(
+            client_config,
+            format!("ws://{addr}/feed"),
+            chain_id,
+            0,
+            tx,
+        );
+
+        let url: url::Url = format!("ws://{addr}/feed").parse().expect("valid ws url");
+        let preflight = client.validate_preflight_headers(&url, 0).await;
+        assert!(
+            preflight.is_ok(),
+            "preflight should pass against local broadcaster"
+        );
+
+        let mut client_task = tokio::spawn(async move { client.start().await });
+
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if broadcaster.client_count() >= 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("client failed to connect to broadcaster within 5s");
+
+        let received = timeout(Duration::from_secs(10), async {
+            loop {
+                broadcaster.broadcast_feed_messages(vec![sample_message.clone()]);
+
+                tokio::select! {
+                    client_result = &mut client_task => {
+                        let client_result = client_result.expect("client task panicked");
+                        panic!("client exited before receiving broadcast: {client_result:?}");
+                    }
+                    maybe_msg = rx.recv() => {
+                        if let Some(msg) = maybe_msg {
+                            break msg;
+                        }
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for client to receive broadcast message");
+
+        assert_eq!(received.sequence_number, sample_message.sequence_number);
+        assert_eq!(received.message, sample_message.message);
+
+        client_task.abort();
+        broadcaster.stop();
+    }
+
+    #[tokio::test]
+    async fn test_receive_messages() {
+        let chain_id: u64 = 9742;
+        let message_count: u64 = 100;
+        let client_count = 2;
+
+        let (broadcaster, addr) = start_test_broadcaster(chain_id).await;
+
+        let mut clients = Vec::new();
+        for _ in 0..client_count {
+            clients.push(connect_ws(addr, 0).await);
+        }
+        wait_for_clients(&broadcaster, client_count).await;
+
+        for i in 1..=message_count {
+            broadcaster
+                .broadcast_single(empty_msg(), i, None, vec![])
+                .expect("broadcast");
+        }
+
+        for (client_idx, ws) in clients.iter_mut().enumerate() {
+            let mut received = 0u64;
+            while received < message_count {
+                let frame = timeout(Duration::from_secs(5), ws.next())
+                    .await
+                    .unwrap_or_else(|_| {
+                        panic!(
+                            "client {client_idx} timed out after receiving {received}/{message_count} messages"
+                        )
+                    })
+                    .expect("stream ended");
+
+                let bm = recv_broadcast_msg(frame);
+                for msg in &bm.messages {
+                    if msg.is_some() {
+                        received += 1;
+                    }
+                }
+            }
+            assert_eq!(received, message_count, "client {client_idx} message count");
+        }
+
+        broadcaster.stop();
+    }
+
+    #[tokio::test]
+    async fn test_server_client_disconnect() {
+        let chain_id: u64 = 8742;
+        let (broadcaster, addr) = start_test_broadcaster(chain_id).await;
+
+        let mut ws = connect_ws(addr, 0).await;
+
+        broadcaster
+            .broadcast_single(empty_msg(), 1, None, vec![])
+            .expect("broadcast");
+        let frame = timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("timeout")
+            .expect("stream ended");
+        let bm = recv_broadcast_msg(frame);
+        assert_eq!(bm.messages.len(), 1);
+
+        drop(ws);
+
+        let disconnected = timeout(Duration::from_secs(5), async {
+            loop {
+                if broadcaster.client_count() == 0 {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        assert!(disconnected.is_ok(), "client was not disconnected in time");
+
+        broadcaster.stop();
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_client_confirmed_message() {
+        let (broadcaster, addr) = start_test_broadcaster(1).await;
+        let mut ws = connect_ws(addr, 0).await;
+
+        broadcaster
+            .broadcast_single(empty_msg(), 1, None, vec![])
+            .expect("broadcast");
+
+        let frame = timeout(Duration::from_secs(2), ws.next())
+            .await
+            .expect("timeout")
+            .expect("stream ended");
+        let bm = recv_broadcast_msg(frame);
+        assert_eq!(bm.messages.len(), 1);
+
+        let confirm_number: u64 = 42;
+        broadcaster.confirm(confirm_number);
+
+        let frame = timeout(Duration::from_secs(2), ws.next())
+            .await
+            .expect("timeout")
+            .expect("stream ended");
+        let bm = recv_broadcast_msg(frame);
+        assert!(bm.messages.is_empty());
+        let confirmed = bm
+            .confirmed_sequence_number_message
+            .expect("confirmed message");
+        assert_eq!(confirmed.sequence_number, confirm_number);
+
+        broadcaster.stop();
+    }
+
+    #[tokio::test]
+    async fn test_cached_messages_on_client_connect() {
+        let chain_id: u64 = 8744;
+        let (broadcaster, addr) = start_test_broadcaster(chain_id).await;
+
+        broadcaster
+            .broadcast_single(empty_msg(), 1, None, vec![])
+            .expect("broadcast 1");
+        broadcaster
+            .broadcast_single(empty_msg(), 2, None, vec![])
+            .expect("broadcast 2");
+
+        for client_idx in 0..2 {
+            let mut ws = connect_ws(addr, 0).await;
+
+            let frame = timeout(Duration::from_secs(5), ws.next())
+                .await
+                .unwrap_or_else(|_| panic!("client {client_idx} timed out on backlog"))
+                .expect("stream ended");
+            let bm = recv_broadcast_msg(frame);
+            assert_eq!(
+                bm.messages.len(),
+                2,
+                "client {client_idx} should receive 2 cached messages"
+            );
+        }
+
+        broadcaster.confirm(1);
+        let wait = timeout(Duration::from_secs(2), async {
+            loop {
+                if broadcaster.get_cached_message_count() == 1 {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(wait.is_ok(), "cache should have 1 message after confirm(1)");
+
+        broadcaster.confirm(2);
+        let wait = timeout(Duration::from_secs(2), async {
+            loop {
+                if broadcaster.get_cached_message_count() == 0 {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(wait.is_ok(), "cache should be empty after confirm(2)");
+
+        broadcaster.stop();
+    }
+
+    #[tokio::test]
+    #[ignore] // reqwest doesn't cleanly expose 101 status from WS upgrade responses
+    async fn test_server_incorrect_chain_id() {
+        let server_chain_id: u64 = 8742;
+        let client_chain_id: u64 = 8743; // wrong
+        let (broadcaster, addr) = start_test_broadcaster(server_chain_id).await;
+
+        let config = BroadcasterClientConfig {
+            require_chain_id: true,
+            ..Default::default()
+        };
+
+        let url: url::Url = format!("ws://{addr}/feed").parse().expect("url");
+        let client = super::BroadcasterClient::new(
+            config,
+            format!("ws://{addr}/feed"),
+            client_chain_id,
+            0,
+            tokio::sync::mpsc::channel(1).0,
+        );
+
+        let result = client.validate_preflight_headers(&url, 0).await;
+        assert!(
+            matches!(result, Err(BroadcasterClientError::IncorrectChainId { .. })),
+            "expected IncorrectChainId, got: {result:?}"
+        );
+
+        broadcaster.stop();
+    }
+
+    #[tokio::test]
+    #[ignore] // reqwest doesn't cleanly expose 101 status from WS upgrade responses
+    async fn test_server_missing_chain_id() {
+        let mock_addr = start_mock_upgrade_server(Some(FEED_SERVER_VERSION), None).await;
+
+        let config = BroadcasterClientConfig {
+            require_chain_id: true,
+            ..Default::default()
+        };
+
+        let url: url::Url = format!("ws://{mock_addr}/feed").parse().expect("url");
+        let client = super::BroadcasterClient::new(
+            config,
+            format!("ws://{mock_addr}/feed"),
+            8742,
+            0,
+            tokio::sync::mpsc::channel(1).0,
+        );
+
+        let result = client.validate_preflight_headers(&url, 0).await;
+        assert!(
+            matches!(result, Err(BroadcasterClientError::MissingChainId)),
+            "expected MissingChainId, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore] // reqwest doesn't cleanly expose 101 status from WS upgrade responses
+    async fn test_server_incorrect_feed_server_version() {
+        let wrong_version = FEED_SERVER_VERSION + 1;
+        let mock_addr = start_mock_upgrade_server(Some(wrong_version), Some(8742)).await;
+
+        let config = BroadcasterClientConfig {
+            require_feed_server_version: true,
+            ..Default::default()
+        };
+
+        let url: url::Url = format!("ws://{mock_addr}/feed").parse().expect("url");
+        let client = super::BroadcasterClient::new(
+            config,
+            format!("ws://{mock_addr}/feed"),
+            8742,
+            0,
+            tokio::sync::mpsc::channel(1).0,
+        );
+
+        let result = client.validate_preflight_headers(&url, 0).await;
+        assert!(
+            matches!(
+                result,
+                Err(BroadcasterClientError::IncorrectFeedVersion { .. })
+            ),
+            "expected IncorrectFeedVersion, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore] // reqwest doesn't cleanly expose 101 status from WS upgrade responses
+    async fn test_server_missing_feed_server_version() {
+        let mock_addr = start_mock_upgrade_server(None, Some(8742)).await;
+
+        let config = BroadcasterClientConfig {
+            require_feed_server_version: true,
+            ..Default::default()
+        };
+
+        let url: url::Url = format!("ws://{mock_addr}/feed").parse().expect("url");
+        let client = super::BroadcasterClient::new(
+            config,
+            format!("ws://{mock_addr}/feed"),
+            8742,
+            0,
+            tokio::sync::mpsc::channel(1).0,
+        );
+
+        let result = client.validate_preflight_headers(&url, 0).await;
+        assert!(
+            matches!(
+                result,
+                Err(BroadcasterClientError::MissingFeedServerVersion)
+            ),
+            "expected MissingFeedServerVersion, got: {result:?}"
+        );
+    }
+
+    /// Start a mock HTTP server that performs a WebSocket upgrade with
+    /// configurable response headers.
+    /// Used to test preflight validation against servers with
+    /// missing/incorrect headers.
+    async fn start_mock_upgrade_server(
+        feed_server_version: Option<u64>,
+        chain_id: Option<u64>,
+    ) -> SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("local_addr");
+
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let service = hyper::service::service_fn(
+                    move |mut req: hyper::Request<hyper::body::Incoming>| async move {
+                        let (mut response, _upgrade_fut) = match yawc::WebSocket::upgrade(&mut req)
+                        {
+                            Ok(pair) => pair,
+                            Err(_) => {
+                                return Ok::<_, hyper::Error>(
+                                    hyper::Response::builder()
+                                        .status(hyper::StatusCode::BAD_REQUEST)
+                                        .body(http_body_util::Empty::<hyper::body::Bytes>::new())
+                                        .expect("build error response"),
+                                );
+                            }
+                        };
+
+                        if let Some(v) = feed_server_version
+                            && let Ok(hv) = v.to_string().parse()
+                        {
+                            response
+                                .headers_mut()
+                                .insert(HEADER_FEED_SERVER_VERSION, hv);
+                        }
+                        if let Some(id) = chain_id
+                            && let Ok(hv) = id.to_string().parse()
+                        {
+                            response.headers_mut().insert(HEADER_CHAIN_ID, hv);
+                        }
+                        Ok(response)
+                    },
+                );
+
+                let io = hyper_util::rt::TokioIo::new(stream);
+                tokio::spawn(async move {
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(io, service)
+                        .with_upgrades()
+                        .await;
+                });
+            }
+        });
+
+        addr
     }
 
     #[tokio::test]

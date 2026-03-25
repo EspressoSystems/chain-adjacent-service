@@ -5,11 +5,18 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
+use http_body_util::Empty;
+use hyper::body::{Bytes, Incoming};
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper::{Request, Response, StatusCode};
+use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, oneshot};
 use tokio::time::Instant;
-use tokio_tungstenite::tungstenite;
 use tokio_util::sync::CancellationToken;
+use yawc::WebSocket;
+use yawc::frame::{Frame, OpCode};
 
 use super::client::{
     FEED_CLIENT_VERSION, FEED_SERVER_VERSION, HEADER_CHAIN_ID, HEADER_FEED_CLIENT_VERSION,
@@ -296,56 +303,103 @@ async fn handle_connection(
     shared: &Arc<SharedState>,
     cancel: CancellationToken,
 ) -> Result<(), anyhow::Error> {
-    let requested_seq_num = Arc::new(std::sync::Mutex::new(0u64));
-    let seq_num_capture = requested_seq_num.clone();
+    let (upgrade_tx, upgrade_rx) = oneshot::channel::<(yawc::UpgradeFut, u64)>();
+    let upgrade_tx = Arc::new(std::sync::Mutex::new(Some(upgrade_tx)));
+
     let chain_id = shared.chain_id;
     let require_version = shared.config.require_version;
 
-    let callback = move |req: &http::Request<()>,
-                         mut resp: http::Response<()>|
-          -> Result<http::Response<()>, http::Response<Option<String>>> {
-        if let Some(val) = req.headers().get(HEADER_REQUESTED_SEQ_NUM)
-            && let Ok(s) = val.to_str()
-            && let Ok(n) = s.parse::<u64>()
-            && let Ok(mut guard) = seq_num_capture.lock()
-        {
-            *guard = n;
-        }
-
-        if require_version {
-            let version_ok = req
+    let service = service_fn(move |mut req: Request<Incoming>| {
+        let upgrade_tx = upgrade_tx.clone();
+        async move {
+            // Extract requested sequence number from headers.
+            let seq_num = req
                 .headers()
-                .get(HEADER_FEED_CLIENT_VERSION)
+                .get(HEADER_REQUESTED_SEQ_NUM)
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.parse::<u64>().ok())
-                .is_some_and(|v| v >= FEED_CLIENT_VERSION);
-            if !version_ok {
-                let mut err_resp = http::Response::new(Some(format!(
-                    "Missing or invalid {HEADER_FEED_CLIENT_VERSION}",
-                )));
-                *err_resp.status_mut() = http::StatusCode::BAD_REQUEST;
-                return Err(err_resp);
+                .unwrap_or(0);
+
+            // Validate client version if required.
+            if require_version {
+                let version_ok = req
+                    .headers()
+                    .get(HEADER_FEED_CLIENT_VERSION)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .is_some_and(|v| v >= FEED_CLIENT_VERSION);
+                if !version_ok {
+                    return Ok::<_, hyper::Error>(
+                        Response::builder()
+                            .status(StatusCode::BAD_REQUEST)
+                            .body(Empty::<Bytes>::new())
+                            .expect("build error response"),
+                    );
+                }
             }
-        }
 
-        if let Ok(v) = FEED_SERVER_VERSION.to_string().parse() {
-            resp.headers_mut().insert(HEADER_FEED_SERVER_VERSION, v);
-        }
-        if let Ok(v) = chain_id.to_string().parse() {
-            resp.headers_mut().insert(HEADER_CHAIN_ID, v);
-        }
+            // Perform the WebSocket upgrade.
+            let (mut response, upgrade_fut) = match WebSocket::upgrade(&mut req) {
+                Ok(pair) => pair,
+                Err(_) => {
+                    return Ok(Response::builder()
+                        .status(StatusCode::BAD_REQUEST)
+                        .body(Empty::new())
+                        .expect("build error response"));
+                }
+            };
 
-        Ok(resp)
-    };
+            // Set response headers.
+            if let Ok(v) = FEED_SERVER_VERSION.to_string().parse() {
+                response.headers_mut().insert(HEADER_FEED_SERVER_VERSION, v);
+            }
+            if let Ok(v) = chain_id.to_string().parse() {
+                response.headers_mut().insert(HEADER_CHAIN_ID, v);
+            }
 
-    let ws_stream = tokio_tungstenite::accept_hdr_async(stream, callback).await?;
-    let seq_num = requested_seq_num.lock().map(|g| *g).unwrap_or(0);
+            // Send the upgrade future to the outer task.
+            if let Ok(mut guard) = upgrade_tx.lock()
+                && let Some(tx) = guard.take()
+            {
+                let _ = tx.send((upgrade_fut, seq_num));
+            }
+
+            Ok(response)
+        }
+    });
+
+    // Serve exactly one HTTP request (the upgrade handshake).
+    let io = TokioIo::new(stream);
+    tokio::spawn(async move {
+        if let Err(e) = http1::Builder::new()
+            .serve_connection(io, service)
+            .with_upgrades()
+            .await
+        {
+            tracing::warn!(peer = %peer_addr, error = %e, "hyper connection error");
+        }
+    });
+
+    // Wait for the upgrade future from the service handler.
+    let (upgrade_fut, seq_num) = upgrade_rx.await?;
+    let ws = upgrade_fut.await?;
 
     tracing::debug!(peer = %peer_addr, requested_seq_num = seq_num, "client connected");
 
+    run_ws_client(ws, peer_addr, shared, cancel, seq_num).await
+}
+
+/// Runs the per-client WebSocket read/write loop after a successful upgrade.
+async fn run_ws_client(
+    ws: yawc::HttpWebSocket,
+    peer_addr: SocketAddr,
+    shared: &Arc<SharedState>,
+    cancel: CancellationToken,
+    seq_num: u64,
+) -> Result<(), anyhow::Error> {
     shared.client_count.fetch_add(1, Ordering::Relaxed);
     let mut rx = shared.broadcast_tx.subscribe();
-    let (mut sink, mut stream_rx) = ws_stream.split();
+    let (mut sink, mut stream_rx) = ws.split();
 
     let write_timeout = shared.config.write_timeout;
     let ping_interval = shared.config.ping;
@@ -361,12 +415,9 @@ async fn handle_connection(
             confirmed_sequence_number_message: None,
         };
         let payload = serde_json::to_string(&bm)?;
-        if tokio::time::timeout(
-            write_timeout,
-            sink.send(tungstenite::Message::text(payload)),
-        )
-        .await
-        .is_err()
+        if tokio::time::timeout(write_timeout, sink.send(Frame::text(payload)))
+            .await
+            .is_err()
         {
             tracing::warn!(peer = %peer_addr, "write timeout sending backlog");
             shared.client_count.fetch_sub(1, Ordering::Relaxed);
@@ -388,7 +439,7 @@ async fn handle_connection(
                 }
                 if tokio::time::timeout(
                     write_timeout,
-                    sink.send(tungstenite::Message::Ping(Vec::new().into())),
+                    sink.send(Frame::ping("")),
                 ).await.is_err() {
                     tracing::debug!(peer = %peer_addr, "write timeout sending ping");
                     break;
@@ -402,7 +453,7 @@ async fn handle_connection(
                             let payload = serde_json::to_string(&*bm)?;
                             let send_result = tokio::time::timeout(
                                 write_timeout,
-                                sink.send(tungstenite::Message::text(payload)),
+                                sink.send(Frame::text(payload)),
                             ).await;
                             match send_result {
                                 Ok(Ok(())) => {}
@@ -423,9 +474,9 @@ async fn handle_connection(
             }
             frame = stream_rx.next() => {
                 match frame {
-                    Some(Ok(tungstenite::Message::Close(_))) | None => break,
-                    Some(Err(_)) => break,
-                    Some(Ok(_)) => {
+                    Some(frame) if frame.opcode() == OpCode::Close => break,
+                    None => break,
+                    Some(_) => {
                         last_heard = Instant::now();
                     }
                 }
@@ -484,8 +535,7 @@ mod tests {
         let frame = timeout(Duration::from_secs(2), ws.next())
             .await
             .expect("timeout")
-            .expect("stream ended")
-            .expect("frame error");
+            .expect("stream ended");
 
         let bm = recv_broadcast_msg(frame);
         assert_eq!(bm.version, 1);
@@ -510,8 +560,7 @@ mod tests {
         let frame = timeout(Duration::from_secs(2), ws.next())
             .await
             .expect("timeout")
-            .expect("stream ended")
-            .expect("frame error");
+            .expect("stream ended");
 
         let bm = recv_broadcast_msg(frame);
         assert_eq!(bm.messages.len(), 1);
@@ -538,8 +587,7 @@ mod tests {
         let frame = timeout(Duration::from_secs(2), ws.next())
             .await
             .expect("timeout")
-            .expect("stream ended")
-            .expect("frame error");
+            .expect("stream ended");
 
         let bm = recv_broadcast_msg(frame);
         assert_eq!(bm.messages.len(), 3);
@@ -562,8 +610,7 @@ mod tests {
         let frame = timeout(Duration::from_secs(2), ws.next())
             .await
             .expect("timeout")
-            .expect("stream ended")
-            .expect("frame error");
+            .expect("stream ended");
 
         let bm = recv_broadcast_msg(frame);
         assert_eq!(bm.messages.len(), 3);
@@ -585,8 +632,7 @@ mod tests {
         let frame = timeout(Duration::from_secs(2), ws.next())
             .await
             .expect("timeout")
-            .expect("stream ended")
-            .expect("frame error");
+            .expect("stream ended");
 
         let bm = recv_broadcast_msg(frame);
         assert!(bm.messages.is_empty());
@@ -615,8 +661,7 @@ mod tests {
             let frame = timeout(Duration::from_secs(2), ws.next())
                 .await
                 .expect("timeout")
-                .expect("stream ended")
-                .expect("frame error");
+                .expect("stream ended");
 
             let bm = recv_broadcast_msg(frame);
             assert_eq!(bm.messages.len(), 1);

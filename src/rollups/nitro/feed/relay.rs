@@ -197,13 +197,9 @@ mod tests {
         // -- Downstream receives the espresso-finalized message --
         let msg = timeout(Duration::from_secs(10), async {
             loop {
-                let frame = downstream
-                    .next()
-                    .await
-                    .expect("stream ended")
-                    .expect("frame error");
-                let bm: BroadcastMessage =
-                    serde_json::from_str(frame.to_text().expect("text")).expect("json");
+                let frame = downstream.next().await.expect("stream ended");
+                let payload = frame.into_payload();
+                let bm: BroadcastMessage = serde_json::from_slice(&payload).expect("json");
                 if let Some(msg) = bm.messages.into_iter().flatten().next() {
                     return msg;
                 }
