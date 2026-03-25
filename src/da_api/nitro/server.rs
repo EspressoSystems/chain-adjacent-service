@@ -49,7 +49,7 @@ impl ServerState {
 
     fn current_endpoint(&self) -> Option<String> {
         self.router
-            .get(&self.current_da_provider.load(Ordering::Relaxed))
+            .get(&self.current_da_provider.load(Ordering::Acquire))
             .map(|c| c.endpoint_url.clone())
     }
 }
@@ -145,27 +145,31 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
         .await
         .map_err(|err| DaApiError::DownstreamDa(err.to_string()))?;
 
-    let downstream_json: Value = downstream
-        .json()
+    let status = downstream.status();
+    let bytes = downstream
+        .bytes()
         .await
-        .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
+        .map_err(|e| DaApiError::ParsingError(e.to_string()))?;
 
-    if let Some(error) = downstream_json.get("error") {
-        tracing::warn!(
-            provider = %endpoint,
-            error = %error,
-            "downstream DA provider returned error"
-        );
+    if !status.is_success() {
+        return Ok((
+            status,
+            [(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)],
+            bytes,
+        )
+            .into_response());
+    }
 
-        let err_resp = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": body["id"],
-            "error": error
-        });
+    let downstream_json: Value =
+        serde_json::from_slice(&bytes).map_err(|e| DaApiError::ParsingError(e.to_string()))?;
 
-        let bytes =
-            serde_json::to_vec(&err_resp).map_err(|e| DaApiError::ParsingError(e.to_string()))?;
-        return Ok((StatusCode::OK, bytes).into_response());
+    if downstream_json.get("error").is_some() {
+        return Ok((
+            status,
+            [(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)],
+            bytes,
+        )
+            .into_response());
     }
 
     let raw_cert: DAStoreResponse = serde_json::from_value(downstream_json["result"].clone())
@@ -180,7 +184,7 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
         &raw_cert.serialized_da_certificate,
     )?;
 
-    state.current_da_provider.store(0, Ordering::SeqCst);
+    state.current_da_provider.store(0, Ordering::Relaxed);
 
     let resp = DAStoreResponse::try_from(final_cert)?;
 
@@ -244,7 +248,7 @@ async fn handle_recover_payload(state: ServerState, body: Value) -> Result<Respo
     let bytes = downstream
         .bytes()
         .await
-        .map_err(|e| DaApiError::ParsingError(e.to_string()))?;
+        .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
 
     Response::builder()
         .status(status)
