@@ -21,6 +21,9 @@ pub enum DaApiError {
     #[error("certificate validation failed: {0}")]
     CertificateValidation(String),
 
+    #[error("invalid request: {0}")]
+    InvalidRequest(String),
+
     #[error("certificate validation failed: invalid header byte {0:#x}")]
     InvalidHeaderByte(u8),
 
@@ -98,6 +101,8 @@ impl DaApiError {
             // Parse failures → -32700 Parse error
             DaApiError::Json(_) | DaApiError::HexDecode(_) | DaApiError::ParsingError(_) => -32700,
 
+            DaApiError::InvalidRequest(_) => -32600,
+
             // Everything else → -32603 Internal error
             _ => -32603,
         }
@@ -153,7 +158,8 @@ impl IntoResponse for DaApiError {
                 "id":null
             }
         });
-        let bytes = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
+        let bytes =
+            serde_json::to_vec(&body).expect("error response serialization should not fail");
         (
             status,
             [(axum::http::header::CONTENT_TYPE, "application/json")],

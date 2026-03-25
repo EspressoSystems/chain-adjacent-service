@@ -25,6 +25,8 @@ use crate::da_api::{
     },
 };
 
+const HEADER_CONTENT_TYPE: &str = "application/json";
+
 const STORE: &str = "daprovider_store";
 const RECOVER_PAYLOAD: &str = "daprovider_recoverPayload";
 
@@ -62,7 +64,7 @@ async fn handle_rpc(State(state): State<ServerState>, body: Bytes) -> Result<Res
 
     let method = parsed["method"]
         .as_str()
-        .ok_or(DaApiError::Rpc("missing method".to_string()))?;
+        .ok_or(DaApiError::InvalidRequest("missing method".to_string()))?;
 
     match method {
         STORE => handle_store(state, parsed).await,
@@ -79,7 +81,7 @@ async fn forward_raw(state: ServerState, body: Bytes) -> Result<Response, DaApiE
     let resp = state
         .client
         .post(&endpoint)
-        .header("content-type", "application/json")
+        .header("content-type", HEADER_CONTENT_TYPE)
         .body(body)
         .send()
         .await
@@ -91,7 +93,12 @@ async fn forward_raw(state: ServerState, body: Bytes) -> Result<Response, DaApiE
         .await
         .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
 
-    Ok((status, bytes).into_response())
+    Ok((
+        status,
+        [(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)],
+        bytes,
+    )
+        .into_response())
 }
 
 async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApiError> {
@@ -100,9 +107,10 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
         .filter(|p| p.len() >= 2)
         .ok_or(DaApiError::InvalidParams("expected 2 params".to_string()))?;
 
-    let message: alloy::primitives::Bytes = serde_json::from_value(params[0].clone())?;
+    let message: alloy::primitives::Bytes = serde_json::from_value(params[0].clone())
+        .map_err(|err| DaApiError::InvalidParams(format!("bad message: {err}")))?;
     let timeout: alloy::primitives::U64 = serde_json::from_value(params[1].clone())
-        .map_err(|err| DaApiError::InvalidParams(err.to_string()))?;
+        .map_err(|err| DaApiError::InvalidParams(format!("bad timeout: {err}")))?;
 
     info!(
         "Intercepted store: message_len={}, timeout={}",
@@ -240,7 +248,7 @@ async fn handle_recover_payload(state: ServerState, body: Value) -> Result<Respo
 
     Response::builder()
         .status(status)
-        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .header(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)
         .body(axum::body::Body::from(bytes))
         .map_err(|e| DaApiError::ParsingError(e.to_string()))
 }
