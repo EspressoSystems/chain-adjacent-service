@@ -11,11 +11,13 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
+use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, oneshot};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use yawc::WebSocket;
+use yawc::WebSocketError;
 use yawc::frame::{Frame, OpCode};
 
 use super::client::{
@@ -23,6 +25,20 @@ use super::client::{
     HEADER_FEED_SERVER_VERSION, HEADER_REQUESTED_SEQ_NUM,
 };
 use super::message::{BroadcastFeedMessage, BroadcastMessage};
+
+#[derive(Debug, Error)]
+pub enum WsBroadcastServerError {
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("websocket error: {0}")]
+    WebSocket(#[from] WebSocketError),
+    #[error("serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
+    #[error("upgrade channel closed")]
+    UpgradeChannelClosed(#[from] oneshot::error::RecvError),
+    #[error("http error: {0}")]
+    Http(#[from] hyper::Error),
+}
 
 /// Mirrors Go `wsbroadcastserver.BroadcasterConfig`.
 #[derive(Debug, Clone)]
@@ -198,7 +214,7 @@ impl WsBroadcastServer {
         }
     }
 
-    pub(super) async fn start(&self) -> Result<SocketAddr, anyhow::Error> {
+    pub(super) async fn start(&self) -> Result<SocketAddr, WsBroadcastServerError> {
         let listener = TcpListener::bind(format!(
             "{}:{}",
             self.shared.config.addr, self.shared.config.port
@@ -302,7 +318,7 @@ async fn handle_connection(
     peer_addr: SocketAddr,
     shared: &Arc<SharedState>,
     cancel: CancellationToken,
-) -> Result<(), anyhow::Error> {
+) -> Result<(), WsBroadcastServerError> {
     let (upgrade_tx, upgrade_rx) = oneshot::channel::<(yawc::UpgradeFut, u64)>();
     let upgrade_tx = Arc::new(std::sync::Mutex::new(Some(upgrade_tx)));
 
@@ -396,7 +412,7 @@ async fn run_ws_client(
     shared: &Arc<SharedState>,
     cancel: CancellationToken,
     seq_num: u64,
-) -> Result<(), anyhow::Error> {
+) -> Result<(), WsBroadcastServerError> {
     shared.client_count.fetch_add(1, Ordering::Relaxed);
     let mut rx = shared.broadcast_tx.subscribe();
     let (mut sink, mut stream_rx) = ws.split();

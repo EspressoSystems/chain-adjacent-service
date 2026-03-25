@@ -1,14 +1,25 @@
+use thiserror::Error;
 use tokio::sync::{
     mpsc::{self, Receiver},
     watch,
 };
 
 use crate::rollups::nitro::feed::{
-    broadcaster::{BroadcasterConfig, DataSignerFunc},
-    client::BroadcasterClientConfig,
+    broadcaster::{BroadcasterConfig, BroadcasterError, DataSignerFunc},
+    client::{BroadcasterClientConfig, BroadcasterClientError},
 };
 
 use super::{broadcaster, client, message::BroadcastFeedMessage};
+
+#[derive(Debug, Error)]
+pub enum FeedRelayError {
+    #[error(transparent)]
+    Broadcaster(#[from] BroadcasterError),
+    #[error(transparent)]
+    Client(#[from] BroadcasterClientError),
+    #[error("task join error: {0}")]
+    Join(#[from] tokio::task::JoinError),
+}
 
 pub struct FeedRelay {
     pub(crate) broadcaster: broadcaster::Broadcaster,
@@ -56,7 +67,7 @@ impl FeedRelay {
         }
     }
 
-    pub async fn start(mut self) -> anyhow::Result<()> {
+    pub async fn start(mut self) -> Result<(), FeedRelayError> {
         // Start broadcaster server first
         let broadcaster = self.broadcaster;
         let _ = broadcaster.start().await?;
@@ -77,8 +88,8 @@ impl FeedRelay {
                 }
                 client_result = &mut client_task => {
                     match client_result {
-                        Ok(inner) => return inner.map_err(anyhow::Error::from),
-                        Err(err) => return Err(anyhow::Error::from(err)),
+                        Ok(inner) => return inner.map_err(FeedRelayError::from),
+                        Err(err) => return Err(FeedRelayError::from(err)),
                     }
                 }
                 msg = self.espresso_rx.recv() => {

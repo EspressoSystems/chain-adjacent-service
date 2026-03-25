@@ -4,6 +4,17 @@ use super::message::{BroadcastFeedMessage, BroadcastMessage, ConfirmedSequenceNu
 use super::ws_server::{WsBroadcastServer, WsBroadcastServerConfig};
 use crate::rollups::nitro::types::MessageWithMetadata;
 use alloy::primitives::B256;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum BroadcasterError {
+    #[error(transparent)]
+    Server(#[from] super::ws_server::WsBroadcastServerError),
+    #[error("serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
+    #[error("data signer error: {0}")]
+    DataSigner(Box<dyn std::error::Error + Send + Sync>),
+}
 
 #[derive(Debug, Clone)]
 pub struct BroadcasterConfig {
@@ -20,7 +31,8 @@ impl Default for BroadcasterConfig {
     }
 }
 
-pub type DataSignerFunc = Box<dyn Fn(&[u8]) -> Result<Vec<u8>, anyhow::Error> + Send + Sync>;
+pub type DataSignerFunc =
+    Box<dyn Fn(&[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> + Send + Sync>;
 
 pub struct Broadcaster {
     server: WsBroadcastServer,
@@ -46,8 +58,8 @@ impl Broadcaster {
         }
     }
 
-    pub async fn start(&self) -> Result<SocketAddr, anyhow::Error> {
-        self.server.start().await
+    pub async fn start(&self) -> Result<SocketAddr, BroadcasterError> {
+        Ok(self.server.start().await?)
     }
 
     pub fn stop(&self) {
@@ -68,11 +80,11 @@ impl Broadcaster {
         sequence_number: u64,
         block_hash: Option<B256>,
         block_metadata: Vec<u8>,
-    ) -> Result<BroadcastFeedMessage, anyhow::Error> {
+    ) -> Result<BroadcastFeedMessage, BroadcasterError> {
         let signature = match &self.data_signer {
             Some(signer) => {
-                let hash = compute_message_hash(&message, sequence_number, self.chain_id)?;
-                signer(&hash)?
+                let hash = compute_message_hash(&message, sequence_number, self.chain_id);
+                signer(&hash).map_err(BroadcasterError::DataSigner)?
             }
             None => Vec::new(),
         };
@@ -93,7 +105,7 @@ impl Broadcaster {
         msg_idx: u64,
         block_hash: Option<B256>,
         block_metadata: Vec<u8>,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<(), BroadcasterError> {
         let bfm = self.new_broadcast_feed_message(msg, msg_idx, block_hash, block_metadata)?;
         self.broadcast_single_feed_message(bfm);
         Ok(())
@@ -115,7 +127,7 @@ impl Broadcaster {
     pub fn populate_feed_backlog(
         &self,
         messages: Vec<BroadcastFeedMessage>,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<(), BroadcasterError> {
         let bm = BroadcastMessage {
             version: 1,
             messages: messages.into_iter().map(Some).collect(),
@@ -156,16 +168,26 @@ fn compute_message_hash(
     message: &MessageWithMetadata,
     sequence_number: u64,
     chain_id: u64,
-) -> Result<Vec<u8>, anyhow::Error> {
+) -> Vec<u8> {
     use alloy::primitives::Keccak256;
 
-    let serialized = serde_json::to_vec(message)?;
+    // Match Go: 24 bytes of big-endian extra data
+    let mut extra_data = [0u8; 24];
+    extra_data[0..8].copy_from_slice(&sequence_number.to_be_bytes());
+    extra_data[8..16].copy_from_slice(&chain_id.to_be_bytes());
+    extra_data[16..24].copy_from_slice(&message.delayed_messages_read.to_be_bytes());
+
+    // RLP-encode the L1IncomingMessage (nil pointer → empty list)
+    let serialized_message = match &message.message {
+        Some(msg) => alloy_rlp::encode(msg),
+        None => vec![0xC0], // empty RLP list
+    };
+
     let mut hasher = Keccak256::new();
     hasher.update(b"Arbitrum Nitro Feed:");
-    hasher.update(sequence_number.to_be_bytes());
-    hasher.update(chain_id.to_be_bytes());
-    hasher.update(&serialized);
-    Ok(hasher.finalize().to_vec())
+    hasher.update(extra_data);
+    hasher.update(&serialized_message);
+    hasher.finalize().to_vec()
 }
 
 #[cfg(test)]
@@ -309,14 +331,14 @@ mod tests {
     #[test]
     fn test_compute_message_hash_deterministic() {
         let msg = empty_msg();
-        let hash1 = compute_message_hash(&msg, 1, 42).expect("hash1");
-        let hash2 = compute_message_hash(&msg, 1, 42).expect("hash2");
+        let hash1 = compute_message_hash(&msg, 1, 42);
+        let hash2 = compute_message_hash(&msg, 1, 42);
         assert_eq!(hash1, hash2);
 
-        let hash3 = compute_message_hash(&msg, 2, 42).expect("hash3");
+        let hash3 = compute_message_hash(&msg, 2, 42);
         assert_ne!(hash1, hash3);
 
-        let hash4 = compute_message_hash(&msg, 1, 99).expect("hash4");
+        let hash4 = compute_message_hash(&msg, 1, 99);
         assert_ne!(hash1, hash4);
     }
 }
