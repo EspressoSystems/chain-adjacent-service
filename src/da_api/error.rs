@@ -1,4 +1,6 @@
 use alloy::{hex, primitives::Bytes};
+use axum::response::{IntoResponse, Response};
+use http::StatusCode;
 use jsonrpsee::types::ErrorObjectOwned;
 use thiserror::Error;
 
@@ -11,6 +13,9 @@ pub enum DaApiError {
 
     #[error("certificate serialization failed: {0}")]
     CertificateSerializationFailed(String),
+
+    #[error("invalid params: {0}")]
+    InvalidParams(String),
 
     // Certificate validation errors - these allow syncing to continue
     #[error("certificate validation failed: {0}")]
@@ -106,6 +111,30 @@ impl From<JsonRpcError> for DaApiError {
             }
             _ => DaApiError::DownstreamDa(err.message),
         }
+    }
+}
+
+impl IntoResponse for DaApiError {
+    fn into_response(self) -> Response {
+        let status = match &self {
+            DaApiError::InvalidParams(_) => StatusCode::BAD_REQUEST,
+            DaApiError::DownstreamDa(_) => StatusCode::BAD_GATEWAY,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "error": {
+                "code": status.as_u16(),
+                "message": self.to_string(),
+            }
+        });
+        let bytes = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
+        (
+            status,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            bytes,
+        )
+            .into_response()
     }
 }
 
