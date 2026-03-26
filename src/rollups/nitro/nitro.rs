@@ -328,12 +328,39 @@ impl Nitro {
 }
 
 pub fn verify_broadcast_feed_message_signature(
-    _chain_id: u64,
+    chain_id: u64,
     _sequencer_addresses: &[Address],
-    _message: &BroadcastFeedMessage,
+    msg: &BroadcastFeedMessage,
 ) -> Result<()> {
+    let _hash = compute_message_hash(&msg.message, msg.sequence_number, chain_id);
     // TODO: will implement in another PR
     Ok(())
+}
+
+pub fn compute_message_hash(
+    message: &MessageWithMetadata,
+    sequence_number: u64,
+    chain_id: u64,
+) -> Vec<u8> {
+    use alloy::primitives::Keccak256;
+
+    // Match Go: 24 bytes of big-endian extra data
+    let mut extra_data = [0u8; 24];
+    extra_data[0..8].copy_from_slice(&sequence_number.to_be_bytes());
+    extra_data[8..16].copy_from_slice(&chain_id.to_be_bytes());
+    extra_data[16..24].copy_from_slice(&message.delayed_messages_read.to_be_bytes());
+
+    // RLP-encode the L1IncomingMessage (nil pointer → empty list)
+    let serialized_message = match &message.message {
+        Some(msg) => alloy_rlp::encode(msg),
+        None => vec![0xC0], // empty RLP list
+    };
+
+    let mut hasher = Keccak256::new();
+    hasher.update(b"Arbitrum Nitro Feed:");
+    hasher.update(extra_data);
+    hasher.update(&serialized_message);
+    hasher.finalize().to_vec()
 }
 
 // TODO: consider the Espresso transaction size limit

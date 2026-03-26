@@ -10,10 +10,6 @@ use thiserror::Error;
 pub enum BroadcasterError {
     #[error(transparent)]
     Server(#[from] super::ws_server::WsBroadcastServerError),
-    #[error("serialization error: {0}")]
-    Serialization(#[from] serde_json::Error),
-    #[error("data signer error: {0}")]
-    DataSigner(Box<dyn std::error::Error + Send + Sync>),
 }
 
 #[derive(Debug, Clone)]
@@ -31,20 +27,15 @@ impl Default for BroadcasterConfig {
     }
 }
 
-pub type DataSignerFunc =
-    Box<dyn Fn(&[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> + Send + Sync>;
 
 pub struct Broadcaster {
     server: WsBroadcastServer,
-    chain_id: u64,
-    data_signer: Option<DataSignerFunc>,
 }
 
 impl Broadcaster {
     pub fn new(
         config: BroadcasterConfig,
         chain_id: u64,
-        data_signer: Option<DataSignerFunc>,
     ) -> Self {
         let server = WsBroadcastServer::new(
             config.ws_server,
@@ -53,8 +44,6 @@ impl Broadcaster {
         );
         Self {
             server,
-            chain_id,
-            data_signer,
         }
     }
 
@@ -74,42 +63,6 @@ impl Broadcaster {
         self.server.listener_addr()
     }
 
-    pub fn new_broadcast_feed_message(
-        &self,
-        message: MessageWithMetadata,
-        sequence_number: u64,
-        block_hash: Option<B256>,
-        block_metadata: Vec<u8>,
-    ) -> Result<BroadcastFeedMessage, BroadcasterError> {
-        let signature = match &self.data_signer {
-            Some(signer) => {
-                let hash = compute_message_hash(&message, sequence_number, self.chain_id);
-                signer(&hash).map_err(BroadcasterError::DataSigner)?
-            }
-            None => Vec::new(),
-        };
-
-        Ok(BroadcastFeedMessage {
-            sequence_number,
-            message,
-            block_hash,
-            signature,
-            block_metadata,
-            cumulative_sum_msg_size: 0,
-        })
-    }
-
-    pub fn broadcast_single(
-        &self,
-        msg: MessageWithMetadata,
-        msg_idx: u64,
-        block_hash: Option<B256>,
-        block_metadata: Vec<u8>,
-    ) -> Result<(), BroadcasterError> {
-        let bfm = self.new_broadcast_feed_message(msg, msg_idx, block_hash, block_metadata)?;
-        self.broadcast_single_feed_message(bfm);
-        Ok(())
-    }
 
     pub fn broadcast_single_feed_message(&self, bfm: BroadcastFeedMessage) {
         self.broadcast_feed_messages(vec![bfm]);
@@ -155,6 +108,29 @@ impl Broadcaster {
     pub fn get_cached_message_count(&self) -> usize {
         self.server.backlog().count()
     }
+
+    #[cfg(test)]
+    /// This method builds a message first and then broadcasts it.
+    /// This method is only used for testing since CAS only relays messages, it does not build them.
+    pub fn broadcast_single(
+        &self,
+        msg: MessageWithMetadata,
+        msg_idx: u64,
+        block_hash: Option<B256>,
+        block_metadata: Vec<u8>,
+    ) -> Result<(), BroadcasterError> {
+        let bfm =     BroadcastFeedMessage {
+            sequence_number: msg_idx,
+            message: msg,
+            block_hash,
+            // CAS has no need to sign over messages.
+            signature: Vec::new(),
+            block_metadata,
+            cumulative_sum_msg_size: 0,
+        };
+        self.broadcast_single_feed_message(bfm);
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -164,31 +140,6 @@ pub struct MessageWithBlockInfo {
     pub block_metadata: Vec<u8>,
 }
 
-fn compute_message_hash(
-    message: &MessageWithMetadata,
-    sequence_number: u64,
-    chain_id: u64,
-) -> Vec<u8> {
-    use alloy::primitives::Keccak256;
-
-    // Match Go: 24 bytes of big-endian extra data
-    let mut extra_data = [0u8; 24];
-    extra_data[0..8].copy_from_slice(&sequence_number.to_be_bytes());
-    extra_data[8..16].copy_from_slice(&chain_id.to_be_bytes());
-    extra_data[16..24].copy_from_slice(&message.delayed_messages_read.to_be_bytes());
-
-    // RLP-encode the L1IncomingMessage (nil pointer → empty list)
-    let serialized_message = match &message.message {
-        Some(msg) => alloy_rlp::encode(msg),
-        None => vec![0xC0], // empty RLP list
-    };
-
-    let mut hasher = Keccak256::new();
-    hasher.update(b"Arbitrum Nitro Feed:");
-    hasher.update(extra_data);
-    hasher.update(&serialized_message);
-    hasher.finalize().to_vec()
-}
 
 #[cfg(test)]
 mod tests {
@@ -218,7 +169,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_broadcaster_messages_removed_on_confirmation() {
-        let b = Broadcaster::new(BroadcasterConfig::default(), 5555, None);
+        let b = Broadcaster::new(BroadcasterConfig::default(), 5555);
 
         b.broadcast_single(empty_msg(), 1, None, vec![])
             .expect("broadcast 1");
@@ -264,7 +215,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_broadcast_feed_messages_appended_to_backlog() {
-        let b = Broadcaster::new(BroadcasterConfig::default(), 1, None);
+        let b = Broadcaster::new(BroadcasterConfig::default(), 1);
         assert_eq!(b.get_cached_message_count(), 0);
 
         let msgs: Vec<BroadcastFeedMessage> = (1..=3)
@@ -284,7 +235,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_populate_feed_backlog_does_not_broadcast() {
-        let b = Broadcaster::new(BroadcasterConfig::default(), 1, None);
+        let b = Broadcaster::new(BroadcasterConfig::default(), 1);
 
         let msgs = vec![BroadcastFeedMessage {
             sequence_number: 1,
@@ -299,46 +250,4 @@ mod tests {
         assert_eq!(b.get_cached_message_count(), 1);
     }
 
-    #[tokio::test]
-    async fn test_new_broadcast_feed_message_with_signer() {
-        let signer: DataSignerFunc = Box::new(|hash: &[u8]| {
-            let mut sig = vec![0xFF];
-            sig.extend_from_slice(hash);
-            Ok(sig)
-        });
-
-        let b = Broadcaster::new(BroadcasterConfig::default(), 42, Some(signer));
-        let bfm = b
-            .new_broadcast_feed_message(empty_msg(), 1, None, vec![])
-            .expect("create feed message");
-
-        assert!(!bfm.signature.is_empty());
-        assert_eq!(bfm.signature[0], 0xFF);
-        assert_eq!(bfm.sequence_number, 1);
-    }
-
-    #[tokio::test]
-    async fn test_new_broadcast_feed_message_without_signer() {
-        let b = Broadcaster::new(BroadcasterConfig::default(), 42, None);
-        let bfm = b
-            .new_broadcast_feed_message(empty_msg(), 5, None, vec![])
-            .expect("create feed message");
-
-        assert!(bfm.signature.is_empty());
-        assert_eq!(bfm.sequence_number, 5);
-    }
-
-    #[test]
-    fn test_compute_message_hash_deterministic() {
-        let msg = empty_msg();
-        let hash1 = compute_message_hash(&msg, 1, 42);
-        let hash2 = compute_message_hash(&msg, 1, 42);
-        assert_eq!(hash1, hash2);
-
-        let hash3 = compute_message_hash(&msg, 2, 42);
-        assert_ne!(hash1, hash3);
-
-        let hash4 = compute_message_hash(&msg, 1, 99);
-        assert_ne!(hash1, hash4);
-    }
 }

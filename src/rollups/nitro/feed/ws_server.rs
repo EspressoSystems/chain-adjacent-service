@@ -720,7 +720,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let b = Broadcaster::new(config, 1, None);
+        let b = Broadcaster::new(config, 1);
 
         assert!(!b.started());
         assert!(b.listener_addr().is_none());

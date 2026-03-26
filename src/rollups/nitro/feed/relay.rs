@@ -5,7 +5,7 @@ use tokio::sync::{
 };
 
 use crate::rollups::nitro::feed::{
-    broadcaster::{BroadcasterConfig, BroadcasterError, DataSignerFunc},
+    broadcaster::{BroadcasterConfig, BroadcasterError},
     client::{BroadcasterClientConfig, BroadcasterClientError},
 };
 
@@ -44,13 +44,12 @@ impl FeedRelay {
         client_config: BroadcasterClientConfig,
         upstream_feed_url: String,
         chain_id: u64,
-        data_signer: Option<DataSignerFunc>,
         current_msg_count: u64,
         espresso_submission_channel: mpsc::Sender<BroadcastFeedMessage>,
         espresso_rx: mpsc::Receiver<BroadcastFeedMessage>,
         l1_finalized_msg_idx: watch::Receiver<u64>,
     ) -> Self {
-        let broadcaster = broadcaster::Broadcaster::new(broadcaster_config, chain_id, data_signer);
+        let broadcaster = broadcaster::Broadcaster::new(broadcaster_config, chain_id);
 
         let client = client::BroadcasterClient::new(
             client_config,
@@ -141,7 +140,7 @@ mod tests {
         const STREAMER_DELAY: Duration = Duration::from_secs(2);
 
         // -- Mock upstream --
-        let (upstream, upstream_addr) = start_test_broadcaster(CHAIN_ID).await;
+        let (upstream, upstream_addr) = start_test_broadcaster(1).await;
 
         // -- Channels --
         let (submission_tx, mut submission_rx) = mpsc::channel::<BroadcastFeedMessage>(64);
@@ -164,7 +163,6 @@ mod tests {
             BroadcasterClientConfig::default(),
             format!("ws://{upstream_addr}/feed"),
             CHAIN_ID,
-            None,
             0,
             submission_tx,
             espresso_rx,

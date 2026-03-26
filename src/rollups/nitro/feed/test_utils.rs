@@ -1,7 +1,4 @@
 use std::net::SocketAddr;
-use std::time::Duration;
-
-use tokio::time::timeout;
 
 use super::broadcaster::{Broadcaster, BroadcasterConfig};
 use super::client::{FEED_CLIENT_VERSION, HEADER_FEED_CLIENT_VERSION, HEADER_REQUESTED_SEQ_NUM};
@@ -27,7 +24,7 @@ pub fn empty_msg() -> MessageWithMetadata {
 }
 
 pub async fn start_test_broadcaster(chain_id: u64) -> (Broadcaster, SocketAddr) {
-    let b = Broadcaster::new(test_broadcaster_config(), chain_id, None);
+    let b = Broadcaster::new(test_broadcaster_config(), chain_id);
     let addr = b.start().await.expect("start broadcaster");
     (b, addr)
 }
@@ -46,24 +43,6 @@ pub async fn connect_ws(addr: SocketAddr, requested_seq_num: u64) -> yawc::TcpWe
 pub fn recv_broadcast_msg(frame: Frame) -> BroadcastMessage {
     let payload = frame.into_payload();
     serde_json::from_slice(&payload).expect("valid json")
-}
-
-pub async fn wait_for_clients(broadcaster: &Broadcaster, expected: i32) {
-    timeout(Duration::from_secs(2), async {
-        loop {
-            if broadcaster.client_count() >= expected {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| {
-        panic!(
-            "expected {expected} clients, got {}",
-            broadcaster.client_count()
-        )
-    });
 }
 
 pub fn pick_free_port() -> u16 {
