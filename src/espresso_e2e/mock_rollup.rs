@@ -36,6 +36,7 @@ fn mock_build_espresso_tx_payload(_entries: &mut Vec<MockEntry>) -> Vec<u8> {
 impl Rollup for MockRollup {
     type Entry = MockEntry;
     type BatchMessage = MockBatchMessage;
+    type FeedMessage = MockEntry;
     type VerificationContext = MockVerificationContext;
     const PARSE_BATCH_FN: fn(alloy::primitives::Bytes) -> anyhow::Result<Vec<MockBatchMessage>> =
         mock_parse_batch;

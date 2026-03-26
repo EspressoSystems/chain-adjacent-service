@@ -386,7 +386,10 @@ fn build_espresso_tx_payload(messages: &mut Vec<BroadcastFeedMessage>) -> Vec<u8
                 payload.extend_from_slice(&encoded_msg);
             }
             Err(e) => {
-                tracing::error!(seq = message.sequence_number, "failed to encode message into json: {e}");
+                tracing::error!(
+                    seq = message.sequence_number,
+                    "failed to encode message into json: {e}"
+                );
             }
         }
     }

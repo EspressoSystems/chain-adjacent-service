@@ -27,24 +27,18 @@ impl Default for BroadcasterConfig {
     }
 }
 
-
 pub struct Broadcaster {
     server: WsBroadcastServer,
 }
 
 impl Broadcaster {
-    pub fn new(
-        config: BroadcasterConfig,
-        chain_id: u64,
-    ) -> Self {
+    pub fn new(config: BroadcasterConfig, chain_id: u64) -> Self {
         let server = WsBroadcastServer::new(
             config.ws_server,
             chain_id,
             config.broadcast_channel_capacity,
         );
-        Self {
-            server,
-        }
+        Self { server }
     }
 
     pub async fn start(&self) -> Result<SocketAddr, BroadcasterError> {
@@ -62,7 +56,6 @@ impl Broadcaster {
     pub fn listener_addr(&self) -> Option<SocketAddr> {
         self.server.listener_addr()
     }
-
 
     pub fn broadcast_single_feed_message(&self, bfm: BroadcastFeedMessage) {
         self.broadcast_feed_messages(vec![bfm]);
@@ -119,7 +112,7 @@ impl Broadcaster {
         block_hash: Option<B256>,
         block_metadata: Vec<u8>,
     ) -> Result<(), BroadcasterError> {
-        let bfm =     BroadcastFeedMessage {
+        let bfm = BroadcastFeedMessage {
             sequence_number: msg_idx,
             message: msg,
             block_hash,
@@ -139,7 +132,6 @@ pub struct MessageWithBlockInfo {
     pub block_hash: Option<B256>,
     pub block_metadata: Vec<u8>,
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -249,5 +241,4 @@ mod tests {
         b.populate_feed_backlog(msgs).expect("populate backlog");
         assert_eq!(b.get_cached_message_count(), 1);
     }
-
 }
