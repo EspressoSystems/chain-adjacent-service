@@ -34,9 +34,10 @@ impl Rollup for Nitro {
     type Entry = NitroRollupQueueEntry;
     type BatchMessage = BatchMessage;
     type VerificationContext = VerificationContext;
+    type FeedMessage = BroadcastFeedMessage;
     const PARSE_BATCH_FN: fn(Bytes) -> Result<Vec<BatchMessage>> =
         super::batch_parsing::parse_batch;
-    const ESPRESSO_TX_PAYLOAD_BUILD_FN: fn(&mut Vec<Self::Entry>) -> Vec<u8> =
+    const ESPRESSO_TX_PAYLOAD_BUILD_FN: fn(&mut Vec<Self::FeedMessage>) -> Vec<u8> =
         build_espresso_tx_payload;
 
     fn parse_hotshot_transactions(
@@ -364,7 +365,7 @@ pub fn compute_message_hash(
 }
 
 // TODO: consider the Espresso transaction size limit
-fn build_espresso_tx_payload(entries: &mut Vec<NitroRollupQueueEntry>) -> Vec<u8> {
+fn build_espresso_tx_payload(messages: &mut Vec<BroadcastFeedMessage>) -> Vec<u8> {
     let mut payload = Vec::new();
     // Add a header indicating NitroHeader V1
     let header = NitroHeader::V1;
@@ -378,15 +379,14 @@ fn build_espresso_tx_payload(entries: &mut Vec<NitroRollupQueueEntry>) -> Vec<u8
     payload.extend_from_slice(&(encoded_header.len() as u64).to_be_bytes());
     payload.extend_from_slice(&encoded_header);
 
-    for entry in entries {
-        let message = entry.message_with_meta.clone();
+    for message in messages {
         match serde_json::to_vec(&message) {
             Ok(encoded_msg) => {
                 payload.extend_from_slice(&(encoded_msg.len() as u64).to_be_bytes());
                 payload.extend_from_slice(&encoded_msg);
             }
             Err(e) => {
-                tracing::error!(seq = entry.pos, "failed to encode message into json: {e}");
+                tracing::error!(seq = message.sequence_number, "failed to encode message into json: {e}");
             }
         }
     }

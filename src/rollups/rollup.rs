@@ -11,10 +11,14 @@ pub trait RollupQueueEntry {
 
 pub trait Rollup {
     type Entry: RollupQueueEntry;
+    /// The type of message included in a batch
     type BatchMessage;
+    /// The type of message received from upstream and
+    /// sent to the feed subscribers
+    type FeedMessage;
     type VerificationContext;
     const PARSE_BATCH_FN: fn(Bytes) -> Result<Vec<Self::BatchMessage>>;
-    const ESPRESSO_TX_PAYLOAD_BUILD_FN: fn(&mut Vec<Self::Entry>) -> Vec<u8>;
+    const ESPRESSO_TX_PAYLOAD_BUILD_FN: fn(&mut Vec<Self::FeedMessage>) -> Vec<u8>;
 
     fn namespace_id(&self) -> NamespaceId;
 
