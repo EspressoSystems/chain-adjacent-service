@@ -82,6 +82,8 @@ impl FeedRelay {
                         client_task.abort();
                         return Ok(());
                     }
+                    // New L1 finalized index: notify broadcaster to prune backlog
+                    // and confirm to subscribers
                     let finalized = *self.l1_finalized_msg_idx.borrow();
                     broadcaster.confirm(finalized);
                 }
@@ -93,10 +95,13 @@ impl FeedRelay {
                 }
                 msg = self.espresso_rx.recv() => {
                     let Some(first_msg) = msg else {
+                        // channel has been closed
                         client_task.abort();
                         return Ok(());
                     };
 
+                    // Streamer has new espresso finalized message:
+                    // broadcast it and any other pending messages from the channel
                     let mut pending_messages = vec![first_msg];
                     while let Ok(next_msg) = self.espresso_rx.try_recv() {
                         pending_messages.push(next_msg);
