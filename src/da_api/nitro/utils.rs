@@ -2,7 +2,7 @@ use alloy::primitives::Bytes;
 
 use crate::da_api::{
     error::DaApiError,
-    nitro::certificate::{CASCertificateVersion, CERT_HEADER_SIZE_V1, CasCertificate},
+    nitro::certificate::{CASCertificateVersion, CERT_HEADER_SIZE_V0, CasCertificate},
 };
 
 pub const SEQUENCER_HEADER_LEN: usize = 40;
@@ -24,7 +24,7 @@ pub fn extract_da_sequencer_msg_from_espresso_da_certificate(
 
     let cas_version = CASCertificateVersion::try_from(sequencer_msg[SEQUENCER_HEADER_LEN])?;
     let header_size = match cas_version {
-        CASCertificateVersion::V1 => CERT_HEADER_SIZE_V1,
+        CASCertificateVersion::V0 => CERT_HEADER_SIZE_V0,
     };
 
     let seq_msg = sequencer_msg.slice(0..SEQUENCER_HEADER_LEN);
@@ -51,7 +51,7 @@ mod tests {
         let mut data = vec![0u8; SEQUENCER_HEADER_LEN];
         let mut expected_data = data.clone();
 
-        // espresso certificate metadata (0..113)
+        // espresso certificate metadata (0..100)
         let espresso_cert_length = CasCertificate::da_header_start_position(32);
         let mut cert_metadata: Vec<u8> = (0..espresso_cert_length as u8).collect();
         cert_metadata[0] = 1;

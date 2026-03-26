@@ -30,15 +30,15 @@ pub const CAS_SIG_SIZE: usize = 65; // ECDSA (r,s,v)
 // Certificate minimum size:
 //CERT_MINIMUM_SIZE = CERT_HEADER_SIZE + HOTSHOT_BLOCK_SIZE  + CAS_SIG_SIZE + 2
 
-/// Expected header size for CAS V1 (32 bytes as per certificate layout)
-pub const CERT_HEADER_SIZE_V1: usize = 32;
+/// Expected header size for CAS V0 (32 bytes as per certificate layout)
+pub const CERT_HEADER_SIZE_V0: usize = 32;
 
 /// CAS certificate version
 /// This versioning will also allow us to parse future versions even if CAS header size changes
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CASCertificateVersion {
-    V1 = 0x01,
+    V0 = 0x00,
 }
 
 impl TryFrom<u8> for CASCertificateVersion {
@@ -46,7 +46,7 @@ impl TryFrom<u8> for CASCertificateVersion {
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            0x01 => Ok(Self::V1),
+            0x00 => Ok(Self::V0),
             _ => Err(DaApiError::Serialization(format!(
                 "unknown version: {value}"
             ))),
@@ -106,11 +106,11 @@ impl CasCertificate {
             .ok_or_else(|| DaApiError::CertificateSerializationFailed("empty header".into()))?;
 
         let header_size = match cas_version {
-            v if v == CASCertificateVersion::V1 as u8 => CERT_HEADER_SIZE_V1,
+            v if v == CASCertificateVersion::V0 as u8 => CERT_HEADER_SIZE_V0,
             _ => {
                 return Err(DaApiError::CertificateSerializationFailed(format!(
                     "invalid header version, expected: {}, got: {}",
-                    CASCertificateVersion::V1 as u8,
+                    CASCertificateVersion::V0 as u8,
                     self.header[0]
                 )));
             }
@@ -155,7 +155,7 @@ impl CasCertificate {
 
         let version = CASCertificateVersion::try_from(data[0])?;
         let header_size = match version {
-            CASCertificateVersion::V1 => CERT_HEADER_SIZE_V1,
+            CASCertificateVersion::V0 => CERT_HEADER_SIZE_V0,
         };
 
         if data.len() < Self::certificate_minimum_size(header_size) {
@@ -212,8 +212,7 @@ impl CasCertificate {
         }
 
         //TODO: hardcoded size here
-        let mut header = vec![0u8; 32];
-        header[0] = CASCertificateVersion::V1 as u8;
+        let header = vec![0u8; 32];
 
         let cas_signature = Self::build_and_sign_payload(
             start_message_pos,
@@ -264,8 +263,7 @@ mod tests {
     // Helper to create a dummy certificate
     fn create_mock_cert() -> CasCertificate {
         CasCertificate {
-            // header_size: 32,
-            header: vec![0x01; 32],
+            header: vec![0x00; 32],
             min_hotshot_block_still_in_streamer_queue: 5,
             cas_signature: [0xCC; 65],
             da_api_header_flag: 0x01,
