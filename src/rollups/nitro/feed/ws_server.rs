@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -49,8 +48,6 @@ pub struct WsBroadcastServerConfig {
     pub client_timeout: Duration,
     pub write_timeout: Duration,
     pub require_version: bool,
-    /// -1 means unlimited.
-    pub max_catchup: i64,
     /// 0 means unlimited.
     pub max_connections_per_ip: u32,
 }
@@ -64,7 +61,6 @@ impl Default for WsBroadcastServerConfig {
             client_timeout: Duration::from_secs(15),
             write_timeout: Duration::from_secs(2),
             require_version: false,
-            max_catchup: -1,
             max_connections_per_ip: 0,
         }
     }
@@ -72,15 +68,16 @@ impl Default for WsBroadcastServerConfig {
 
 #[derive(Debug)]
 pub(super) struct Backlog {
+    // Messages are stored in order and must be unique by sequence number.
+    // The source of this backlog is from streamer, who sends messages in order,
+    // so we can rely on that.
     messages: Mutex<Vec<BroadcastFeedMessage>>,
-    max_catchup: i64,
 }
 
 impl Backlog {
-    fn new(max_catchup: i64) -> Self {
+    fn new() -> Self {
         Self {
             messages: Mutex::new(Vec::new()),
-            max_catchup,
         }
     }
 
@@ -94,13 +91,6 @@ impl Backlog {
                     continue;
                 }
                 msgs.push(m.clone());
-            }
-            if self.max_catchup >= 0 {
-                let limit = self.max_catchup as usize;
-                if msgs.len() > limit {
-                    let excess = msgs.len() - limit;
-                    msgs.drain(..excess);
-                }
             }
         }
     }
@@ -128,57 +118,12 @@ impl Backlog {
     }
 }
 
-struct ConnectionLimiter {
-    max_per_ip: u32,
-    counts: Mutex<HashMap<IpAddr, u32>>,
-}
-
-impl ConnectionLimiter {
-    fn new(max_per_ip: u32) -> Self {
-        Self {
-            max_per_ip,
-            counts: Mutex::new(HashMap::new()),
-        }
-    }
-
-    fn is_allowed(&self, ip: IpAddr) -> bool {
-        if self.max_per_ip == 0 {
-            return true;
-        }
-        if let Ok(mut counts) = self.counts.lock() {
-            let count = counts.entry(ip).or_insert(0);
-            if *count >= self.max_per_ip {
-                return false;
-            }
-            *count += 1;
-            true
-        } else {
-            true
-        }
-    }
-
-    fn release(&self, ip: IpAddr) {
-        if self.max_per_ip == 0 {
-            return;
-        }
-        if let Ok(mut counts) = self.counts.lock()
-            && let Some(count) = counts.get_mut(&ip)
-        {
-            *count = count.saturating_sub(1);
-            if *count == 0 {
-                counts.remove(&ip);
-            }
-        }
-    }
-}
-
 struct SharedState {
     backlog: Backlog,
     broadcast_tx: broadcast::Sender<Arc<BroadcastMessage>>,
     client_count: AtomicI32,
     chain_id: u64,
     config: WsBroadcastServerConfig,
-    connection_limiter: ConnectionLimiter,
 }
 
 struct ServerRunState {
@@ -199,16 +144,13 @@ impl WsBroadcastServer {
         broadcast_channel_capacity: usize,
     ) -> Self {
         let (broadcast_tx, _) = broadcast::channel(broadcast_channel_capacity);
-        let connection_limiter = ConnectionLimiter::new(config.max_connections_per_ip);
-        let max_catchup = config.max_catchup;
         Self {
             shared: Arc::new(SharedState {
-                backlog: Backlog::new(max_catchup),
+                backlog: Backlog::new(),
                 broadcast_tx,
                 client_count: AtomicI32::new(0),
                 chain_id,
                 config,
-                connection_limiter,
             }),
             state: Mutex::new(None),
         }
@@ -291,17 +233,12 @@ async fn accept_loop(listener: TcpListener, shared: Arc<SharedState>, cancel: Ca
             result = listener.accept() => {
                 match result {
                     Ok((stream, peer_addr)) => {
-                        if !shared.connection_limiter.is_allowed(peer_addr.ip()) {
-                            tracing::warn!(peer = %peer_addr, "rejecting connection: too many connections from this IP");
-                            continue;
-                        }
                         let shared = shared.clone();
                         let cancel = cancel.clone();
                         tokio::spawn(async move {
                             if let Err(e) = handle_connection(stream, peer_addr, &shared, cancel).await {
                                 tracing::warn!(peer = %peer_addr, error = %e, "client connection error");
                             }
-                            shared.connection_limiter.release(peer_addr.ip());
                         });
                     }
                     Err(e) => {
@@ -735,7 +672,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_backlog_skips_duplicates() {
-        let backlog = Backlog::new(-1);
+        let backlog = Backlog::new();
         let bm1 = BroadcastMessage {
             version: 1,
             messages: vec![Some(BroadcastFeedMessage {
@@ -756,32 +693,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_backlog_max_catchup() {
-        let backlog = Backlog::new(3);
-        for i in 1..=5 {
-            let bm = BroadcastMessage {
-                version: 1,
-                messages: vec![Some(BroadcastFeedMessage {
-                    sequence_number: i,
-                    message: empty_msg(),
-                    block_hash: None,
-                    signature: vec![],
-                    block_metadata: vec![],
-                    cumulative_sum_msg_size: 0,
-                })],
-                confirmed_sequence_number_message: None,
-            };
-            backlog.append(&bm);
-        }
-        assert_eq!(backlog.count(), 3);
-        let msgs = backlog.get_since(0);
-        assert_eq!(msgs[0].sequence_number, 3);
-        assert_eq!(msgs[2].sequence_number, 5);
-    }
-
-    #[tokio::test]
     async fn test_confirm_before_append() {
-        let backlog = Backlog::new(-1);
+        let backlog = Backlog::new();
         let bm = BroadcastMessage {
             version: 1,
             messages: vec![Some(BroadcastFeedMessage {
