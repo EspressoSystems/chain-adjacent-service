@@ -2,7 +2,7 @@ use alloy::primitives::Bytes;
 
 use crate::da_api::{
     error::DaApiError,
-    nitro::certificate::{CASCertificateVersion, CERT_HEADER_SIZE_V1, CasCertificate},
+    nitro::certificate::{CASCertificateVersion, CERT_HEADER_SIZE_V0, CasCertificate},
 };
 
 pub const SEQUENCER_HEADER_LEN: usize = 40;
@@ -24,7 +24,7 @@ pub fn extract_da_sequencer_msg_from_espresso_da_certificate(
 
     let cas_version = CASCertificateVersion::try_from(sequencer_msg[SEQUENCER_HEADER_LEN])?;
     let header_size = match cas_version {
-        CASCertificateVersion::V1 => CERT_HEADER_SIZE_V1,
+        CASCertificateVersion::V0 => CERT_HEADER_SIZE_V0,
     };
 
     let seq_msg = sequencer_msg.slice(0..SEQUENCER_HEADER_LEN);
@@ -51,10 +51,9 @@ mod tests {
         let mut data = vec![0u8; SEQUENCER_HEADER_LEN];
         let mut expected_data = data.clone();
 
-        // espresso certificate metadata (0..113)
+        // espresso certificate metadata (0..100)
         let espresso_cert_length = CasCertificate::da_header_start_position(32);
-        let mut cert_metadata: Vec<u8> = (0..espresso_cert_length as u8).collect();
-        cert_metadata[0] = 1;
+        let cert_metadata: Vec<u8> = (0..espresso_cert_length as u8).collect();
         data.extend(&cert_metadata);
 
         data.push(0x01);
@@ -79,7 +78,7 @@ mod tests {
     fn test_extract_espresso_metadata_from_da_certificate() {
         //  40+100+1+1+99=286
         // 286-100-1-1=139
-        let sequencer_message=Bytes::from_str("0x00000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1bc93d7c92fd65dbd4809a2dcfd0f31c201f52aedbb700e3462d6cc1058ec2ac194723c2f1d41d7a65c1d2cf9a0683fe6a458ac269aaeb00c1b0cf8854afc05166").unwrap();
+        let sequencer_message=Bytes::from_str("0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1bc93d7c92fd65dbd4809a2dcfd0f31c201f52aedbb700e3462d6cc1058ec2ac194723c2f1d41d7a65c1d2cf9a0683fe6a458ac269aaeb00c1b0cf8854afc05166").unwrap();
 
         let extracted =
             extract_da_sequencer_msg_from_espresso_da_certificate(&sequencer_message).unwrap();
