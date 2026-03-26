@@ -15,9 +15,9 @@ use tokio::net::TcpListener;
 use tokio::sync::{broadcast, oneshot};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use yawc::WebSocket;
 use yawc::WebSocketError;
 use yawc::frame::{Frame, OpCode};
+use yawc::{CompressionLevel, DeflateOptions, Options, WebSocket};
 
 use super::client::{
     FEED_CLIENT_VERSION, FEED_SERVER_VERSION, HEADER_CHAIN_ID, HEADER_FEED_CLIENT_VERSION,
@@ -48,8 +48,11 @@ pub struct WsBroadcastServerConfig {
     pub client_timeout: Duration,
     pub write_timeout: Duration,
     pub require_version: bool,
-    /// 0 means unlimited.
-    pub max_connections_per_ip: u32,
+    /// Enable per-message deflate compression support (permessage-deflate).
+    pub enable_compression: bool,
+    /// Require clients to use compression; clients that don't accept compression
+    /// will be disconnected immediately after upgrade.
+    pub require_compression: bool,
 }
 
 impl Default for WsBroadcastServerConfig {
@@ -61,7 +64,8 @@ impl Default for WsBroadcastServerConfig {
             client_timeout: Duration::from_secs(15),
             write_timeout: Duration::from_secs(2),
             require_version: false,
-            max_connections_per_ip: 0,
+            enable_compression: false,
+            require_compression: false,
         }
     }
 }
@@ -256,11 +260,14 @@ async fn handle_connection(
     shared: &Arc<SharedState>,
     cancel: CancellationToken,
 ) -> Result<(), WsBroadcastServerError> {
-    let (upgrade_tx, upgrade_rx) = oneshot::channel::<(yawc::UpgradeFut, u64)>();
+    // Use a oneshot channel to receive the WebSocket upgrade future from the service handler,
+    // for logging
+    let (upgrade_tx, upgrade_rx) = oneshot::channel::<(yawc::UpgradeFut, u64, bool)>();
     let upgrade_tx = Arc::new(std::sync::Mutex::new(Some(upgrade_tx)));
 
     let chain_id = shared.chain_id;
     let require_version = shared.config.require_version;
+    let enable_compression = shared.config.enable_compression;
 
     let service = service_fn(move |mut req: Request<Incoming>| {
         let upgrade_tx = upgrade_tx.clone();
@@ -291,16 +298,39 @@ async fn handle_connection(
                 }
             }
 
-            // Perform the WebSocket upgrade.
-            let (mut response, upgrade_fut) = match WebSocket::upgrade(&mut req) {
-                Ok(pair) => pair,
-                Err(_) => {
-                    return Ok(Response::builder()
-                        .status(StatusCode::BAD_REQUEST)
-                        .body(Empty::new())
-                        .expect("build error response"));
+            // Build upgrade options with compression if enabled.
+            let options = if enable_compression {
+                Options {
+                    compression: Some(DeflateOptions {
+                        level: CompressionLevel::best(),
+                        server_no_context_takeover: true,
+                        client_no_context_takeover: true,
+                    }),
+                    no_delay: true,
+                    ..Default::default()
                 }
+            } else {
+                Options::default().without_compression().with_no_delay()
             };
+
+            // Perform the WebSocket upgrade with options.
+            let (mut response, upgrade_fut) =
+                match WebSocket::upgrade_with_options(&mut req, options) {
+                    Ok(pair) => pair,
+                    Err(_) => {
+                        return Ok(Response::builder()
+                            .status(StatusCode::BAD_REQUEST)
+                            .body(Empty::new())
+                            .expect("build error response"));
+                    }
+                };
+
+            // Check whether compression was actually negotiated by looking at
+            // the Sec-WebSocket-Extensions response header.
+            let compression_accepted = response
+                .headers()
+                .get(hyper::header::SEC_WEBSOCKET_EXTENSIONS)
+                .is_some();
 
             // Set response headers.
             if let Ok(v) = FEED_SERVER_VERSION.to_string().parse() {
@@ -314,7 +344,7 @@ async fn handle_connection(
             if let Ok(mut guard) = upgrade_tx.lock()
                 && let Some(tx) = guard.take()
             {
-                let _ = tx.send((upgrade_fut, seq_num));
+                let _ = tx.send((upgrade_fut, seq_num, compression_accepted));
             }
 
             Ok(response)
@@ -334,10 +364,15 @@ async fn handle_connection(
     });
 
     // Wait for the upgrade future from the service handler.
-    let (upgrade_fut, seq_num) = upgrade_rx.await?;
+    let (upgrade_fut, seq_num, compression_accepted) = upgrade_rx.await?;
     let ws = upgrade_fut.await?;
 
-    tracing::debug!(peer = %peer_addr, requested_seq_num = seq_num, "client connected");
+    if shared.config.require_compression && !compression_accepted {
+        tracing::warn!(peer = %peer_addr, "client did not accept required compression, disconnecting");
+        return Ok(());
+    }
+
+    tracing::debug!(peer = %peer_addr, requested_seq_num = seq_num, compression = compression_accepted, "client connected");
 
     run_ws_client(ws, peer_addr, shared, cancel, seq_num).await
 }
