@@ -262,8 +262,10 @@ mod tests {
 
     // Helper to create a dummy certificate
     fn create_mock_cert() -> CasCertificate {
+        let mut header = vec![0x00; 32];
+        header[0] = CASCertificateVersion::V0 as u8;
         CasCertificate {
-            header: vec![0x00; 32],
+            header,
             min_hotshot_block_still_in_streamer_queue: 5,
             cas_signature: [0xCC; 65],
             da_api_header_flag: 0x01,
