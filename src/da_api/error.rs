@@ -35,6 +35,9 @@ pub enum DaApiError {
     )]
     InvalidSequencerMessageLength(usize, usize),
 
+    #[error("DA provider channel error: {0}")]
+    ChannelError(String),
+
     #[error("certificate validation failed: invalid CAS signature")]
     InvalidCasSignature,
 
