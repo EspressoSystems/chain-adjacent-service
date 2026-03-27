@@ -87,26 +87,27 @@ impl Backlog {
 
     /// Append messages, skipping duplicates with seq <= tail.
     fn append(&self, bm: &BroadcastMessage) {
-        if let Ok(mut msgs) = self.messages.lock() {
-            for m in bm.messages.iter().flatten() {
-                if let Some(tail_seq) = msgs.last().map(|m| m.sequence_number)
-                    && m.sequence_number <= tail_seq
-                {
-                    continue;
-                }
-                msgs.push(m.clone());
+        let mut msgs = self.messages.lock().expect("messages lock");
+        for m in bm.messages.iter().flatten() {
+            if let Some(tail_seq) = msgs.last().map(|m| m.sequence_number)
+                && m.sequence_number <= tail_seq
+            {
+                continue;
             }
+            msgs.push(m.clone());
         }
     }
 
     fn confirm(&self, confirmed: u64) {
-        if let Ok(mut msgs) = self.messages.lock() {
-            msgs.retain(|m| m.sequence_number > confirmed);
-        }
+        let mut msgs = self.messages.lock().expect("messages lock");
+        msgs.retain(|m| m.sequence_number > confirmed);
     }
 
     pub(super) fn count(&self) -> usize {
-        self.messages.lock().map(|m| m.len()).unwrap_or(0)
+        self.messages
+            .lock()
+            .map(|m| m.len())
+            .expect("messages lock")
     }
 
     fn get_since(&self, from_seq: u64) -> Vec<BroadcastFeedMessage> {
@@ -118,7 +119,7 @@ impl Backlog {
                     .cloned()
                     .collect()
             })
-            .unwrap_or_default()
+            .expect("messages lock")
     }
 }
 
@@ -177,32 +178,30 @@ impl WsBroadcastServer {
             accept_loop(listener, shared, accept_cancel).await;
         });
 
-        if let Ok(mut state) = self.state.lock() {
-            *state = Some(ServerRunState {
-                cancel,
-                listener_addr: local_addr,
-            });
-        }
+        let mut state = self.state.lock().expect("state lock");
+        *state = Some(ServerRunState {
+            cancel,
+            listener_addr: local_addr,
+        });
+
         Ok(local_addr)
     }
 
     pub(super) fn stop(&self) {
-        if let Ok(mut state) = self.state.lock()
-            && let Some(s) = state.take()
-        {
+        let mut state = self.state.lock().expect("state lock");
+        if let Some(s) = state.take() {
             s.cancel.cancel();
         }
     }
 
     pub(super) fn started(&self) -> bool {
-        self.state.lock().map(|s| s.is_some()).unwrap_or(false)
+        let state = self.state.lock().expect("state lock");
+        state.is_some()
     }
 
     pub(super) fn listener_addr(&self) -> Option<SocketAddr> {
-        self.state
-            .lock()
-            .ok()
-            .and_then(|s| s.as_ref().map(|s| s.listener_addr))
+        let state = self.state.lock().expect("state lock");
+        state.as_ref().map(|s| s.listener_addr)
     }
 
     /// Confirm is processed before append, then broadcast to all clients.
