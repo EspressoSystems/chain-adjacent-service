@@ -29,12 +29,20 @@ fn mock_parse_batch(_: alloy::primitives::Bytes) -> anyhow::Result<Vec<MockBatch
     Ok(vec![])
 }
 
+fn mock_build_espresso_tx_payload(_entries: &mut Vec<MockEntry>) -> Vec<u8> {
+    vec![]
+}
+
 impl Rollup for MockRollup {
     type Entry = MockEntry;
     type BatchMessage = MockBatchMessage;
+    type FeedMessage = MockEntry;
     type VerificationContext = MockVerificationContext;
     const PARSE_BATCH_FN: fn(alloy::primitives::Bytes) -> anyhow::Result<Vec<MockBatchMessage>> =
         mock_parse_batch;
+
+    const ESPRESSO_TX_PAYLOAD_BUILD_FN: fn(&mut Vec<Self::Entry>) -> Vec<u8> =
+        mock_build_espresso_tx_payload;
 
     fn parse_hotshot_transactions(
         &self,
@@ -73,6 +81,10 @@ impl Rollup for MockRollup {
         _streamer_queue: &[Self::Entry],
         _context: &Self::VerificationContext,
     ) -> bool {
+        todo!()
+    }
+
+    fn namespace_id(&self) -> NamespaceId {
         todo!()
     }
 }

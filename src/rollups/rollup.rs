@@ -1,5 +1,6 @@
 use alloy::primitives::Bytes;
 use anyhow::Result;
+use espresso_types::NamespaceId;
 
 use crate::espresso_client::types::NamespaceTransactionsInRange;
 
@@ -10,9 +11,16 @@ pub trait RollupQueueEntry {
 
 pub trait Rollup {
     type Entry: RollupQueueEntry;
+    /// The type of message included in a batch
     type BatchMessage;
+    /// The type of message received from upstream and
+    /// sent to the feed subscribers
+    type FeedMessage;
     type VerificationContext;
     const PARSE_BATCH_FN: fn(Bytes) -> Result<Vec<Self::BatchMessage>>;
+    const ESPRESSO_TX_PAYLOAD_BUILD_FN: fn(&mut Vec<Self::FeedMessage>) -> Vec<u8>;
+
+    fn namespace_id(&self) -> NamespaceId;
 
     fn parse_hotshot_transactions(
         &self,

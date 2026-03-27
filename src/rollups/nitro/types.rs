@@ -1,12 +1,12 @@
 use alloy::primitives::{Address, B256, Bytes, FixedBytes, U256};
-use alloy_rlp::{Decodable, Error, PayloadView, RlpDecodable, RlpEncodable};
+use alloy_rlp::{Decodable, Encodable, Error, PayloadView, RlpDecodable, RlpEncodable};
 use espresso_types::NamespaceId;
 use serde::{Deserialize, Serialize};
 use serde_with::{base64::Base64, serde_as};
 use std::collections::VecDeque;
 use tokio::sync::mpsc;
 
-use crate::rollups::nitro::broadcaster_client::message_types::BroadcastFeedMessage;
+use crate::rollups::nitro::feed::message::BroadcastFeedMessage;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct MessageWithMetadata {
@@ -18,7 +18,7 @@ pub struct MessageWithMetadata {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BatchMessage {
-    L2Msg(Bytes),
+    L2Msg(alloy::primitives::Bytes),
     DelayedMsg,
 }
 
@@ -176,6 +176,127 @@ impl Decodable for L1IncomingMessageHeader {
     }
 }
 
+impl L1IncomingMessageHeader {
+    fn rlp_payload_length(&self) -> usize {
+        self.kind.length()
+            + self.poster.length()
+            + self.block_number.length()
+            + self.timestamp.length()
+            + match &self.request_id {
+                Some(id) => id.length(),
+                None => 1, // 0xC0 empty list (rlp:"nilList")
+            }
+            + match &self.l1_base_fee {
+                Some(fee) => fee.length(),
+                None => 1, // 0x80 empty string (nil *big.Int)
+            }
+    }
+}
+
+impl Encodable for L1IncomingMessageHeader {
+    fn encode(&self, out: &mut dyn alloy_rlp::bytes::BufMut) {
+        alloy_rlp::Header {
+            list: true,
+            payload_length: self.rlp_payload_length(),
+        }
+        .encode(out);
+
+        self.kind.encode(out);
+        self.poster.encode(out);
+        self.block_number.encode(out);
+        self.timestamp.encode(out);
+
+        // Go rlp:"nilList" — nil pointer encodes as empty list (0xC0)
+        match &self.request_id {
+            Some(id) => id.encode(out),
+            None => {
+                alloy_rlp::Header {
+                    list: true,
+                    payload_length: 0,
+                }
+                .encode(out);
+            }
+        }
+
+        // Go nil *big.Int encodes as empty string (0x80)
+        match &self.l1_base_fee {
+            Some(fee) => fee.encode(out),
+            None => out.put_u8(0x80),
+        }
+    }
+
+    fn length(&self) -> usize {
+        let pl = self.rlp_payload_length();
+        alloy_rlp::length_of_length(pl) + pl
+    }
+}
+
+impl L1IncomingMessage {
+    fn rlp_payload_length(&self) -> usize {
+        let mut len = match &self.header {
+            Some(h) => h.length(),
+            None => 1, // 0xC0 empty list (nil struct pointer)
+        };
+
+        len += self.l2msg.as_slice().length();
+
+        // Go rlp:"optional" — tail fields omitted when nil and all subsequent also nil
+        if self.legacy_batch_gas_cost.is_some() || self.batch_data_stats.is_some() {
+            len += match self.legacy_batch_gas_cost {
+                Some(cost) => cost.length(),
+                None => 1, // 0x80 empty string (nil *uint64)
+            };
+        }
+
+        if let Some(stats) = &self.batch_data_stats {
+            len += stats.length();
+        }
+
+        len
+    }
+}
+
+impl Encodable for L1IncomingMessage {
+    fn encode(&self, out: &mut dyn alloy_rlp::bytes::BufMut) {
+        alloy_rlp::Header {
+            list: true,
+            payload_length: self.rlp_payload_length(),
+        }
+        .encode(out);
+
+        // header: nil struct pointer → empty list
+        match &self.header {
+            Some(h) => h.encode(out),
+            None => {
+                alloy_rlp::Header {
+                    list: true,
+                    payload_length: 0,
+                }
+                .encode(out);
+            }
+        }
+
+        self.l2msg.as_slice().encode(out);
+
+        // Optional tail fields (Go rlp:"optional")
+        if self.legacy_batch_gas_cost.is_some() || self.batch_data_stats.is_some() {
+            match self.legacy_batch_gas_cost {
+                Some(cost) => cost.encode(out),
+                None => out.put_u8(0x80), // nil *uint64
+            }
+        }
+
+        if let Some(stats) = &self.batch_data_stats {
+            stats.encode(out);
+        }
+    }
+
+    fn length(&self) -> usize {
+        let pl = self.rlp_payload_length();
+        alloy_rlp::length_of_length(pl) + pl
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NitroRollupQueueEntry {
     pub message_with_meta: MessageWithMetadata,
@@ -192,7 +313,7 @@ pub struct LastBatchInfo {
 
 #[derive(Debug)]
 pub struct Nitro {
-    pub sequencer_addresses: Vec<Address>,
+    pub legacy_signer_addresses: Vec<Address>,
     pub namespace_id: NamespaceId,
     pub chain_id: u64,
     pub last_batch_info_receiver: mpsc::Receiver<LastBatchInfo>,
@@ -300,5 +421,107 @@ mod go_bigint_u56 {
                 "expected null, number, or string for U256, got {v}"
             ))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::{Address, B256, U256};
+
+    #[test]
+    fn test_rlp_roundtrip_message_with_block_hash_and_metadata() {
+        // Mirrors Go ExampleBroadcastMessage_broadcastfeedmessageWithBlockHashAndBlockMetadata
+        let original = L1IncomingMessage {
+            header: Some(L1IncomingMessageHeader {
+                kind: 0,
+                poster: Address::ZERO,
+                block_number: 0,
+                timestamp: 0,
+                request_id: Some(B256::ZERO),
+                l1_base_fee: Some(U256::ZERO),
+            }),
+            l2msg: vec![0xde, 0xad, 0xbe, 0xef],
+            legacy_batch_gas_cost: None,
+            batch_data_stats: None,
+        };
+
+        let encoded = alloy_rlp::encode(&original);
+        let decoded = L1IncomingMessage::decode(&mut encoded.as_slice()).unwrap();
+
+        // U256::ZERO and None both encode as 0x80, so roundtrip normalizes to None
+        let mut expected = original;
+        expected.header.as_mut().unwrap().l1_base_fee = None;
+        assert_eq!(decoded, expected);
+    }
+
+    #[test]
+    fn test_rlp_roundtrip_message_without_block_hash_and_metadata() {
+        // Mirrors Go ExampleBroadcastMessage_broadcastfeedmessageWithoutBlockHashAndBlockMetadata
+        // (same L1IncomingMessage content)
+        let original = L1IncomingMessage {
+            header: Some(L1IncomingMessageHeader {
+                kind: 0,
+                poster: Address::ZERO,
+                block_number: 0,
+                timestamp: 0,
+                request_id: Some(B256::ZERO),
+                l1_base_fee: Some(U256::ZERO),
+            }),
+            l2msg: vec![0xde, 0xad, 0xbe, 0xef],
+            legacy_batch_gas_cost: None,
+            batch_data_stats: None,
+        };
+
+        let encoded = alloy_rlp::encode(&original);
+        let decoded = L1IncomingMessage::decode(&mut encoded.as_slice()).unwrap();
+
+        let mut expected = original;
+        expected.header.as_mut().unwrap().l1_base_fee = None;
+        assert_eq!(decoded, expected);
+    }
+
+    #[test]
+    fn test_rlp_roundtrip_nil_request_id_and_base_fee() {
+        let original = L1IncomingMessage {
+            header: Some(L1IncomingMessageHeader {
+                kind: 0,
+                poster: Address::ZERO,
+                block_number: 0,
+                timestamp: 0,
+                request_id: None,
+                l1_base_fee: None,
+            }),
+            l2msg: vec![],
+            legacy_batch_gas_cost: None,
+            batch_data_stats: None,
+        };
+
+        let encoded = alloy_rlp::encode(&original);
+        let decoded = L1IncomingMessage::decode(&mut encoded.as_slice()).unwrap();
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn test_rlp_roundtrip_nontrivial_values() {
+        let original = L1IncomingMessage {
+            header: Some(L1IncomingMessageHeader {
+                kind: 3,
+                poster: "0xA4b000000000000000000073657175656e636572"
+                    .parse::<Address>()
+                    .unwrap(),
+                block_number: 1000,
+                timestamp: 1_700_000_000,
+                request_id: Some(B256::left_padding_from(&[0xa1])),
+                l1_base_fee: Some(U256::from(1_000_000_000u64)),
+            }),
+            l2msg: vec![0x01, 0x02, 0x03],
+            legacy_batch_gas_cost: None,
+            batch_data_stats: None,
+        };
+
+        let encoded = alloy_rlp::encode(&original);
+        let decoded = L1IncomingMessage::decode(&mut encoded.as_slice()).unwrap();
+        assert_eq!(decoded, original);
     }
 }

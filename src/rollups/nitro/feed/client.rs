@@ -1,7 +1,7 @@
 use std::time::Duration;
 
+use alloy::primitives::Address;
 use base64::Engine as _;
-use espresso_types::Transaction;
 use futures::StreamExt;
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -10,9 +10,9 @@ use yawc::{
     CompressionLevel, DeflateOptions, HttpRequest, Options, TcpWebSocket, WebSocket, WebSocketError,
 };
 
-use super::message_types::BroadcastMessage;
+use super::message::BroadcastFeedMessage;
+use super::message::BroadcastMessage;
 use crate::rollups::nitro::nitro::verify_broadcast_feed_message_signature;
-use crate::rollups::nitro::types::Nitro;
 use crate::utils::exponential_backoff;
 
 pub const FEED_SERVER_VERSION: u64 = 2;
@@ -33,6 +33,8 @@ pub struct BroadcasterClientConfig {
     pub enable_compression: bool,
     pub require_feed_server_version: bool,
     pub require_chain_id: bool,
+
+    pub trusted_sequencer_addresses: Vec<Address>,
 }
 
 impl Default for BroadcasterClientConfig {
@@ -46,6 +48,8 @@ impl Default for BroadcasterClientConfig {
             enable_compression: true,
             require_feed_server_version: false,
             require_chain_id: false,
+
+            trusted_sequencer_addresses: vec![],
         }
     }
 }
@@ -69,7 +73,7 @@ pub enum BroadcasterClientError {
     #[error("signature verification failed for seq {seq_num}: {reason}")]
     InvalidSignature { seq_num: u64, reason: String },
     #[error("espresso_submission_channel send error: {0}")]
-    ChannelSendError(#[from] mpsc::error::SendError<Transaction>),
+    ChannelSendError(#[from] Box<mpsc::error::SendError<BroadcastFeedMessage>>),
     #[error("invalid message: {0}")]
     InvalidMessage(String),
 }
@@ -95,8 +99,7 @@ pub struct BroadcasterClient {
     chain_id: u64,
     next_seq_num: u64,
     first_reconnect_attempt: bool,
-    rollup: Nitro,
-    espresso_submission_channel: mpsc::Sender<Transaction>,
+    espresso_submission_channel: mpsc::Sender<BroadcastFeedMessage>,
 }
 
 impl BroadcasterClient {
@@ -105,8 +108,7 @@ impl BroadcasterClient {
         websocket_url: String,
         chain_id: u64,
         current_message_count: u64,
-        rollup: Nitro,
-        espresso_submission_channel: mpsc::Sender<Transaction>,
+        espresso_submission_channel: mpsc::Sender<BroadcastFeedMessage>,
     ) -> Self {
         Self {
             config,
@@ -114,7 +116,6 @@ impl BroadcasterClient {
             chain_id,
             next_seq_num: current_message_count,
             first_reconnect_attempt: true,
-            rollup,
             espresso_submission_channel,
         }
     }
@@ -426,7 +427,7 @@ impl BroadcasterClient {
         }
 
         let chain_id = self.chain_id;
-        let sequencer_addresses = self.rollup.sequencer_addresses.clone();
+        let sequencer_addresses = self.config.trusted_sequencer_addresses.clone();
 
         let broadcast_feed_messages = tokio::task::spawn_blocking(move || {
             let mut verified = Vec::new();
@@ -451,17 +452,11 @@ impl BroadcasterClient {
             .last()
             .map(|m| m.sequence_number + 1);
 
-        // Create an espresso transaction from the broadcast messages and add it to the rollup queue
-        let espresso_transactions = self
-            .rollup
-            .create_espresso_transaction_from_broadcast_feed_messages(&broadcast_feed_messages)
-            .map_err(|e| BroadcasterClientError::InvalidMessage(e.to_string()))?;
-
-        for tx in espresso_transactions {
+        for tx in broadcast_feed_messages.into_iter() {
             self.espresso_submission_channel
                 .send(tx)
                 .await
-                .map_err(BroadcasterClientError::ChannelSendError)?;
+                .map_err(|e| BroadcasterClientError::ChannelSendError(Box::new(e)))?;
         }
 
         // Only advance next_seq_num after successful processing and submission,
@@ -505,41 +500,31 @@ pub mod testing {
     use std::time::Duration;
 
     use alloy::primitives::Address;
-    use espresso_types::{NamespaceId, Transaction};
     use tokio::sync::mpsc;
 
     use crate::rollups::nitro::{
-        broadcaster_client::{
-            broadcaster_client::{BroadcasterClient, BroadcasterClientConfig},
-            message_types::BroadcastMessage,
+        feed::{
+            client::{BroadcastFeedMessage, BroadcasterClient, BroadcasterClientConfig},
+            message::BroadcastMessage,
         },
-        types::{Nitro, NitroRollupQueueEntry},
+        types::NitroRollupQueueEntry,
     };
     use crate::rollups::rollup::RollupQueueEntry;
 
     const TEST_NAMESPACE_ID: u64 = 42161;
 
-    fn make_test_nitro_rollup(sequencer_addresses: Vec<Address>) -> Nitro {
-        let (_tx, rx) = mpsc::channel(1);
-        Nitro::new(
-            sequencer_addresses,
-            NamespaceId::from(TEST_NAMESPACE_ID),
-            TEST_NAMESPACE_ID,
-            rx,
-        )
-    }
-
     fn make_test_broadcaster_client(
         sequencer_addresses: Vec<Address>,
-    ) -> (BroadcasterClient, mpsc::Receiver<Transaction>) {
+    ) -> (BroadcasterClient, mpsc::Receiver<BroadcastFeedMessage>) {
         let (tx, rx) = mpsc::channel(256);
-        let rollup = make_test_nitro_rollup(sequencer_addresses);
         let client = BroadcasterClient::new(
-            BroadcasterClientConfig::default(),
+            BroadcasterClientConfig {
+                trusted_sequencer_addresses: sequencer_addresses,
+                ..Default::default()
+            },
             "ws://localhost:8080".to_string(),
             TEST_NAMESPACE_ID,
             0,
-            rollup,
             tx,
         );
         (client, rx)
@@ -584,21 +569,12 @@ pub mod testing {
             .await
             .expect("failed to connect to Arbitrum feed");
 
-        let (_tx, rx_batch) = mpsc::channel(1);
-        let rollup = Nitro::new(
-            vec![],
-            NamespaceId::from(ARB_CHAIN_ID),
-            ARB_CHAIN_ID,
-            rx_batch,
-        );
-
         let (tx, mut rx) = mpsc::channel(256);
         let mut client = BroadcasterClient::new(
             BroadcasterClientConfig::default(),
             ARB_FEED_URL.to_string(),
             ARB_CHAIN_ID,
             0,
-            rollup,
             tx,
         );
 
@@ -655,23 +631,16 @@ pub mod testing {
             let result = client.process_message(&payload).await;
             assert!(result.is_ok(), "process_message failed: {:?}", result.err());
 
-            let tx = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            let msg = tokio::time::timeout(Duration::from_secs(1), rx.recv())
                 .await
                 .expect("timeout waiting for transaction from channel")
                 .expect("channel closed before receiving transaction");
 
-            let parsed_messages = client
-                .rollup
-                .parse_nitro_hotshot_payload(tx.payload())
-                .expect("failed to parse nitro transaction payload");
-
-            for message in parsed_messages {
-                queue.push(NitroRollupQueueEntry {
-                    message_with_meta: message.message,
-                    pos: message.sequence_number,
-                    hotshot_height: 0,
-                });
-            }
+            queue.push(NitroRollupQueueEntry {
+                message_with_meta: msg.message,
+                pos: msg.sequence_number,
+                hotshot_height: 0,
+            });
         }
 
         assert_eq!(
