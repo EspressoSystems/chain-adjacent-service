@@ -1,11 +1,16 @@
 use alloy::primitives::Bytes;
 use serde_json::{Value, json};
 use std::{collections::HashMap, net::SocketAddr, str::FromStr, time::Duration};
-use tokio::{task::JoinHandle, time::sleep};
+use tokio::{
+    sync::{mpsc, oneshot},
+    task::JoinHandle,
+    time::sleep,
+};
 
 use chain_agnostic_service::{
     config::RollupType,
     da_api::{
+        VerificationResult,
         config::{DaApiConfig, DaProviderConfig},
         run,
     },
@@ -30,8 +35,24 @@ fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
         ..Default::default()
     };
 
+    let (verification_channel, mut verify_receiver) =
+        mpsc::channel::<(Bytes, oneshot::Sender<VerificationResult>)>(1);
+
+    // Spawn a mock verification handler that always succeeds
     tokio::spawn(async move {
-        run(config, RollupType::Nitro)
+        while let Some((_, reply)) = verify_receiver.recv().await {
+            let _ = reply.send(VerificationResult {
+                success: true,
+                start_message_position: 0,
+                end_message_position: 0,
+                start_espresso_block: 0,
+                min_espresso_block_still_in_queue: 0,
+            });
+        }
+    });
+
+    tokio::spawn(async move {
+        run(config, RollupType::Nitro, verification_channel)
             .await
             .expect("server should start");
     })

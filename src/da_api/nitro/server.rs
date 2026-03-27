@@ -14,13 +14,15 @@ use std::{
         atomic::{AtomicU8, Ordering},
     },
 };
+use tokio::sync::oneshot;
 use tracing::info;
 
 use crate::da_api::{
+    VerificationChannel, VerificationResult,
     config::DaProviderConfig,
     error::DaApiError,
     nitro::{
-        certificate::CasCertificate, test_utils::verify_batch_data, types::DAStoreResponse,
+        certificate::CasCertificate, types::DAStoreResponse,
         utils::extract_da_sequencer_msg_from_espresso_da_certificate,
     },
 };
@@ -36,14 +38,19 @@ pub struct ServerState {
     // TODO: dont use AtmoicU8 with hashmap here. update the design
     pub current_da_provider: Arc<AtomicU8>,
     pub client: reqwest::Client,
+    pub verification_channel: VerificationChannel,
 }
 
 impl ServerState {
-    pub fn new(router: HashMap<u8, DaProviderConfig>) -> Self {
+    pub fn new(
+        router: HashMap<u8, DaProviderConfig>,
+        verification_channel: VerificationChannel,
+    ) -> Self {
         Self {
             router: Arc::new(router),
             current_da_provider: Arc::new(AtomicU8::new(0)),
             client: reqwest::Client::new(),
+            verification_channel,
         }
     }
 
@@ -111,24 +118,38 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
         .filter(|p| p.len() >= 2)
         .ok_or(DaApiError::InvalidParams("expected 2 params".to_string()))?;
 
-    let message: alloy::primitives::Bytes = serde_json::from_value(params[0].clone())
+    let data: alloy::primitives::Bytes = serde_json::from_value(params[0].clone())
         .map_err(|err| DaApiError::InvalidParams(format!("bad message: {err}")))?;
     let timeout: alloy::primitives::U64 = serde_json::from_value(params[1].clone())
         .map_err(|err| DaApiError::InvalidParams(format!("bad timeout: {err}")))?;
 
     info!(
         "Intercepted store: message_len={}, timeout={}",
-        message.len(),
+        data.len(),
         timeout
     );
 
-    let (
-        start_message_pos,
-        end_message_pos,
-        start_hotshot_block,
-        min_hotshot_block_still_in_streamer_queue,
-        batch_data,
-    ) = verify_batch_data(message.clone());
+    let (tx, rx) = oneshot::channel();
+    state
+        .verification_channel
+        .send((data.clone(), tx))
+        .await
+        .map_err(|e| DaApiError::ChannelError(e.to_string()))?;
+    let VerificationResult {
+        success,
+        start_message_position,
+        end_message_position,
+        start_espresso_block,
+        min_espresso_block_still_in_queue,
+    } = rx
+        .await
+        .map_err(|e| DaApiError::ChannelError(e.to_string()))?;
+
+    if !success {
+        return Err(DaApiError::CertificateValidation(
+            "CAS verification failed".to_string(),
+        ));
+    }
 
     let endpoint = state
         .current_endpoint()
@@ -137,7 +158,7 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
     let forwarded_body = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "daprovider_store",
-        "params": [message, timeout],
+        "params": [data, timeout],
         "id": body["id"]
     });
 
@@ -180,11 +201,11 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
         .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
 
     let final_cert = CasCertificate::build_espresso_certificate(
-        start_message_pos,
-        end_message_pos,
-        start_hotshot_block,
-        min_hotshot_block_still_in_streamer_queue,
-        &batch_data,
+        start_message_position,
+        end_message_position,
+        start_espresso_block,
+        min_espresso_block_still_in_queue,
+        &data,
         &raw_cert.serialized_da_certificate,
     )?;
 
@@ -266,13 +287,14 @@ mod tests {
     use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder, rpc_params};
     use serde_json::json;
     use std::{collections::HashMap, net::SocketAddr, str::FromStr};
-    use tokio::task::JoinHandle;
+    use tokio::{sync::oneshot, task::JoinHandle};
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{body_partial_json, method},
     };
 
     use crate::da_api::{
+        VerificationResult,
         config::DaProviderConfig,
         nitro::{
             certificate::CasCertificate,
@@ -310,7 +332,23 @@ mod tests {
             },
         );
         tokio::spawn(async move {
-            let state = ServerState::new(da_providers);
+            let (verification_channel, mut verify_receiver) =
+                tokio::sync::mpsc::channel::<(Bytes, oneshot::Sender<VerificationResult>)>(1);
+
+            // Spawn a mock verification handler that always succeeds
+            tokio::spawn(async move {
+                while let Some((_, reply)) = verify_receiver.recv().await {
+                    let _ = reply.send(VerificationResult {
+                        success: true,
+                        start_message_position: 0,
+                        end_message_position: 0,
+                        start_espresso_block: 0,
+                        min_espresso_block_still_in_queue: 0,
+                    });
+                }
+            });
+
+            let state = ServerState::new(da_providers, verification_channel);
             let app = server_router(state);
             let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
             axum::serve(listener, app).await.unwrap();
