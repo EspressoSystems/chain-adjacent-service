@@ -1,290 +1,263 @@
+use axum::{
+    Router,
+    body::Bytes,
+    extract::State,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::post,
+};
+use serde_json::Value;
 use std::{
     collections::HashMap,
-    sync::atomic::{AtomicU8, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    },
 };
+use tracing::info;
 
 use crate::da_api::{
     config::DaProviderConfig,
     error::DaApiError,
     nitro::{
-        certificate::CasCertificate,
-        test_utils::verify_batch_data,
-        types::{
-            DAStoreResponse, JsonRpcResponse, MaxMessageSizeResult, RecoverPayloadResult,
-            SupportedHeaderBytesResult,
-        },
-        utils::{SEQUENCER_HEADER_LEN, extract_da_sequencer_msg_from_espresso_da_certificate},
+        certificate::CasCertificate, test_utils::verify_batch_data, types::DAStoreResponse,
+        utils::extract_da_sequencer_msg_from_espresso_da_certificate,
     },
 };
-use alloy::primitives::{Bytes, FixedBytes, U64};
-use jsonrpsee::{
-    core::{RpcResult, async_trait},
-    proc_macros::rpc,
-    types::ErrorObjectOwned,
-};
-use serde_json::json;
-use tracing::{debug, info};
 
-#[rpc(server, namespace = "daprovider")]
-pub trait DaApi: Send + Sync {
-    /// Reader methods
+const HEADER_CONTENT_TYPE: &str = "application/json";
 
-    #[method(name = "getSupportedHeaderBytes")]
-    async fn get_supported_header_bytes(&self) -> RpcResult<SupportedHeaderBytesResult>;
+const STORE: &str = "daprovider_store";
+const RECOVER_PAYLOAD: &str = "daprovider_recoverPayload";
 
-    #[method(name = "recoverPayload")]
-    async fn recover_payload(
-        &self,
-        batch_num: U64,
-        batch_block_hash: FixedBytes<32>,
-        sequencer_msg: Bytes,
-    ) -> RpcResult<RecoverPayloadResult>;
-
-    // /// Writer methods ///
-
-    #[method(name = "getMaxMessageSize")]
-    async fn get_max_message_size(&self) -> RpcResult<MaxMessageSizeResult>;
-
-    #[method(name = "store")]
-    async fn store(&self, message: Bytes, timeout: U64) -> RpcResult<DAStoreResponse>;
-}
-
-#[derive(Debug)]
-pub struct NitroDaServer {
-    ///  Strict ordering needs to be maintained in the router as the header byte is used to determine which DA provider to route the request to
-    ///  Mapping (insertion index => DA provider config)
-    /// Insertion 0 => ext-DA 1
-    /// Insertion 1 => ext-DA 2
-    router: HashMap<u8, DaProviderConfig>,
-    pub current_da_provider: AtomicU8,
+#[derive(Clone)]
+pub struct ServerState {
+    pub router: Arc<HashMap<u8, DaProviderConfig>>,
+    // TODO: dont use AtmoicU8 with hashmap here. update the design
+    pub current_da_provider: Arc<AtomicU8>,
     pub client: reqwest::Client,
 }
 
-impl NitroDaServer {
+impl ServerState {
     pub fn new(router: HashMap<u8, DaProviderConfig>) -> Self {
         Self {
-            router,
-            current_da_provider: AtomicU8::new(0),
+            router: Arc::new(router),
+            current_da_provider: Arc::new(AtomicU8::new(0)),
             client: reqwest::Client::new(),
         }
     }
+
+    fn current_endpoint(&self) -> Option<String> {
+        self.router
+            .get(&self.current_da_provider.load(Ordering::Acquire))
+            .map(|c| c.endpoint_url.clone())
+    }
 }
 
-#[async_trait]
-impl DaApiServer for NitroDaServer {
-    async fn get_supported_header_bytes(&self) -> RpcResult<SupportedHeaderBytesResult> {
-        debug!("Received get_supported_header_bytes request");
+pub fn server_router(state: ServerState) -> Router {
+    Router::new().route("/", post(handle_rpc)).with_state(state)
+}
 
-        // Get the current DA provider to route this to
-        let da_endpoint = self
-            .router
-            .get(&self.current_da_provider.load(Ordering::Relaxed))
-            .map(|config| config.endpoint_url.clone())
-            .ok_or(DaApiError::NoDaProvidersConfigured)?;
+async fn handle_rpc(State(state): State<ServerState>, body: Bytes) -> Result<Response, DaApiError> {
+    let parsed: Value =
+        serde_json::from_slice(&body).map_err(|e| DaApiError::InvalidParams(e.to_string()))?;
 
-        let request_body = json!({
-            "jsonrpc": "2.0",
-            "method": "daprovider_getSupportedHeaderBytes",
-            "params": [],
-            "id": 1
-        });
+    let method = parsed["method"]
+        .as_str()
+        .ok_or(DaApiError::InvalidRequest("missing method".to_string()))?;
 
-        let result = self
-            .client
-            .post(&da_endpoint)
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|err| ErrorObjectOwned::from(DaApiError::Rpc(err.to_string())))?
-            .json::<JsonRpcResponse<SupportedHeaderBytesResult>>()
-            .await
-            .map_err(|err| ErrorObjectOwned::from(DaApiError::Rpc(err.to_string())))?;
+    match method {
+        STORE => handle_store(state, parsed).await,
+        RECOVER_PAYLOAD => handle_recover_payload(state, parsed).await,
+        _ => forward_raw(state, body).await,
+    }
+}
 
-        match result {
-            JsonRpcResponse::Success { result } => Ok(result),
-            JsonRpcResponse::Error { error } => Err(ErrorObjectOwned::owned(
-                error.code,
-                error.message,
-                None::<()>,
-            )),
-        }
+/// Forward the request to the downstream provider without any modification
+async fn forward_raw(state: ServerState, body: Bytes) -> Result<Response, DaApiError> {
+    let endpoint = state
+        .current_endpoint()
+        .ok_or(DaApiError::NoDaProvidersConfigured)?;
+
+    let resp = state
+        .client
+        .post(&endpoint)
+        .header("content-type", HEADER_CONTENT_TYPE)
+        .body(body)
+        .send()
+        .await
+        .map_err(|err| DaApiError::DownstreamDa(err.to_string()))?;
+
+    let status = resp.status();
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
+
+    Ok((
+        status,
+        [(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)],
+        bytes,
+    )
+        .into_response())
+}
+
+/// Intecept a `Store` RPC call.
+/// This function first runs verification on the batch data and then forwards the request to the downstream provider.
+/// It creates and appends the espresso metadata to the DA certificate and returns the result to the caller.
+async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApiError> {
+    let params = body["params"]
+        .as_array()
+        .filter(|p| p.len() >= 2)
+        .ok_or(DaApiError::InvalidParams("expected 2 params".to_string()))?;
+
+    let message: alloy::primitives::Bytes = serde_json::from_value(params[0].clone())
+        .map_err(|err| DaApiError::InvalidParams(format!("bad message: {err}")))?;
+    let timeout: alloy::primitives::U64 = serde_json::from_value(params[1].clone())
+        .map_err(|err| DaApiError::InvalidParams(format!("bad timeout: {err}")))?;
+
+    info!(
+        "Intercepted store: message_len={}, timeout={}",
+        message.len(),
+        timeout
+    );
+
+    let (
+        start_message_pos,
+        end_message_pos,
+        start_hotshot_block,
+        min_hotshot_block_still_in_streamer_queue,
+        batch_data,
+    ) = verify_batch_data(message.clone());
+
+    let endpoint = state
+        .current_endpoint()
+        .ok_or(DaApiError::NoDaProvidersConfigured)?;
+
+    let forwarded_body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "daprovider_store",
+        "params": [message, timeout],
+        "id": body["id"]
+    });
+
+    let downstream = state
+        .client
+        .post(&endpoint)
+        .json(&forwarded_body)
+        .send()
+        .await
+        .map_err(|err| DaApiError::DownstreamDa(err.to_string()))?;
+
+    let status = downstream.status();
+    let bytes = downstream
+        .bytes()
+        .await
+        .map_err(|e| DaApiError::ParsingError(e.to_string()))?;
+
+    if !status.is_success() {
+        return Ok((
+            status,
+            [(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)],
+            bytes,
+        )
+            .into_response());
     }
 
-    async fn recover_payload(
-        &self,
-        batch_num: U64,
-        batch_block_hash: FixedBytes<32>,
-        sequencer_msg: Bytes,
-    ) -> RpcResult<RecoverPayloadResult> {
-        info!(
-            "Received recover_payload request with batch_num: {}, batch_block_hash: {:?}, sequencer_msg: {:?}",
-            batch_num, batch_block_hash, sequencer_msg
-        );
+    let downstream_json: Value =
+        serde_json::from_slice(&bytes).map_err(|e| DaApiError::ParsingError(e.to_string()))?;
 
-        if sequencer_msg.len() <= SEQUENCER_HEADER_LEN {
-            return Err(DaApiError::InvalidSequencerMessageLength(40, sequencer_msg.len()).into());
-        }
-        let da_endpoint = self
-            .router
-            .get(&self.current_da_provider.load(Ordering::Relaxed))
-            .map(|config| config.endpoint_url.clone())
-            .ok_or(DaApiError::NoDaProvidersConfigured)?;
-
-        let da_certificate_format: Bytes =
-            extract_da_sequencer_msg_from_espresso_da_certificate(&sequencer_msg).map_err(
-                |err| ErrorObjectOwned::from(DaApiError::CertificateValidation(err.to_string())),
-            )?;
-
-        info!(
-            "Extracted DA certificate format from sequencer message: {:?}",
-            da_certificate_format.len()
-        );
-
-        let request_body = json!({
-            "jsonrpc": "2.0",
-            "method": "daprovider_recoverPayload",
-            "params": [
-
-                 batch_num,
-                 batch_block_hash,
-                da_certificate_format
-                ],
-            "id": 1
-        });
-        let response = self
-            .client
-            .post(&da_endpoint)
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|err| ErrorObjectOwned::from(DaApiError::Rpc(err.to_string())))?
-            .json::<JsonRpcResponse<RecoverPayloadResult>>()
-            .await
-            .map_err(|err| ErrorObjectOwned::from(DaApiError::Rpc(err.to_string())))?;
-
-        match response {
-            JsonRpcResponse::Success { result } => Ok(result),
-            JsonRpcResponse::Error { error } => Err(ErrorObjectOwned::owned(
-                error.code,
-                error.message,
-                None::<()>,
-            )),
-        }
+    if downstream_json.get("error").is_some() {
+        return Ok((
+            status,
+            [(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)],
+            bytes,
+        )
+            .into_response());
     }
 
-    /// Writer methods ///
-    async fn get_max_message_size(&self) -> RpcResult<MaxMessageSizeResult> {
-        let da_endpoint = self
-            .router
-            .get(&self.current_da_provider.load(Ordering::Relaxed))
-            .map(|config| config.endpoint_url.clone())
-            .ok_or(DaApiError::NoDaProvidersConfigured)?;
+    let raw_cert: DAStoreResponse = serde_json::from_value(downstream_json["result"].clone())
+        .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
 
-        let request_body = json!({
-            "jsonrpc": "2.0",
-            "method": "daprovider_getMaxMessageSize",
-            "params": [],
-            "id": 1
-        });
+    let final_cert = CasCertificate::build_espresso_certificate(
+        start_message_pos,
+        end_message_pos,
+        start_hotshot_block,
+        min_hotshot_block_still_in_streamer_queue,
+        &batch_data,
+        &raw_cert.serialized_da_certificate,
+    )?;
 
-        let result = self
-            .client
-            .post(&da_endpoint)
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|err| ErrorObjectOwned::from(DaApiError::Rpc(err.to_string())))?
-            .json::<JsonRpcResponse<MaxMessageSizeResult>>()
-            .await
-            .map_err(|err| ErrorObjectOwned::from(DaApiError::Rpc(err.to_string())))?;
+    state.current_da_provider.store(0, Ordering::Relaxed);
 
-        match result {
-            JsonRpcResponse::Success { result } => Ok(result),
-            JsonRpcResponse::Error { error } => Err(ErrorObjectOwned::owned(
-                error.code,
-                error.message,
-                None::<()>,
-            )),
-        }
-    }
+    let resp = DAStoreResponse::try_from(final_cert)?;
 
-    async fn store(&self, message: Bytes, timeout: U64) -> RpcResult<DAStoreResponse> {
-        // run CAS verification on the message
-        // call DA provider store endpoint with the message and timeout
-        // get certificate from DA provider...check for returned errros and handle current da provider accordingly
-        // combine with espresso metadata + signature and return to caller
+    let success = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": body["id"],
+        "result": resp,
+    });
+    let bytes =
+        serde_json::to_vec(&success).map_err(|err| DaApiError::ParsingError(err.to_string()))?;
+    Ok((StatusCode::OK, bytes).into_response())
+}
 
-        info!("Received message: {}, timeout: {}", message, timeout);
+/// Strips the espresso wrapper from sequencer_msg and forwards the extracted DA
+/// certificate to the downstream provider.
+async fn handle_recover_payload(state: ServerState, body: Value) -> Result<Response, DaApiError> {
+    let params = body["params"]
+        .as_array()
+        .filter(|p| p.len() == 3)
+        .ok_or_else(|| DaApiError::InvalidParams("expected 3 params".to_string()))?;
 
-        let (
-            start_message_pos,
-            end_message_pos,
-            start_hotshot_block,
-            min_hotshot_block_still_in_streamer_queue,
-            batch_data,
-        ) = verify_batch_data(message.clone());
+    let batch_num: alloy::primitives::U64 = serde_json::from_value(params[0].clone())
+        .map_err(|e| DaApiError::InvalidParams(format!("bad batch_num: {e}")))?;
 
-        // Get the current DA provider to route this request to
-        let da_endpoint = self
-            .router
-            .get(&self.current_da_provider.load(Ordering::Relaxed))
-            .map(|config| config.endpoint_url.clone())
-            .ok_or(DaApiError::NoDaProvidersConfigured)?;
+    let batch_block_hash: alloy::primitives::FixedBytes<32> =
+        serde_json::from_value(params[1].clone())
+            .map_err(|e| DaApiError::InvalidParams(format!("bad batch_block_hash: {e}")))?;
 
-        let request_body = json!({
-            "jsonrpc": "2.0",
-            "method": "daprovider_store",
-            "params": [
-                    message,
-                    timeout
-            ],
-            "id": 1
-        });
+    let sequencer_msg: alloy::primitives::Bytes = serde_json::from_value(params[2].clone())
+        .map_err(|e| DaApiError::InvalidParams(format!("bad sequencer_msg: {e}")))?;
 
-        let result = self
-            .client
-            .post(&da_endpoint)
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|err| ErrorObjectOwned::from(DaApiError::Rpc(err.to_string())))?
-            .json::<JsonRpcResponse<DAStoreResponse>>()
-            .await
-            .map_err(|err| ErrorObjectOwned::from(DaApiError::ParsingError(err.to_string())))?;
+    info!(
+        batch_num = %batch_num,
+        sequencer_msg_len = sequencer_msg.len(),
+        "received recoverPayload request"
+    );
+    let da_certificate = extract_da_sequencer_msg_from_espresso_da_certificate(&sequencer_msg)
+        .map_err(|e| DaApiError::InvalidParams(format!("invalid sequencer_msg: {e}")))?;
 
-        match result {
-            JsonRpcResponse::Success { result } => {
-                let final_certificate = CasCertificate::build_espresso_certificate(
-                    start_message_pos,
-                    end_message_pos,
-                    start_hotshot_block,
-                    min_hotshot_block_still_in_streamer_queue,
-                    &batch_data,
-                    &result.serialized_da_certificate.clone(),
-                )?;
+    let endpoint = state
+        .current_endpoint()
+        .ok_or(DaApiError::NoDaProvidersConfigured)?;
 
-                //reset to primary DA provider after a successful store
-                self.current_da_provider.store(0, Ordering::Relaxed);
+    let forwarded_body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "daprovider_recoverPayload",
+        "params": [batch_num, batch_block_hash, da_certificate],
+        "id": body["id"],
+    });
 
-                DAStoreResponse::try_from(final_certificate).map_err(Into::into)
-            }
-            JsonRpcResponse::Error { error } => {
-                let error_code = error.code;
-                let error_message = error.message.clone();
-                match DaApiError::from(error) {
-                    DaApiError::FallbackRequested(_) => {
-                        // TODO: add da provider index tracking logic
-                        unimplemented!();
-                    }
-                    _ => Err(ErrorObjectOwned::owned(
-                        error_code,
-                        error_message,
-                        None::<()>,
-                    )),
-                }
-            }
-        }
-    }
+    let downstream = state
+        .client
+        .post(&endpoint)
+        .json(&forwarded_body)
+        .send()
+        .await
+        .map_err(|e| DaApiError::DownstreamDa(e.to_string()))?;
+
+    let status = downstream.status();
+    let bytes = downstream
+        .bytes()
+        .await
+        .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
+
+    Response::builder()
+        .status(status)
+        .header(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)
+        .body(axum::body::Body::from(bytes))
+        .map_err(|e| DaApiError::ParsingError(e.to_string()))
 }
 
 #[cfg(test)]
@@ -294,14 +267,18 @@ mod tests {
     use serde_json::json;
     use std::{collections::HashMap, net::SocketAddr, str::FromStr};
     use tokio::task::JoinHandle;
-    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{body_partial_json, method},
+    };
 
     use crate::da_api::{
-        RollupType,
-        config::{DaApiConfig, DaProviderConfig},
-        nitro::certificate::CasCertificate,
-        nitro::types::{DAStoreResponse, RecoverPayloadResult},
-        run,
+        config::DaProviderConfig,
+        nitro::{
+            certificate::CasCertificate,
+            server::{ServerState, server_router},
+            types::{DAStoreResponse, RecoverPayloadResult},
+        },
     };
 
     fn valid_message() -> Bytes {
@@ -312,7 +289,7 @@ mod tests {
         "0x010500000000000000000000" // 0x01, 0x05, then padding
     }
 
-    fn spawn_server_with_endpoint(
+    fn spawn_server(
         addr: SocketAddr,
         endpoint: String,
         fallback_uri: Option<String>,
@@ -332,46 +309,127 @@ mod tests {
                 endpoint_url: fallback_uri.unwrap_or(endpoint.clone()),
             },
         );
-        let config = DaApiConfig {
-            listen_addr: addr.to_string(),
-            da_providers,
-            ..Default::default()
-        };
         tokio::spawn(async move {
-            run(config, RollupType::Nitro)
-                .await
-                .expect("server should start");
+            let state = ServerState::new(da_providers);
+            let app = server_router(state);
+            let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+            axum::serve(listener, app).await.unwrap();
         })
     }
 
     #[tokio::test]
-    async fn test_mock_recover_payload_success() {
+    async fn test_all_da_api_methods() {
         let mock_da_provider = MockServer::start().await;
 
-        // The mock DA provider returns a valid JSON-RPC response
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "result": {
-                    "Payload": "0x3e5aa08200000000000000000000000000000000000000000000000000000000001249c4000000000000000000000000000000000000000000000000000000000024370b000000000000000000000000e64a54e2533fd126c2e452c5fab544d80e2e4eb50000000000000000000000000000000000000000000000000000000018eab6750000000000000000000000000000000000000000000000000000000018eab845"
-                }
-            })))
-            .mount(&mock_da_provider)
-            .await;
-
-        let addr: SocketAddr = "127.0.0.1:9945".parse().unwrap();
-        let _da_server = spawn_server_with_endpoint(addr, mock_da_provider.uri(), None);
+        let addr: SocketAddr = "127.0.0.1:9971".parse().unwrap();
+        let _server = spawn_server(addr, mock_da_provider.uri(), None);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
             .build(format!("http://{addr}"))
             .unwrap();
 
-        // sequencer_msg: 40 bytes padding + certificate bytes
+        // Test all pass through RPC calls
+
+        // 1. daprovider_getMaxMessageSize
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                json!({ "method": "daprovider_getMaxMessageSize" }),
+            ))
+            .respond_with(|req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                let id = body.get("id").cloned().unwrap_or(json!(1));
+
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "max_size": 1048576 }
+                }))
+            })
+            .mount(&mock_da_provider)
+            .await;
+
+        let response0: serde_json::Value = client
+            .request("daprovider_getMaxMessageSize", rpc_params![])
+            .await
+            .expect("RPC call failed");
+        assert_eq!(response0["max_size"], 1048576);
+
+        // 2. daprovider_getSupportedHeaderBytes
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                json!({ "method": "daprovider_getSupportedHeaderBytes" }),
+            ))
+            .respond_with(|req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                let id = body.get("id").cloned().unwrap_or(json!(1));
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id":id,
+                    "result": { "header_bytes": "0xdeadbeef" }
+                }))
+            })
+            .mount(&mock_da_provider)
+            .await;
+
+        let response1: serde_json::Value = client
+            .request("daprovider_getSupportedHeaderBytes", rpc_params![])
+            .await
+            .expect("RPC call failed");
+        assert!(response1["header_bytes"] == "0xdeadbeef");
+
+        // Test all intercepting RPC calls
+
+        // 1. Store
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method":"daprovider_store"})))
+            .respond_with(|req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                let id = body.get("id").cloned().unwrap_or(json!(1));
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "serialized-da-cert": mock_downstream_cert_hex() }
+                }))
+            })
+            .mount(&mock_da_provider)
+            .await;
+
+        let response2: Result<DAStoreResponse, _> = client
+            .request("daprovider_store", rpc_params![valid_message(), 5000u64])
+            .await;
+
+        assert!(response2.is_ok());
+
+        let cas_cert =
+            CasCertificate::try_from(response2.unwrap()).expect("should convert to CasCertificate");
+        assert_eq!(cas_cert.min_hotshot_block_still_in_streamer_queue, 0);
+        assert_eq!(cas_cert.da_api_header_flag, 0x01);
+        assert_eq!(cas_cert.da_provider_flag, 0x05);
+        assert!(!cas_cert.downstream_certificate.is_empty());
+
+        // 2. daprovider_recoverPayload
+
+        Mock::given(method("POST")).and(body_partial_json(json!({"method":"daprovider_recoverPayload"})))
+        .respond_with(|req: &wiremock::Request| {
+            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+            let id = body.get("id").cloned().unwrap_or(json!(1));
+
+            ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "Payload": "0x3e5aa08200000000000000000000000000000000000000000000000000000000001249c4000000000000000000000000000000000000000000000000000000000024370b000000000000000000000000e64a54e2533fd126c2e452c5fab544d80e2e4eb50000000000000000000000000000000000000000000000000000000018eab6750000000000000000000000000000000000000000000000000000000018eab845"
+                }
+            }))
+        })
+        .mount(&mock_da_provider)
+        .await;
+
+        // Full sequencer_msg containing espresso wrapper + inner DA certificate
         let sequencer_msg = Bytes::from_str("0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d6f4495acb1e8e0c5583a2357178fffd13f0cec5b216542b40027999633d72f000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1bc5981b980a01a85bb7c5299545170e1126a6a84b1c9e83719562fbe022d24ae126266b22c4717b69f9b4771a8b0c1d28681ddd0582a55b9fd76286be70cf54dc").unwrap();
 
-        let response: Result<RecoverPayloadResult, _> = client
+        let response3: Result<RecoverPayloadResult, _> = client
             .request(
                 "daprovider_recoverPayload",
                 rpc_params![
@@ -382,27 +440,71 @@ mod tests {
             )
             .await;
 
-        assert!(response.is_ok());
-        assert_eq!(response.unwrap().payload,"0x3e5aa08200000000000000000000000000000000000000000000000000000000001249c4000000000000000000000000000000000000000000000000000000000024370b000000000000000000000000e64a54e2533fd126c2e452c5fab544d80e2e4eb50000000000000000000000000000000000000000000000000000000018eab6750000000000000000000000000000000000000000000000000000000018eab845".to_string());
+        assert!(response3.is_ok());
+        assert_eq!(
+            response3.unwrap().payload,
+            "0x3e5aa08200000000000000000000000000000000000000000000000000000000001249c4000000000000000000000000000000000000000000000000000000000024370b000000000000000000000000e64a54e2533fd126c2e452c5fab544d80e2e4eb50000000000000000000000000000000000000000000000000000000018eab6750000000000000000000000000000000000000000000000000000000018eab845"
+        );
+
+        let reqs = mock_da_provider.received_requests().await.unwrap();
+        assert_eq!(reqs.len(), 4);
+        let body0: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        assert_eq!(body0["method"], "daprovider_getMaxMessageSize");
+        let body1: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
+        assert_eq!(body1["method"], "daprovider_getSupportedHeaderBytes");
+        let body2: serde_json::Value = serde_json::from_slice(&reqs[2].body).unwrap();
+        assert_eq!(body2["method"], "daprovider_store");
+        let body3: serde_json::Value = serde_json::from_slice(&reqs[3].body).unwrap();
+        assert_eq!(body3["method"], "daprovider_recoverPayload");
+    }
+
+    #[tokio::test]
+    async fn test_recover_payload_rejects_short_sequencer_msg() {
+        let mock_da_provider = MockServer::start().await;
+
+        let addr: SocketAddr = "127.0.0.1:9946".parse().unwrap();
+        let _server = spawn_server(addr, mock_da_provider.uri(), None);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .unwrap();
+
+        let short_msg = Bytes::from(vec![0u8; 10]);
+        let response: Result<RecoverPayloadResult, _> = client
+            .request(
+                "daprovider_recoverPayload",
+                rpc_params![
+                    1u64,
+                    b256!("0x0000000000000000000000000000000000000000000000000000000000000000"),
+                    short_msg
+                ],
+            )
+            .await;
+
+        assert!(response.is_err());
+        assert_eq!(mock_da_provider.received_requests().await.unwrap().len(), 0);
     }
 
     #[tokio::test]
     async fn test_store_success_returns_cas_certificate() {
-        let mock_da = MockServer::start().await;
+        let mock_da_provider = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "result": {
-                    "serialized-da-cert": mock_downstream_cert_hex()
-                }
-            })))
-            .mount(&mock_da)
+            .respond_with(|req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                let id = body.get("id").cloned().unwrap_or(json!(1));
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "serialized-da-cert": mock_downstream_cert_hex() }
+                }))
+            })
+            .mount(&mock_da_provider)
             .await;
 
         let addr: SocketAddr = "127.0.0.1:9960".parse().unwrap();
-        let _server = spawn_server_with_endpoint(addr, mock_da.uri(), None);
+        let _server = spawn_server(addr, mock_da_provider.uri(), None);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
@@ -417,25 +519,23 @@ mod tests {
 
         let cas_cert =
             CasCertificate::try_from(response.unwrap()).expect("should convert to CasCertificate");
-        // verify_batch_data returns (0,0,0,0,...) so all positions are 0
         assert_eq!(cas_cert.min_hotshot_block_still_in_streamer_queue, 0);
         assert_eq!(cas_cert.da_api_header_flag, 0x01);
         assert_eq!(cas_cert.da_provider_flag, 0x05);
-        // downstream_certificate is the raw bytes of the serialized_da_certificate
         assert!(!cas_cert.downstream_certificate.is_empty());
     }
 
     #[tokio::test]
     async fn test_store_malformed_response_returns_parsing_error() {
-        let mock_da = MockServer::start().await;
+        let mock_da_provider = MockServer::start().await;
 
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(200).set_body_string("this is not json"))
-            .mount(&mock_da)
+            .mount(&mock_da_provider)
             .await;
 
         let addr: SocketAddr = "127.0.0.1:9963".parse().unwrap();
-        let _server = spawn_server_with_endpoint(addr, mock_da.uri(), None);
+        let _server = spawn_server(addr, mock_da_provider.uri(), None);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
@@ -449,29 +549,35 @@ mod tests {
         assert!(response.is_err());
         let err = response.unwrap_err().to_string();
         assert!(
-            err.contains("ParsingError") || err.contains("parsing error"),
+            err.contains("ParsingError")
+                || err.contains("parsing error")
+                || err.contains("Request rejected"),
             "unexpected error: {err}"
         );
     }
 
     #[tokio::test]
     async fn test_store_wrong_field_name_in_response_fails_parsing() {
-        let mock_da = MockServer::start().await;
+        let mock_da_provider = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "result": {
-                    // wrong key — "serializedDaCertificate" instead of "serialized-da-cert"
-                    "serializedDaCertificate": mock_downstream_cert_hex()
-                }
-            })))
-            .mount(&mock_da)
+            .respond_with(|req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                let id = body.get("id").cloned().unwrap_or(json!(1));
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        // wrong key — "serializedDaCertificate" instead of "serialized-da-cert"
+                        "serializedDaCertificate": mock_downstream_cert_hex()
+                    }
+                }))
+            })
+            .mount(&mock_da_provider)
             .await;
 
         let addr: SocketAddr = "127.0.0.1:9964".parse().unwrap();
-        let _server = spawn_server_with_endpoint(addr, mock_da.uri(), None);
+        let _server = spawn_server(addr, mock_da_provider.uri(), None);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
@@ -487,22 +593,23 @@ mod tests {
 
     #[tokio::test]
     async fn test_store_da_provider_generic_error_propagates() {
-        let mock_da = MockServer::start().await;
+        let mock_da_provider = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "error": {
-                    "code": -32000,
-                    "message": "storage backend unavailable"
-                }
-            })))
-            .mount(&mock_da)
+            .respond_with(|req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                let id = body.get("id").cloned().unwrap_or(json!(1));
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": -32000, "message": "storage backend unavailable" }
+                }))
+            })
+            .mount(&mock_da_provider)
             .await;
 
         let addr: SocketAddr = "127.0.0.1:9965".parse().unwrap();
-        let _server = spawn_server_with_endpoint(addr, mock_da.uri(), None);
+        let _server = spawn_server(addr, mock_da_provider.uri(), None);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
