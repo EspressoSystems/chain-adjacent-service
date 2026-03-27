@@ -73,6 +73,7 @@ async fn handle_rpc(State(state): State<ServerState>, body: Bytes) -> Result<Res
     }
 }
 
+/// Forward the request to the downstream provider without any modification
 async fn forward_raw(state: ServerState, body: Bytes) -> Result<Response, DaApiError> {
     let endpoint = state
         .current_endpoint()
@@ -101,6 +102,9 @@ async fn forward_raw(state: ServerState, body: Bytes) -> Result<Response, DaApiE
         .into_response())
 }
 
+/// Intecept a `Store` RPC call.
+/// This function first runs verification on the batch data and then forwards the request to the downstream provider.
+/// It creates and appends the espresso metadata to the DA certificate and returns the result to the caller.
 async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApiError> {
     let params = body["params"]
         .as_array()
@@ -203,7 +207,7 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
 async fn handle_recover_payload(state: ServerState, body: Value) -> Result<Response, DaApiError> {
     let params = body["params"]
         .as_array()
-        .filter(|p| p.len() >= 3)
+        .filter(|p| p.len() == 3)
         .ok_or_else(|| DaApiError::InvalidParams("expected 3 params".to_string()))?;
 
     let batch_num: alloy::primitives::U64 = serde_json::from_value(params[0].clone())
@@ -264,7 +268,10 @@ mod tests {
     use serde_json::json;
     use std::{collections::HashMap, net::SocketAddr, str::FromStr};
     use tokio::task::JoinHandle;
-    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{body_partial_json, method},
+    };
 
     use crate::da_api::{
         config::DaProviderConfig,
@@ -312,37 +319,118 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_recover_payload_extracts_cert_before_forwarding() {
-        let mock_b = MockServer::start().await;
+    async fn test_all_da_api_methods() {
+        let mock_da_provider = MockServer::start().await;
 
-        Mock::given(method("POST"))
-    .respond_with(|req: &wiremock::Request| {
-        let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
-        let id = body.get("id").cloned().unwrap_or(json!(1));
-
-        ResponseTemplate::new(200).set_body_json(json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": {
-                "Payload": "0x3e5aa08200000000000000000000000000000000000000000000000000000000001249c4000000000000000000000000000000000000000000000000000000000024370b000000000000000000000000e64a54e2533fd126c2e452c5fab544d80e2e4eb50000000000000000000000000000000000000000000000000000000018eab6750000000000000000000000000000000000000000000000000000000018eab845"
-            }
-        }))
-    })
-    .mount(&mock_b)
-    .await;
-
-        let addr: SocketAddr = "127.0.0.1:9945".parse().unwrap();
-        let _server = spawn_server(addr, mock_b.uri(), None);
+        let addr: SocketAddr = "127.0.0.1:9971".parse().unwrap();
+        let _server = spawn_server(addr, mock_da_provider.uri(), None);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
             .build(format!("http://{addr}"))
             .unwrap();
 
+        // Test all pass through RPC calls
+
+        // 1. daprovider_getMaxMessageSize
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                json!({ "method": "daprovider_getMaxMessageSize" }),
+            ))
+            .respond_with(|req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                let id = body.get("id").cloned().unwrap_or(json!(1));
+
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "max_size": 1048576 }
+                }))
+            })
+            .mount(&mock_da_provider)
+            .await;
+
+        let response0: serde_json::Value = client
+            .request("daprovider_getMaxMessageSize", rpc_params![])
+            .await
+            .expect("RPC call failed");
+        assert_eq!(response0["max_size"], 1048576);
+
+        // 2. daprovider_getSupportedHeaderBytes
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                json!({ "method": "daprovider_getSupportedHeaderBytes" }),
+            ))
+            .respond_with(|req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                let id = body.get("id").cloned().unwrap_or(json!(1));
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id":id,
+                    "result": { "header_bytes": "0xdeadbeef" }
+                }))
+            })
+            .mount(&mock_da_provider)
+            .await;
+
+        let response1: serde_json::Value = client
+            .request("daprovider_getSupportedHeaderBytes", rpc_params![])
+            .await
+            .expect("RPC call failed");
+        assert!(response1["header_bytes"] == "0xdeadbeef");
+
+        // Test all intercepting RPC calls
+
+        // 1. Store
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method":"daprovider_store"})))
+            .respond_with(|req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                let id = body.get("id").cloned().unwrap_or(json!(1));
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "serialized-da-cert": mock_downstream_cert_hex() }
+                }))
+            })
+            .mount(&mock_da_provider)
+            .await;
+
+        let response2: Result<DAStoreResponse, _> = client
+            .request("daprovider_store", rpc_params![valid_message(), 5000u64])
+            .await;
+
+        assert!(response2.is_ok());
+
+        let cas_cert =
+            CasCertificate::try_from(response2.unwrap()).expect("should convert to CasCertificate");
+        assert_eq!(cas_cert.min_hotshot_block_still_in_streamer_queue, 0);
+        assert_eq!(cas_cert.da_api_header_flag, 0x01);
+        assert_eq!(cas_cert.da_provider_flag, 0x05);
+        assert!(!cas_cert.downstream_certificate.is_empty());
+
+        // 2. daprovider_recoverPayload
+
+        Mock::given(method("POST")).and(body_partial_json(json!({"method":"daprovider_recoverPayload"})))
+        .respond_with(|req: &wiremock::Request| {
+            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+            let id = body.get("id").cloned().unwrap_or(json!(1));
+
+            ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "Payload": "0x3e5aa08200000000000000000000000000000000000000000000000000000000001249c4000000000000000000000000000000000000000000000000000000000024370b000000000000000000000000e64a54e2533fd126c2e452c5fab544d80e2e4eb50000000000000000000000000000000000000000000000000000000018eab6750000000000000000000000000000000000000000000000000000000018eab845"
+                }
+            }))
+        })
+        .mount(&mock_da_provider)
+        .await;
+
         // Full sequencer_msg containing espresso wrapper + inner DA certificate
         let sequencer_msg = Bytes::from_str("0x000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d6f4495acb1e8e0c5583a2357178fffd13f0cec5b216542b40027999633d72f000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1bc5981b980a01a85bb7c5299545170e1126a6a84b1c9e83719562fbe022d24ae126266b22c4717b69f9b4771a8b0c1d28681ddd0582a55b9fd76286be70cf54dc").unwrap();
 
-        let response: Result<RecoverPayloadResult, _> = client
+        let response3: Result<RecoverPayloadResult, _> = client
             .request(
                 "daprovider_recoverPayload",
                 rpc_params![
@@ -353,30 +441,30 @@ mod tests {
             )
             .await;
 
-        assert!(response.is_ok());
+        assert!(response3.is_ok());
         assert_eq!(
-            response.unwrap().payload,
+            response3.unwrap().payload,
             "0x3e5aa08200000000000000000000000000000000000000000000000000000000001249c4000000000000000000000000000000000000000000000000000000000024370b000000000000000000000000e64a54e2533fd126c2e452c5fab544d80e2e4eb50000000000000000000000000000000000000000000000000000000018eab6750000000000000000000000000000000000000000000000000000000018eab845"
         );
 
-        let reqs = mock_b.received_requests().await.unwrap();
-        assert_eq!(reqs.len(), 1);
-        let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
-        assert_eq!(body["method"], "daprovider_recoverPayload");
-        let forwarded_msg = body["params"][2].as_str().unwrap();
-        // Extracted cert is shorter than the original sequencer_msg (espresso wrapper removed)
-        assert!(
-            forwarded_msg.len() < format!("{sequencer_msg}").len(),
-            "server must forward the extracted DA certificate, not the full sequencer_msg"
-        );
+        let reqs = mock_da_provider.received_requests().await.unwrap();
+        assert_eq!(reqs.len(), 4);
+        let body0: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        assert_eq!(body0["method"], "daprovider_getMaxMessageSize");
+        let body1: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
+        assert_eq!(body1["method"], "daprovider_getSupportedHeaderBytes");
+        let body2: serde_json::Value = serde_json::from_slice(&reqs[2].body).unwrap();
+        assert_eq!(body2["method"], "daprovider_store");
+        let body3: serde_json::Value = serde_json::from_slice(&reqs[3].body).unwrap();
+        assert_eq!(body3["method"], "daprovider_recoverPayload");
     }
 
     #[tokio::test]
     async fn test_recover_payload_rejects_short_sequencer_msg() {
-        let mock_b = MockServer::start().await;
+        let mock_da_provider = MockServer::start().await;
 
         let addr: SocketAddr = "127.0.0.1:9946".parse().unwrap();
-        let _server = spawn_server(addr, mock_b.uri(), None);
+        let _server = spawn_server(addr, mock_da_provider.uri(), None);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
@@ -396,12 +484,12 @@ mod tests {
             .await;
 
         assert!(response.is_err());
-        assert_eq!(mock_b.received_requests().await.unwrap().len(), 0);
+        assert_eq!(mock_da_provider.received_requests().await.unwrap().len(), 0);
     }
 
     #[tokio::test]
     async fn test_store_success_returns_cas_certificate() {
-        let mock_b = MockServer::start().await;
+        let mock_da_provider = MockServer::start().await;
 
         Mock::given(method("POST"))
             .respond_with(|req: &wiremock::Request| {
@@ -413,11 +501,11 @@ mod tests {
                     "result": { "serialized-da-cert": mock_downstream_cert_hex() }
                 }))
             })
-            .mount(&mock_b)
+            .mount(&mock_da_provider)
             .await;
 
         let addr: SocketAddr = "127.0.0.1:9960".parse().unwrap();
-        let _server = spawn_server(addr, mock_b.uri(), None);
+        let _server = spawn_server(addr, mock_da_provider.uri(), None);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
@@ -440,15 +528,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_store_malformed_response_returns_parsing_error() {
-        let mock_b = MockServer::start().await;
+        let mock_da_provider = MockServer::start().await;
 
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(200).set_body_string("this is not json"))
-            .mount(&mock_b)
+            .mount(&mock_da_provider)
             .await;
 
         let addr: SocketAddr = "127.0.0.1:9963".parse().unwrap();
-        let _server = spawn_server(addr, mock_b.uri(), None);
+        let _server = spawn_server(addr, mock_da_provider.uri(), None);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
@@ -471,7 +559,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_store_wrong_field_name_in_response_fails_parsing() {
-        let mock_b = MockServer::start().await;
+        let mock_da_provider = MockServer::start().await;
 
         Mock::given(method("POST"))
             .respond_with(|req: &wiremock::Request| {
@@ -486,11 +574,11 @@ mod tests {
                     }
                 }))
             })
-            .mount(&mock_b)
+            .mount(&mock_da_provider)
             .await;
 
         let addr: SocketAddr = "127.0.0.1:9964".parse().unwrap();
-        let _server = spawn_server(addr, mock_b.uri(), None);
+        let _server = spawn_server(addr, mock_da_provider.uri(), None);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
@@ -506,7 +594,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_store_da_provider_generic_error_propagates() {
-        let mock_b = MockServer::start().await;
+        let mock_da_provider = MockServer::start().await;
 
         Mock::given(method("POST"))
             .respond_with(|req: &wiremock::Request| {
@@ -518,11 +606,11 @@ mod tests {
                     "error": { "code": -32000, "message": "storage backend unavailable" }
                 }))
             })
-            .mount(&mock_b)
+            .mount(&mock_da_provider)
             .await;
 
         let addr: SocketAddr = "127.0.0.1:9965".parse().unwrap();
-        let _server = spawn_server(addr, mock_b.uri(), None);
+        let _server = spawn_server(addr, mock_da_provider.uri(), None);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
@@ -539,80 +627,5 @@ mod tests {
             err.contains("storage backend unavailable"),
             "unexpected error: {err}"
         );
-    }
-
-    #[tokio::test]
-    async fn test_get_supported_header_bytes_passthrough() {
-        let mock_b = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .respond_with(|req: &wiremock::Request| {
-                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
-                let id = body.get("id").cloned().unwrap_or(json!(1));
-                ResponseTemplate::new(200).set_body_json(json!({
-                    "jsonrpc": "2.0",
-                    "id":id,
-                    "result": { "header_bytes": "0xdeadbeef" }
-                }))
-            })
-            .mount(&mock_b)
-            .await;
-
-        let addr: SocketAddr = "127.0.0.1:9970".parse().unwrap();
-        let _server = spawn_server(addr, mock_b.uri(), None);
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        let client = HttpClientBuilder::default()
-            .build(format!("http://{addr}"))
-            .unwrap();
-
-        let response: Result<serde_json::Value, _> = client
-            .request("daprovider_getSupportedHeaderBytes", rpc_params![])
-            .await;
-
-        assert!(response.is_ok());
-
-        let reqs = mock_b.received_requests().await.unwrap();
-        assert_eq!(reqs.len(), 1);
-        let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
-        assert_eq!(body["method"], "daprovider_getSupportedHeaderBytes");
-    }
-
-    #[tokio::test]
-    async fn test_get_max_message_size_passthrough() {
-        let mock_b = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .respond_with(|req: &wiremock::Request| {
-                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
-                let id = body.get("id").cloned().unwrap_or(json!(1));
-
-                ResponseTemplate::new(200).set_body_json(json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": { "max_size": 1048576 }
-                }))
-            })
-            .mount(&mock_b)
-            .await;
-
-        let addr: SocketAddr = "127.0.0.1:9971".parse().unwrap();
-        let _server = spawn_server(addr, mock_b.uri(), None);
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        let client = HttpClientBuilder::default()
-            .build(format!("http://{addr}"))
-            .unwrap();
-
-        let response: Result<serde_json::Value, _> = client
-            .request("daprovider_getMaxMessageSize", rpc_params![])
-            .await;
-
-        assert!(response.is_ok());
-
-        let reqs = mock_b.received_requests().await.unwrap();
-        assert_eq!(reqs.len(), 1);
-        let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
-        assert_eq!(body["method"], "daprovider_getMaxMessageSize");
     }
 }
