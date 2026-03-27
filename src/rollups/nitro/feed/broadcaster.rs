@@ -70,19 +70,6 @@ impl Broadcaster {
         self.server.broadcast(bm);
     }
 
-    pub fn populate_feed_backlog(
-        &self,
-        messages: Vec<BroadcastFeedMessage>,
-    ) -> Result<(), BroadcasterError> {
-        let bm = BroadcastMessage {
-            version: 1,
-            messages: messages.into_iter().map(Some).collect(),
-            confirmed_sequence_number_message: None,
-        };
-        self.server.populate_feed_backlog(&bm);
-        Ok(())
-    }
-
     pub fn confirm(&self, msg_idx: u64) {
         tracing::debug!(msg_idx, "confirming message index");
         self.server.broadcast(BroadcastMessage {
@@ -223,22 +210,5 @@ mod tests {
 
         b.broadcast_feed_messages(msgs);
         assert_eq!(b.get_cached_message_count(), 3);
-    }
-
-    #[tokio::test]
-    async fn test_populate_feed_backlog_does_not_broadcast() {
-        let b = Broadcaster::new(BroadcasterConfig::default(), 1);
-
-        let msgs = vec![BroadcastFeedMessage {
-            sequence_number: 1,
-            message: empty_msg(),
-            block_hash: None,
-            signature: vec![],
-            block_metadata: vec![],
-            cumulative_sum_msg_size: 0,
-        }];
-
-        b.populate_feed_backlog(msgs).expect("populate backlog");
-        assert_eq!(b.get_cached_message_count(), 1);
     }
 }

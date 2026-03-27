@@ -214,10 +214,6 @@ impl WsBroadcastServer {
         let _ = self.shared.broadcast_tx.send(Arc::new(bm));
     }
 
-    pub(super) fn populate_feed_backlog(&self, bm: &BroadcastMessage) {
-        self.shared.backlog.append(bm);
-    }
-
     pub(super) fn client_count(&self) -> i32 {
         self.shared.client_count.load(Ordering::Relaxed)
     }

@@ -80,6 +80,7 @@ impl FeedRelay {
                 l1_finalized_changed = self.l1_finalized_msg_idx.changed() => {
                     if l1_finalized_changed.is_err() {
                         client_task.abort();
+                        broadcaster.stop();
                         return Ok(());
                     }
                     // New L1 finalized index: notify broadcaster to prune backlog
@@ -97,6 +98,7 @@ impl FeedRelay {
                     let Some(first_msg) = msg else {
                         // channel has been closed
                         client_task.abort();
+                        broadcaster.stop();
                         return Ok(());
                     };
 
