@@ -35,7 +35,7 @@ fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
         ..Default::default()
     };
 
-    let (verify_sender, mut verify_receiver) =
+    let (verification_channel, mut verify_receiver) =
         mpsc::channel::<(Bytes, oneshot::Sender<VerificationResult>)>(1);
 
     // Spawn a mock verification handler that always succeeds
@@ -52,7 +52,7 @@ fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
     });
 
     tokio::spawn(async move {
-        run(config, RollupType::Nitro, verify_sender)
+        run(config, RollupType::Nitro, verification_channel)
             .await
             .expect("server should start");
     })

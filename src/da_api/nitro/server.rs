@@ -18,7 +18,7 @@ use tokio::sync::oneshot;
 use tracing::info;
 
 use crate::da_api::{
-    VerificationResult, VerifySender,
+    VerificationChannel, VerificationResult,
     config::DaProviderConfig,
     error::DaApiError,
     nitro::{
@@ -38,16 +38,19 @@ pub struct ServerState {
     // TODO: dont use AtmoicU8 with hashmap here. update the design
     pub current_da_provider: Arc<AtomicU8>,
     pub client: reqwest::Client,
-    pub verify_sender: VerifySender,
+    pub verification_channel: VerificationChannel,
 }
 
 impl ServerState {
-    pub fn new(router: HashMap<u8, DaProviderConfig>, verify_sender: VerifySender) -> Self {
+    pub fn new(
+        router: HashMap<u8, DaProviderConfig>,
+        verification_channel: VerificationChannel,
+    ) -> Self {
         Self {
             router: Arc::new(router),
             current_da_provider: Arc::new(AtomicU8::new(0)),
             client: reqwest::Client::new(),
-            verify_sender,
+            verification_channel,
         }
     }
 
@@ -128,7 +131,7 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
 
     let (tx, rx) = oneshot::channel();
     state
-        .verify_sender
+        .verification_channel
         .send((data.clone(), tx))
         .await
         .map_err(|e| DaApiError::ChannelError(e.to_string()))?;
@@ -329,7 +332,7 @@ mod tests {
             },
         );
         tokio::spawn(async move {
-            let (verify_sender, mut verify_receiver) =
+            let (verification_channel, mut verify_receiver) =
                 tokio::sync::mpsc::channel::<(Bytes, oneshot::Sender<VerificationResult>)>(1);
 
             // Spawn a mock verification handler that always succeeds
@@ -345,7 +348,7 @@ mod tests {
                 }
             });
 
-            let state = ServerState::new(da_providers, verify_sender);
+            let state = ServerState::new(da_providers, verification_channel);
             let app = server_router(state);
             let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
             axum::serve(listener, app).await.unwrap();

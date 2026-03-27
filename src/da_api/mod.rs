@@ -23,16 +23,16 @@ pub struct VerificationResult {
     pub min_espresso_block_still_in_queue: u32,
 }
 
-pub type VerifySender = mpsc::Sender<(Bytes, oneshot::Sender<VerificationResult>)>;
+pub type VerificationChannel = mpsc::Sender<(Bytes, oneshot::Sender<VerificationResult>)>;
 
 pub async fn run(
     da_api_config: DaApiConfig,
     rollup_type: RollupType,
-    verify_sender: VerifySender,
+    verification_channel: VerificationChannel,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match rollup_type {
         RollupType::Nitro => {
-            let state = ServerState::new(da_api_config.da_providers, verify_sender);
+            let state = ServerState::new(da_api_config.da_providers, verification_channel);
             let app = server_router(state);
             let listener = tokio::net::TcpListener::bind(&da_api_config.listen_addr).await?;
 
