@@ -38,6 +38,7 @@ base64 = "0.22.1"
 brotli = "7"
 bytes = "1.11.0"
 committable = { git = "https://github.com/EspressoSystems/commit.git" }
+clap = { version = "4", features = ["derive", "env"] }
 espresso-types = { git = "https://github.com/EspressoSystems/espresso-network.git" }
 futures = "0.3"
 hotshot-types = { git = "https://github.com/EspressoSystems/espresso-network.git" }

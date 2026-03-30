@@ -8,9 +8,9 @@ use tokio::{
 };
 
 use chain_agnostic_service::{
+    VerificationResult,
     config::RollupType,
     da_api::{
-        VerificationResult,
         config::{DaApiConfig, DaProviderConfig},
         run,
     },

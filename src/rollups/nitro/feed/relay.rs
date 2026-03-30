@@ -1,3 +1,4 @@
+use serde::Deserialize;
 use thiserror::Error;
 use tokio::sync::{
     mpsc::{self, Receiver},
@@ -21,6 +22,15 @@ pub enum FeedRelayError {
     Join(#[from] tokio::task::JoinError),
 }
 
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct FeedConfig {
+    pub client_config: BroadcasterClientConfig,
+    pub server_config: BroadcasterConfig,
+
+    pub web_socket_url: String,
+    pub current_message_count: u64,
+}
+
 pub struct FeedRelay {
     pub(crate) broadcaster: broadcaster::Broadcaster,
     pub(crate) client: client::BroadcasterClient,
@@ -38,24 +48,20 @@ pub struct FeedRelay {
 }
 
 impl FeedRelay {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        broadcaster_config: BroadcasterConfig,
-        client_config: BroadcasterClientConfig,
-        upstream_feed_url: String,
         chain_id: u64,
-        current_msg_count: u64,
+        config: FeedConfig,
         espresso_submission_channel: mpsc::Sender<BroadcastFeedMessage>,
         espresso_rx: mpsc::Receiver<BroadcastFeedMessage>,
         l1_finalized_msg_idx: watch::Receiver<u64>,
     ) -> Self {
-        let broadcaster = broadcaster::Broadcaster::new(broadcaster_config, chain_id);
+        let broadcaster = broadcaster::Broadcaster::new(config.server_config, chain_id);
 
         let client = client::BroadcasterClient::new(
-            client_config,
-            upstream_feed_url,
+            config.client_config,
+            config.web_socket_url,
             chain_id,
-            current_msg_count,
+            config.current_message_count,
             espresso_submission_channel,
         );
         Self {
@@ -125,6 +131,7 @@ mod tests {
     use tokio::time::timeout;
 
     use super::FeedRelay;
+    use crate::rollups::nitro::feed::relay::FeedConfig;
     use crate::rollups::nitro::feed::{
         broadcaster::BroadcasterConfig,
         client::BroadcasterClientConfig,
@@ -157,9 +164,9 @@ mod tests {
         // -- FeedRelay --
         let relay_port = pick_free_port();
         let relay_addr: std::net::SocketAddr = format!("127.0.0.1:{relay_port}").parse().unwrap();
-
-        let relay = FeedRelay::new(
-            BroadcasterConfig {
+        let config = FeedConfig {
+            client_config: BroadcasterClientConfig::default(),
+            server_config: BroadcasterConfig {
                 ws_server: WsBroadcastServerConfig {
                     addr: "127.0.0.1".to_string(),
                     port: relay_port,
@@ -167,14 +174,11 @@ mod tests {
                 },
                 ..Default::default()
             },
-            BroadcasterClientConfig::default(),
-            format!("ws://{upstream_addr}/feed"),
-            CHAIN_ID,
-            0,
-            submission_tx,
-            espresso_rx,
-            l1_rx,
-        );
+            web_socket_url: format!("ws://{upstream_addr}/feed"),
+            current_message_count: 0,
+        };
+
+        let relay = FeedRelay::new(CHAIN_ID, config, submission_tx, espresso_rx, l1_rx);
         let relay_handle = tokio::spawn(async move { relay.start().await });
 
         // -- Mock streamer: modify the message and delay 2 s --

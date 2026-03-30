@@ -1,24 +1,17 @@
 use serde::Deserialize;
 
-use crate::da_api::config::DaApiConfig;
+use crate::{
+    da_api::config::DaApiConfig, espresso_client::client::Config as EspressoClientConfig,
+    submitter::submitter::SubmitterConfig,
+};
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct ServiceConfig {
+pub struct ServiceConfig<C> {
     pub espresso_client: EspressoClientConfig,
     pub streamer: StreamerConfig,
-    pub rollup: RollupConfig,
+    pub rollup: RollupConfig<C>,
     pub da_server_config: DaApiConfig,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct EspressoClientConfig {
-    pub query_service_url: String,
-    #[serde(default = "client_timeout_secs")]
-    pub client_timeout_secs: u64,
-}
-
-fn client_timeout_secs() -> u64 {
-    30
+    pub submitter_config: SubmitterConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -26,6 +19,7 @@ pub struct StreamerConfig {
     pub max_sequencer_number_drift: u64,
     pub initial_backoff_ms: u64,
     pub max_backoff_ms: u64,
+    pub starting_pos: u64,
 }
 
 impl Default for StreamerConfig {
@@ -34,26 +28,22 @@ impl Default for StreamerConfig {
             max_sequencer_number_drift: 1000,
             initial_backoff_ms: 1000,
             max_backoff_ms: 30000,
+            starting_pos: 0,
         }
     }
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct RollupConfig {
+pub struct RollupConfig<C> {
     #[serde(rename = "type")]
-    pub rollup_type: RollupType,
+    pub ty: RollupType,
     pub namespace_id: u64,
     pub start_block: u64,
-    pub nitro: Option<NitroConfig>,
+    pub rollup: C,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RollupType {
     Nitro,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct NitroConfig {
-    pub sequencer_addresses: Vec<String>,
 }

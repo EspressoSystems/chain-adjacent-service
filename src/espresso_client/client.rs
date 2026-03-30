@@ -7,14 +7,18 @@ use anyhow::{Result, bail};
 use committable::Commitment;
 use espresso_types::{NamespaceId, Transaction};
 use reqwest::Url;
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 
-/// Configuration for the Espresso client.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Config {
-    /// Base URL of the Espresso Query Service (must end with `/`).
-    pub query_base_url: Url,
+    pub base_url: Url,
+    #[serde(default = "client_timeout_secs")]
+    pub client_timeout_secs: u64,
+}
+
+fn client_timeout_secs() -> u64 {
+    30
 }
 
 /// HTTP client for the Espresso Query Service API.
@@ -28,20 +32,30 @@ pub struct EspressoClient {
 }
 
 impl EspressoClient {
-    pub fn new(mut query_base_url: String, timeout: u64) -> Self {
-        if !query_base_url.ends_with('/') {
-            query_base_url.push('/')
+    pub fn new(mut base_url: String, client_timeout_secs: u64) -> Self {
+        if !base_url.ends_with('/') {
+            base_url.push('/')
         }
 
         Self {
             config: Config {
-                query_base_url: Url::parse(&query_base_url)
-                    .expect("query service base url is incorrect"),
+                base_url: Url::parse(&base_url).expect("query service base url is incorrect"),
+                client_timeout_secs,
             },
             client: reqwest::Client::builder()
-                .timeout(Duration::from_secs(timeout))
+                .timeout(Duration::from_secs(client_timeout_secs))
                 .build()
                 .expect("failed to build espresso client"),
+        }
+    }
+
+    pub fn from_config(config: Config) -> Self {
+        Self {
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(config.client_timeout_secs))
+                .build()
+                .expect("failed to build espresso client"),
+            config,
         }
     }
 
@@ -51,7 +65,7 @@ impl EspressoClient {
         &self,
         transaction: Transaction,
     ) -> Result<Commitment<Transaction>> {
-        let url = self.config.query_base_url.join("submit/submit")?;
+        let url = self.config.base_url.join("submit/submit")?;
         self.post(url, transaction).await
     }
 
@@ -75,7 +89,7 @@ impl EspressoClient {
             );
         }
 
-        let url = self.config.query_base_url.join(&format!(
+        let url = self.config.base_url.join(&format!(
             "availability/block/{start}/{end}/namespace/{namespace}"
         ))?;
         self.get(url).await
@@ -83,13 +97,13 @@ impl EspressoClient {
 
     /// Fetches rate-limiting and range constraints from `GET /availability/limits`.
     pub async fn fetch_limits(&self) -> Result<LimitsData> {
-        let url = self.config.query_base_url.join("availability/limits")?;
+        let url = self.config.base_url.join("availability/limits")?;
         self.get(url).await
     }
 
     /// Returns the latest finalized HotShot block height via `GET /status/block-height`.
     pub async fn fetch_latest_hotshot_block_height(&self) -> Result<u64> {
-        let url = self.config.query_base_url.join("status/block-height")?;
+        let url = self.config.base_url.join("status/block-height")?;
         self.get(url).await
     }
 
@@ -104,7 +118,7 @@ impl EspressoClient {
     ) -> Result<TransactionQueryData> {
         let url = self
             .config
-            .query_base_url
+            .base_url
             .join(&format!("availability/transaction/hash/{tx_hash}/noproof"))?;
 
         self.get(url).await

@@ -2643,6 +2643,7 @@ dependencies = [
  "base64 0.22.1",
  "brotli",
  "bytes 1.11.1",
+ "clap",
  "committable",
  "espresso-types",
  "futures",
