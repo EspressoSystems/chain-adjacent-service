@@ -1,4 +1,4 @@
-use alloy::primitives::Bytes;
+use alloy::primitives::{Bytes, keccak256};
 use serde_json::{Value, json};
 use std::{collections::HashMap, net::SocketAddr, str::FromStr, time::Duration};
 use tokio::{
@@ -12,6 +12,7 @@ use chain_agnostic_service::{
     da_api::{
         VerificationResult,
         config::{DaApiConfig, DaProviderConfig},
+        nitro::utils::extract_da_sequencer_msg_from_espresso_da_certificate,
         run,
     },
 };
@@ -145,6 +146,7 @@ async fn test_nitro_reference_da_store_and_recover(my_addr: String) {
     let mut sequencer_msg = vec![0u8; 40];
     sequencer_msg.extend_from_slice(&Bytes::from_str(espresso_da_cert).unwrap());
 
+    // daprovider_recoverPayload
     let recover_payload: Result<Value, _> = client
         .post(format!("http://{my_addr}"))
         .json(&json!({
@@ -153,7 +155,7 @@ async fn test_nitro_reference_da_store_and_recover(my_addr: String) {
             "params": [
                 "0xD88",
                 "0x4D1CF3D08C6C7755E3622F55E7D03CA009A4D706BCF79A13AB9F52E3C4526990",
-                Bytes::from(sequencer_msg).to_string()
+                Bytes::from(sequencer_msg.clone()).to_string()
             ],
             "id": 1
         }))
@@ -175,4 +177,85 @@ async fn test_nitro_reference_da_store_and_recover(my_addr: String) {
     });
 
     assert_eq!(recover_payload, expected);
+
+    let da_cert =
+        extract_da_sequencer_msg_from_espresso_da_certificate(&Bytes::from(sequencer_msg.clone()))
+            .unwrap()
+            .slice(40..);
+    let keccak_hash_da_cert = keccak256(&da_cert).to_string();
+
+    let expected_collect_preimages_response = json!({
+    "3": {
+        keccak_hash_da_cert.clone(): expected_recover_payload_response
+      }
+    });
+
+    // daprovider_collectPreimages
+    let collect_preimages: Result<Value, _> = client
+        .post(format!("http://{my_addr}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "method": "daprovider_collectPreimages",
+            "params": [
+                "0xD88",
+                "0x4D1CF3D08C6C7755E3622F55E7D03CA009A4D706BCF79A13AB9F52E3C4526990",
+                Bytes::from(sequencer_msg.clone()).to_string()
+            ],
+            "id": 1
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await;
+
+    assert!(collect_preimages.is_ok());
+    let collect_preimages = collect_preimages.unwrap();
+
+    let expected = json!({
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "Preimages": expected_collect_preimages_response
+      }
+    });
+
+    assert_eq!(collect_preimages, expected);
+
+    // daprovider_recoverPayloadAndPreimages is not supported by nitro-node v3.9.6 which is the latest on nitro-testnode right now.
+
+    // daprovider_recoverPayloadAndPreimages
+    // let recover_and_collect_preimages: Result<Value, _> = client
+    //     .post(format!("http://{my_addr}"))
+    //     .json(&json!({
+    //         "jsonrpc": "2.0",
+    //         "method": "daprovider_recoverPayloadAndPreimages",
+    //         "params": [
+    //             "0xD88",
+    //             "0x4D1CF3D08C6C7755E3622F55E7D03CA009A4D706BCF79A13AB9F52E3C4526990",
+    //             Bytes::from(sequencer_msg).to_string()
+    //         ],
+    //         "id": 1
+    //     }))
+    //     .send()
+    //     .await
+    //     .unwrap()
+    //     .json()
+    //     .await;
+
+    // assert!(recover_and_collect_preimages.is_ok());
+    // let recover_and_collect_preimages = recover_and_collect_preimages.unwrap();
+
+    // let expected_recover_and_collect_preimages_response = json!({
+    //   "jsonrpc": "2.0",
+    //   "id": 1,
+    //   "result": {
+    //     "Payload": expected_recover_payload_response,
+    //     "3": {
+    //         keccak_hash_da_cert: expected_recover_payload_response
+    //     }
+    //   }
+    // });
+
+    // assert_eq!(recover_and_collect_preimages, expected_recover_and_collect_preimages_response);
 }
