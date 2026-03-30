@@ -77,9 +77,11 @@ async fn handle_rpc(State(state): State<ServerState>, body: Bytes) -> Result<Res
 
     match method {
         STORE => handle_store(state, parsed).await,
-        RECOVER_PAYLOAD => handle_recover_payload(state, parsed).await,
-        COLLECT_PREIMAGES => handle_collect_preimages(state, parsed).await,
-        RECOVER_PAYLOAD_AND_PREIMAGES => handle_recover_payload_and_preimages(state, parsed).await,
+        RECOVER_PAYLOAD => handle_recover_inner(state, parsed, RECOVER_PAYLOAD).await,
+        COLLECT_PREIMAGES => handle_recover_inner(state, parsed, COLLECT_PREIMAGES).await,
+        RECOVER_PAYLOAD_AND_PREIMAGES => {
+            handle_recover_inner(state, parsed, RECOVER_PAYLOAD_AND_PREIMAGES).await
+        }
         _ => forward_raw(state, body).await,
     }
 }
@@ -290,21 +292,6 @@ async fn handle_recover_inner(
         .header(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)
         .body(axum::body::Body::from(bytes))
         .map_err(|e| DaApiError::ParsingError(e.to_string()))
-}
-
-async fn handle_recover_payload(state: ServerState, body: Value) -> Result<Response, DaApiError> {
-    handle_recover_inner(state, body, RECOVER_PAYLOAD).await
-}
-
-async fn handle_collect_preimages(state: ServerState, body: Value) -> Result<Response, DaApiError> {
-    handle_recover_inner(state, body, COLLECT_PREIMAGES).await
-}
-
-async fn handle_recover_payload_and_preimages(
-    state: ServerState,
-    body: Value,
-) -> Result<Response, DaApiError> {
-    handle_recover_inner(state, body, RECOVER_PAYLOAD_AND_PREIMAGES).await
 }
 
 #[cfg(test)]
