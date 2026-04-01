@@ -36,7 +36,7 @@ impl RollupQueueEntry for NitroRollupQueueEntry {
 
 impl Rollup for Nitro {
     type Error = FeedRelayError;
-    type SpecificConfig = NitroConfig;
+    type StackConfig = NitroConfig;
     type Entry = NitroRollupQueueEntry;
     type BatchMessage = BatchMessage;
     type VerificationContext = VerificationContext;
@@ -45,7 +45,7 @@ impl Rollup for Nitro {
         super::batch_parsing::parse_batch;
 
     fn parse_hotshot_transactions(
-        config: &Self::SpecificConfig,
+        config: &Self::StackConfig,
         namespace_transactions: Vec<NamespaceTransactionsInRange>,
         starting_hotshot_height: u64,
     ) -> Vec<Self::Entry> {
@@ -141,8 +141,8 @@ impl Rollup for Nitro {
         true
     }
 
-    async fn start_feed_adapter(
-        config: Self::SpecificConfig,
+    async fn start_feed_relay(
+        config: Self::StackConfig,
         espresso_submission_sender: mpsc::Sender<Self::FeedMessage>,
         espresso_finalization_receiver: mpsc::Receiver<Self::FeedMessage>,
         // Receives the latest L1-finalized message.
@@ -194,7 +194,7 @@ impl Nitro {
     ) -> Result<()> {
         verify_broadcast_feed_message_signature(
             config.chain_id,
-            &config.sequencer_addresses,
+            &config.legacy_signer_addresses,
             message,
         )
     }
@@ -215,7 +215,7 @@ impl Nitro {
         };
 
         if let Ok(signer) = recover_signer_address(parsed.messages_hash, &parsed.signature) {
-            if !config.sequencer_addresses.contains(&signer) {
+            if !config.legacy_signer_addresses.contains(&signer) {
                 tracing::warn!(
                     "recovered signer: {:?} is not in the list of legacy signer addresses",
                     signer
@@ -637,7 +637,7 @@ pub mod testing {
             proof: None,
         };
         let config = NitroConfig {
-            sequencer_addresses: vec![sequencer_address],
+            legacy_signer_addresses: vec![sequencer_address],
             chain_id: 1,
             ..Default::default()
         };

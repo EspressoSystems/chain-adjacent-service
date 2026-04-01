@@ -12,6 +12,8 @@ pub struct ServiceConfig<C> {
     pub rollup: RollupConfig<C>,
     pub da_server_config: DaApiConfig,
     pub submitter_config: SubmitterConfig,
+    #[serde(default)]
+    pub runtime: RuntimeConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -40,6 +42,21 @@ pub struct RollupConfig<C> {
     pub namespace_id: u64,
     pub start_block: u64,
     pub rollup: C,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RuntimeConfig {
+    pub espresso_finalized_message_channel_capacity: usize,
+    pub verification_channel_capacity: usize,
+}
+
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self {
+            espresso_finalized_message_channel_capacity: 100,
+            verification_channel_capacity: 100,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -28,14 +28,14 @@ async fn main() -> Result<()> {
 
     match config.rollup.ty {
         RollupType::Nitro => {
-            let config: ServiceConfig<<Nitro as Rollup>::SpecificConfig> =
+            let config: ServiceConfig<<Nitro as Rollup>::StackConfig> =
                 serde_json::from_str(&config_contents)?;
             run::<Nitro>(config).await
         }
     }
 }
 
-async fn run<R: Rollup>(config: ServiceConfig<R::SpecificConfig>) -> Result<()> {
+async fn run<R: Rollup>(config: ServiceConfig<R::StackConfig>) -> Result<()> {
     let client = EspressoClient::from_config(config.espresso_client.clone());
     let (submitter_sender, submitter_receiver) = mpsc::channel::<R::FeedMessage>(100);
 
@@ -62,9 +62,10 @@ async fn run<R: Rollup>(config: ServiceConfig<R::SpecificConfig>) -> Result<()> 
 
     let (l1_finalized_msg_idx_sender, l1_finalized_msg_idx_receiver) = watch::channel(0u64);
 
-    let (espresso_finalization_sender, espresso_finalization_receiver) = mpsc::channel(100);
+    let (espresso_finalization_sender, espresso_finalization_receiver) =
+        mpsc::channel(config.runtime.espresso_finalized_message_channel_capacity);
 
-    let feed_task = R::start_feed_adapter(
+    let feed_task = R::start_feed_relay(
         config.rollup.rollup.clone(),
         submitter_sender,
         espresso_finalization_receiver,
@@ -72,8 +73,10 @@ async fn run<R: Rollup>(config: ServiceConfig<R::SpecificConfig>) -> Result<()> 
     );
 
     let client = EspressoClient::from_config(config.espresso_client);
-    let (verification_sender, verification_receiver) = mpsc::channel(100);
-    let (latest_batch_sender, latest_batch_receiver) = mpsc::channel::<R::VerificationContext>(100);
+    let (verification_sender, verification_receiver) =
+        mpsc::channel(config.runtime.verification_channel_capacity);
+    let (latest_batch_sender, latest_batch_receiver) =
+        watch::channel(R::VerificationContext::default());
     let mut streamer: Streamer<R> = Streamer::new(client, config.streamer, config.rollup);
 
     let streamer_task = streamer.run(

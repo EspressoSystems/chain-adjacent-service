@@ -18,14 +18,14 @@ pub struct Streamer<R: Rollup> {
     client: EspressoClient,
     queue: Vec<R::Entry>,
     config: StreamerConfig,
-    rollup_config: RollupConfig<R::SpecificConfig>,
+    rollup_config: RollupConfig<R::StackConfig>,
 }
 
 impl<R: Rollup> Streamer<R> {
     pub fn new(
         client: EspressoClient,
         config: StreamerConfig,
-        rollup_config: RollupConfig<R::SpecificConfig>,
+        rollup_config: RollupConfig<R::StackConfig>,
     ) -> Self {
         Self {
             client,
@@ -55,7 +55,7 @@ impl<R: Rollup> Streamer<R> {
     pub async fn run(
         &mut self,
         mut l1_finalized_msg_idx: watch::Receiver<u64>,
-        mut latest_batch_receiver: mpsc::Receiver<R::VerificationContext>,
+        mut latest_batch_receiver: watch::Receiver<R::VerificationContext>,
         mut verification_receiver: VerificationReceiver,
         _espresso_finalization_sender: mpsc::Sender<R::FeedMessage>,
     ) {
@@ -64,7 +64,7 @@ impl<R: Rollup> Streamer<R> {
             tokio::select! {
                 _ = l1_finalized_msg_idx.changed() => {},
                 _ = verification_receiver.recv() => {},
-                _ = latest_batch_receiver.recv() => {},
+                _ = latest_batch_receiver.changed() => {},
             }
         }
     }
