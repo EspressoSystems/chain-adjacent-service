@@ -2,34 +2,23 @@ pub mod config;
 pub mod error;
 pub mod nitro;
 
-use alloy::primitives::Bytes;
-use tokio::sync::{mpsc, oneshot};
 use tracing::info;
 
 use crate::{
+    VerificationSender,
     config::RollupType,
     da_api::{
         config::DaApiConfig,
+        error::DaApiResult,
         nitro::server::{ServerState, server_router},
     },
 };
 
-#[derive(Debug)]
-pub struct VerificationResult {
-    pub success: bool,
-    pub start_message_position: u32,
-    pub end_message_position: u32,
-    pub start_espresso_block: u32,
-    pub min_espresso_block_still_in_queue: u32,
-}
-
-pub type VerificationChannel = mpsc::Sender<(Bytes, oneshot::Sender<VerificationResult>)>;
-
 pub async fn run(
     da_api_config: DaApiConfig,
     rollup_type: RollupType,
-    verification_channel: VerificationChannel,
-) -> Result<(), Box<dyn std::error::Error>> {
+    verification_channel: VerificationSender,
+) -> DaApiResult<()> {
     match rollup_type {
         RollupType::Nitro => {
             let state = ServerState::new(da_api_config.da_providers, verification_channel);

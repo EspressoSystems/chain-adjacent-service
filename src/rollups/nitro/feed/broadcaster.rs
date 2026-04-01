@@ -4,6 +4,7 @@ use super::message::{BroadcastFeedMessage, BroadcastMessage, ConfirmedSequenceNu
 use super::ws_server::{WsBroadcastServer, WsBroadcastServerConfig};
 use crate::rollups::nitro::types::MessageWithMetadata;
 use alloy::primitives::B256;
+use serde::Deserialize;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -12,7 +13,7 @@ pub enum BroadcasterError {
     Server(#[from] super::ws_server::WsBroadcastServerError),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct BroadcasterConfig {
     pub broadcast_channel_capacity: usize,
     pub ws_server: WsBroadcastServerConfig,
