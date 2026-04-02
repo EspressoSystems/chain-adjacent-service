@@ -4,9 +4,11 @@ use alloy::primitives::Bytes;
 use anyhow::Result;
 use tokio::sync::{mpsc, watch};
 
-use crate::{config::RollupType, espresso_client::types::NamespaceTransactionsInRange};
+use crate::{
+    VerificationResult, config::RollupType, espresso_client::types::NamespaceTransactionsInRange,
+};
 
-pub trait RollupQueueEntry {
+pub trait RollupQueueEntry: Clone {
     fn sequence_number(&self) -> u64;
     fn hotshot_height(&self) -> u64;
 }
@@ -20,8 +22,11 @@ pub trait Rollup {
     /// The type of message received from upstream and
     /// sent to the feed subscribers
     type FeedMessage;
-    type VerificationContext: Default;
-    const PARSE_BATCH_FN: fn(Bytes) -> Result<Vec<Self::BatchMessage>>;
+    type VerificationContext: Default + Clone;
+
+    fn parse_batch_data(bytes: Bytes) -> Result<Vec<Self::BatchMessage>>;
+
+    fn convert_entry_to_feed_message(entry: Self::Entry) -> Self::FeedMessage;
 
     fn build_espresso_tx_payload(messages: &mut Vec<Self::FeedMessage>) -> Vec<u8>;
 
@@ -42,13 +47,14 @@ pub trait Rollup {
         entries: Vec<NamespaceTransactionsInRange>,
         starting_hotshot_height: u64,
     ) -> Vec<Self::Entry>;
-    fn remove_finalized_messages(&self) -> u64;
 
+    // Note that here the streamer queue is only guaranteed to contain messages that are finalized by Espresso,
+    // but may still contain messages that are not finalized by L1.
     fn verify_batch_messages(
         batch_messages: &[Self::BatchMessage],
         streamer_queue: &[Self::Entry],
         context: &Self::VerificationContext,
-    ) -> bool;
+    ) -> VerificationResult;
 
     fn rollup_type() -> RollupType;
 }

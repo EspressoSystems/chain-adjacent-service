@@ -27,6 +27,7 @@ pub struct VerificationContext {
     // Should be read from L1 on startup and cached in memory,
     // updated when new batches are read from L1.
     pub last_batch_delayed_messages_read: u64,
+    pub next_batch_start_pos: u64,
 }
 
 impl Decodable for MessageWithMetadata {
@@ -300,8 +301,7 @@ impl Encodable for L1IncomingMessage {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NitroRollupQueueEntry {
-    pub message_with_meta: MessageWithMetadata,
-    pub pos: u64,
+    pub feed_message: BroadcastFeedMessage,
     pub hotshot_height: u64,
 }
 

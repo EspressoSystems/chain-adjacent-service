@@ -639,8 +639,7 @@ pub mod testing {
                 .expect("channel closed before receiving transaction");
 
             queue.push(NitroRollupQueueEntry {
-                message_with_meta: msg.message,
-                pos: msg.sequence_number,
+                feed_message: msg,
                 hotshot_height: 0,
             });
         }
@@ -665,7 +664,7 @@ pub mod testing {
                 .expect("message in queue not found in original messages");
 
             assert_eq!(
-                &entry.message_with_meta,
+                &entry.feed_message.message,
                 expected_message,
                 "message content does not match for seq_num {}",
                 entry.sequence_number()

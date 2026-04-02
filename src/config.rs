@@ -22,6 +22,7 @@ pub struct StreamerConfig {
     pub initial_backoff_ms: u64,
     pub max_backoff_ms: u64,
     pub starting_pos: u64,
+    pub retry_broadcast_delay_ms: u64,
 }
 
 impl Default for StreamerConfig {
@@ -31,6 +32,7 @@ impl Default for StreamerConfig {
             initial_backoff_ms: 1000,
             max_backoff_ms: 30000,
             starting_pos: 0,
+            retry_broadcast_delay_ms: 300,
         }
     }
 }

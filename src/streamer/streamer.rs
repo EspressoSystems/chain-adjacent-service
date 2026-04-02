@@ -6,6 +6,7 @@ use tokio::sync::{mpsc, watch};
 use crate::VerificationReceiver;
 use crate::config::{RollupConfig, StreamerConfig};
 use crate::espresso_client::client::EspressoClient;
+use crate::espresso_client::types::NamespaceTransactionsInRange;
 use crate::rollups::rollup::{Rollup, RollupQueueEntry};
 use crate::utils::exponential_backoff;
 
@@ -19,6 +20,14 @@ pub struct Streamer<R: Rollup> {
     queue: Vec<R::Entry>,
     config: StreamerConfig,
     rollup_config: RollupConfig<R::StackConfig>,
+
+    latest_batch_info: Option<R::VerificationContext>,
+    finalized_idx: u64,
+    last_broadcast_position: u64,
+
+    // Used to schedule a single delayed retry when the finalization channel is full.
+    broadcast_retry_scheduled: bool,
+    broadcast_retry_tx: Option<mpsc::Sender<()>>,
 }
 
 impl<R: Rollup> Streamer<R> {
@@ -32,101 +41,152 @@ impl<R: Rollup> Streamer<R> {
             queue: Vec::new(),
             config,
             rollup_config,
+            latest_batch_info: None,
+            finalized_idx: 0,
+            last_broadcast_position: 0,
+
+            broadcast_retry_scheduled: false,
+            broadcast_retry_tx: None,
         }
     }
 
     /// The main event loop for the streamer.
-    ///
-    /// Currently only polls hotshot blocks. The receivers are accepted but not yet wired up.
-    ///
-    /// TODO: Refactor `poll_hotshot_blocks` to send parsed entries through an `mpsc` channel
-    /// instead of directly mutating `self.queue` via `filter_messages`. This decouples polling
-    /// from queue ownership, allowing `run` to own the queue and handle all mutations in one
-    /// place via `tokio::select!`:
-    ///   - Receive parsed entries from the poller channel → filter into queue
-    ///   - `l1_finalized_msg_idx` changed → prune finalized entries from queue
-    ///   - `verification_receiver` message → parse batch, verify against queue + context, reply
-    ///   - `latest_batch_receiver` message → update verification context
-    ///
-    /// This is necessary because `poll_hotshot_blocks` currently takes `&mut self` (owning the
-    /// queue), which prevents `run` from accessing the queue concurrently for the other events.
-    /// The channel approach avoids shared mutable state (`Arc<Mutex<>>`) by having a single
-    /// owner of the queue in the `select!` loop.
     pub async fn run(
         &mut self,
         mut l1_finalized_msg_idx: watch::Receiver<u64>,
         mut latest_batch_receiver: watch::Receiver<R::VerificationContext>,
         mut verification_receiver: VerificationReceiver,
-        _espresso_finalization_sender: mpsc::Sender<R::FeedMessage>,
+        espresso_finalization_sender: mpsc::Sender<R::FeedMessage>,
     ) {
-        let _ = self.poll_hotshot_blocks(self.config.starting_pos).await;
+        self.finalized_idx = *l1_finalized_msg_idx.borrow();
+
+        // Event-driven retry: we only trigger a delayed retry when `try_send` reports backpressure.
+        let (broadcast_retry_tx, mut broadcast_retry_rx) = mpsc::channel::<()>(1);
+        self.broadcast_retry_tx = Some(broadcast_retry_tx);
+
+        let (sender, mut receiver) =
+            mpsc::channel::<(Vec<NamespaceTransactionsInRange>, u64)>(1024);
+        let config = self.config.clone();
+        let client = self.client.clone();
+        let namespace_id = NamespaceId::from(self.rollup_config.namespace_id);
+        tokio::spawn(async move {
+            poll_hotshot_blocks(&config, &client, config.starting_pos, namespace_id, sender).await
+        });
         loop {
             tokio::select! {
-                _ = l1_finalized_msg_idx.changed() => {},
-                _ = verification_receiver.recv() => {},
-                _ = latest_batch_receiver.changed() => {},
+                changed = l1_finalized_msg_idx.changed() => {
+                    if changed.is_err() {
+                        tracing::error!("l1_finalized_msg_idx sender was dropped");
+                        continue;
+                    }
+                    let new_finalized_idx = *l1_finalized_msg_idx.borrow();
+
+                    if new_finalized_idx > self.last_broadcast_position {
+                        self.last_broadcast_position = new_finalized_idx;
+                    }
+
+                    if new_finalized_idx <= self.finalized_idx {
+                        continue;
+                    }
+
+                    self.finalized_idx = new_finalized_idx;
+                    let split_at = self.queue.partition_point(|e| e.sequence_number() <= self.finalized_idx);
+                    self.queue.drain(0..split_at);
+                },
+                batch_data = verification_receiver.recv() => {
+                    let Some((batch_data, sender)) = batch_data else {
+                        tracing::error!("verification_receiver was closed");
+                        continue;
+                    };
+                    let entries = match R::parse_batch_data(batch_data) {
+                        Ok(entries) => entries,
+                        Err(err) => {
+                            tracing::error!("failed to parse batch data for verification: {err}");
+                            let _ = sender.send(crate::VerificationResult::failure());
+                            continue;
+                        }
+                    };
+                    if let Some(context) = &self.latest_batch_info {
+                        let verification_result = R::verify_batch_messages(&entries, &self.queue, context);
+                        let _ = sender.send(verification_result);
+                    } else {
+                        tracing::warn!("no latest batch info available for verification");
+                        let _ = sender.send(crate::VerificationResult::failure());
+                        continue
+                    }
+
+                },
+                info = latest_batch_receiver.changed() => {
+                    if info.is_ok() {
+                        let batch_info = latest_batch_receiver.borrow();
+                        self.latest_batch_info = Some(batch_info.clone());
+                    }
+                },
+                transactions = receiver.recv() => {
+                    let Some((transactions, height)) = transactions else {
+                        tracing::error!("hotshot block poller channel was closed");
+                        continue;
+                    };
+                    self.handle_hotshot_transactions(transactions, height, espresso_finalization_sender.clone()).await;
+                },
+                retry = broadcast_retry_rx.recv() => {
+                    if retry.is_none() {
+                        tracing::error!("broadcast retry channel was closed");
+                        continue;
+                    }
+                    self.broadcast_retry_scheduled = false;
+                    self.try_broadcast_feed_message(espresso_finalization_sender.clone()).await;
+                }
             }
         }
     }
 
-    /// Polls for hotshot blocks from the Espresso client and adds them to the queue.
-    ///
-    /// It uses exponential backoff to handle errors and retries and calls filter_messages
-    /// to filter the messages.
-    pub async fn poll_hotshot_blocks(&mut self, next_hotshot_block_num: u64) {
-        let mut from_block = next_hotshot_block_num;
-        let mut backoff = Duration::from_millis(self.config.initial_backoff_ms);
+    pub async fn handle_hotshot_transactions(
+        &mut self,
+        transactions: Vec<NamespaceTransactionsInRange>,
+        height: u64,
+        sender: mpsc::Sender<R::FeedMessage>,
+    ) {
+        let parsed_rollup_entries =
+            R::parse_hotshot_transactions(&self.rollup_config.rollup, transactions, height);
+        self.filter_messages(parsed_rollup_entries);
 
-        loop {
-            let latest_block_height = match self.client.fetch_latest_hotshot_block_height().await {
-                Ok(height) => height,
-                Err(err) => {
-                    tracing::error!("error while fetching latest hotshot block height: {err}");
-                    backoff = exponential_backoff(
-                        backoff,
-                        Duration::from_millis(self.config.max_backoff_ms),
-                    )
-                    .await;
-                    continue;
+        // Attempt an immediate broadcast; if the channel is full we'll retry via the ticker.
+        self.try_broadcast_feed_message(sender).await;
+    }
+
+    pub async fn try_broadcast_feed_message(&mut self, sender: mpsc::Sender<R::FeedMessage>) {
+        let contiguous_entries =
+            find_contiguous_entries_after(&self.queue, self.last_broadcast_position);
+        for entry in contiguous_entries {
+            let seq = entry.sequence_number();
+            let feed_message = R::convert_entry_to_feed_message(entry);
+            match sender.try_send(feed_message) {
+                Ok(()) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    // Downstream channel is full. Schedule exactly one delayed retry.
+                    if !self.broadcast_retry_scheduled {
+                        self.broadcast_retry_scheduled = true;
+                        if let Some(tx) = self.broadcast_retry_tx.clone() {
+                            let delay = Duration::from_millis(self.config.retry_broadcast_delay_ms);
+                            tokio::spawn(async move {
+                                tokio::time::sleep(delay).await;
+                                let _ = tx.send(()).await;
+                            });
+                        } else {
+                            tracing::debug!(
+                                "finalization channel is full but retry channel is not configured"
+                            );
+                        }
+                    }
+                    return;
                 }
-            };
-            if from_block > latest_block_height {
-                // Wait for a bit before checking for new blocks again.
-                tokio::time::sleep(Duration::from_millis(self.config.initial_backoff_ms)).await;
-                continue;
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    tracing::error!("finalization channel was closed; cannot broadcast");
+                    return;
+                }
             }
-            // to block is set to latest_block_height + 1 because fetch_namespace_transactions_in_range is explusive of the last block
-            // otherwise its set to from_block + HOTSHOT_RANGE_LIMIT
-            let to_block = std::cmp::min(from_block + HOTSHOT_RANGE_LIMIT, latest_block_height + 1);
-            let namespace_id = NamespaceId::from(self.rollup_config.namespace_id);
-            let hotshot_transactions = match self
-                .client
-                .fetch_namespace_transactions_in_range(namespace_id, from_block, to_block)
-                .await
-            {
-                Ok(txns) => txns,
-                Err(err) => {
-                    tracing::error!(
-                        "error while fetching namespace transactions in range [{from_block}, {to_block}]: {err}"
-                    );
-                    backoff = exponential_backoff(
-                        backoff,
-                        Duration::from_millis(self.config.max_backoff_ms),
-                    )
-                    .await;
-                    continue;
-                }
-            };
-            backoff = Duration::from_millis(self.config.initial_backoff_ms);
-
-            let parsed_rollup_entries = R::parse_hotshot_transactions(
-                &self.rollup_config.rollup,
-                hotshot_transactions,
-                from_block,
-            );
-            self.filter_messages(parsed_rollup_entries);
-
-            from_block = to_block
+            self.last_broadcast_position = seq;
         }
     }
 
@@ -169,17 +229,95 @@ impl<R: Rollup> Streamer<R> {
     }
 }
 
+fn find_contiguous_entries_after<T: RollupQueueEntry>(queue: &[T], last_pos: u64) -> Vec<T> {
+    let start_idx = queue.partition_point(|e| e.sequence_number() <= last_pos);
+    let mut idx = 0;
+    let mut result = Vec::new();
+    for entry in &queue[start_idx..] {
+        if entry.sequence_number() == last_pos + idx + 1 {
+            idx += 1;
+            result.push(entry.clone());
+        } else {
+            break;
+        }
+    }
+    result
+}
+
+/// Polls for hotshot blocks from the Espresso client and adds them to the queue.
+///
+/// It uses exponential backoff to handle errors and retries.
+pub async fn poll_hotshot_blocks(
+    config: &StreamerConfig,
+    client: &EspressoClient,
+    next_hotshot_block_num: u64,
+    namespace_id: NamespaceId,
+    sender: mpsc::Sender<(Vec<NamespaceTransactionsInRange>, u64)>,
+) {
+    let mut from_block = next_hotshot_block_num;
+    let mut backoff = Duration::from_millis(config.initial_backoff_ms);
+
+    loop {
+        let latest_block_height = match client.fetch_latest_hotshot_block_height().await {
+            Ok(height) => height,
+            Err(err) => {
+                tracing::error!("error while fetching latest hotshot block height: {err}");
+                backoff =
+                    exponential_backoff(backoff, Duration::from_millis(config.max_backoff_ms))
+                        .await;
+                continue;
+            }
+        };
+        if from_block > latest_block_height {
+            // Wait for a bit before checking for new blocks again.
+            tokio::time::sleep(Duration::from_millis(config.initial_backoff_ms)).await;
+            continue;
+        }
+        // to block is set to latest_block_height + 1 because fetch_namespace_transactions_in_range is explusive of the last block
+        // otherwise its set to from_block + HOTSHOT_RANGE_LIMIT
+        let to_block = std::cmp::min(from_block + HOTSHOT_RANGE_LIMIT, latest_block_height + 1);
+        let hotshot_transactions = match client
+            .fetch_namespace_transactions_in_range(namespace_id, from_block, to_block)
+            .await
+        {
+            Ok(txns) => txns,
+            Err(err) => {
+                tracing::error!(
+                    "error while fetching namespace transactions in range [{from_block}, {to_block}]: {err}"
+                );
+                backoff =
+                    exponential_backoff(backoff, Duration::from_millis(config.max_backoff_ms))
+                        .await;
+                continue;
+            }
+        };
+        backoff = Duration::from_millis(config.initial_backoff_ms);
+
+        let result = sender.send((hotshot_transactions, from_block)).await;
+
+        if let Err(err) = result {
+            tracing::error!("failed to send hotshot transactions through channel: {err}");
+            return;
+        }
+
+        from_block = to_block
+    }
+}
+
 #[cfg(test)]
 pub mod testing {
+    use espresso_types::NamespaceId;
+    use tokio::sync::mpsc;
+
     use crate::{
         config::{RollupConfig, RollupType::Nitro, StreamerConfig},
         espresso_client::client::EspressoClient,
         espresso_e2e::{
             espresso_dev_node::EspressoDevNode,
-            mock_rollup::{MockRollup, make_entry, make_mock_espresso_transaction},
+            mock_rollup::{MockEntry, MockRollup, make_entry, make_mock_espresso_transaction},
         },
         rollups::rollup::RollupQueueEntry,
-        streamer::streamer::Streamer,
+        streamer::streamer::{Streamer, find_contiguous_entries_after, poll_hotshot_blocks},
     };
     use std::time::Duration;
 
@@ -192,6 +330,7 @@ pub mod testing {
                 initial_backoff_ms: 1,
                 max_backoff_ms: 1,
                 starting_pos,
+                retry_broadcast_delay_ms: 1000,
             },
             RollupConfig {
                 namespace_id: 1918988905u64,
@@ -204,6 +343,40 @@ pub mod testing {
 
     fn queue_positions(streamer: &Streamer<MockRollup>) -> Vec<u64> {
         streamer.queue.iter().map(|e| e.sequence_number()).collect()
+    }
+
+    fn entry_positions<T: RollupQueueEntry>(entries: Vec<T>) -> Vec<u64> {
+        entries.into_iter().map(|e| e.sequence_number()).collect()
+    }
+
+    #[test]
+    fn test_find_contiguous_entries_after() {
+        assert!(find_contiguous_entries_after::<MockEntry>(&[], 0).is_empty());
+
+        let queue = vec![make_entry(1, 1), make_entry(2, 1), make_entry(3, 1)];
+        let got = find_contiguous_entries_after(&queue, 0);
+        assert_eq!(entry_positions(got), vec![1, 2, 3]);
+
+        // Skip entries at/below last_pos
+        let queue = vec![make_entry(1, 1), make_entry(2, 1), make_entry(3, 1)];
+        let got = find_contiguous_entries_after(&queue, 1);
+        assert_eq!(entry_positions(got), vec![2, 3]);
+
+        // Stop at the first gap
+        let queue = vec![make_entry(2, 1), make_entry(4, 1), make_entry(5, 1)];
+        let got = find_contiguous_entries_after(&queue, 1);
+        assert_eq!(entry_positions(got), vec![2]);
+
+        // If the first entry after last_pos is not last_pos+1, nothing is contiguous.
+        let queue = vec![make_entry(5, 1), make_entry(6, 1)];
+        let got = find_contiguous_entries_after(&queue, 3);
+        assert!(got.is_empty());
+
+        // Note: this helper assumes `queue` is strictly increasing. Duplicates/out-of-order values
+        // will stop the scan early.
+        let queue = vec![make_entry(2, 1), make_entry(2, 1), make_entry(3, 1)];
+        let got = find_contiguous_entries_after(&queue, 1);
+        assert_eq!(entry_positions(got), vec![2]);
     }
 
     #[test]
@@ -241,7 +414,7 @@ pub mod testing {
     }
 
     #[tokio::test]
-    async fn test_poll_hotshot_blocks() {
+    async fn test_poll_hotshot_blocks_and_process() {
         let node = EspressoDevNode::start().await;
 
         let mut streamer = Streamer::new(
@@ -251,6 +424,7 @@ pub mod testing {
                 initial_backoff_ms: 100,
                 max_backoff_ms: 500,
                 starting_pos: 1,
+                retry_broadcast_delay_ms: 1000,
             },
             RollupConfig {
                 namespace_id: 1918988905u64,
@@ -273,15 +447,34 @@ pub mod testing {
         }
 
         let start_poll_block = 0;
+        // make sure the channel size is greater than test data size
+        let (tx, mut rx) = mpsc::channel(100);
         let timeout_result = tokio::time::timeout(
             Duration::from_secs(30),
-            streamer.poll_hotshot_blocks(start_poll_block),
+            poll_hotshot_blocks(
+                &streamer.config,
+                &streamer.client,
+                start_poll_block,
+                NamespaceId::from(streamer.rollup_config.namespace_id),
+                tx,
+            ),
         )
         .await;
         assert!(
             timeout_result.is_err(),
             "expected poll_hotshot_blocks to keep polling and hit timeout"
         );
+
+        let (espresso_finalized_sender, _) = mpsc::channel(100);
+        while let Ok((transactions, height)) = rx.try_recv() {
+            streamer
+                .handle_hotshot_transactions(
+                    transactions,
+                    height,
+                    espresso_finalized_sender.clone(),
+                )
+                .await;
+        }
 
         // Verify the queue was populated with entries from polled blocks
         assert!(
