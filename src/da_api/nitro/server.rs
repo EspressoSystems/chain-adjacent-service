@@ -17,13 +17,16 @@ use std::{
 use tokio::sync::oneshot;
 use tracing::info;
 
-use crate::da_api::{
-    VerificationChannel, VerificationResult,
-    config::DaProviderConfig,
-    error::DaApiError,
-    nitro::{
-        certificate::CasCertificate, types::DAStoreResponse,
-        utils::extract_da_sequencer_msg_from_espresso_da_certificate,
+use crate::{
+    VerificationResult,
+    da_api::{
+        VerificationSender,
+        config::DaProviderConfig,
+        error::DaApiError,
+        nitro::{
+            certificate::CasCertificate, types::DAStoreResponse,
+            utils::extract_da_sequencer_msg_from_espresso_da_certificate,
+        },
     },
 };
 
@@ -40,13 +43,13 @@ pub struct ServerState {
     // TODO: dont use AtmoicU8 with hashmap here. update the design
     pub current_da_provider: Arc<AtomicU8>,
     pub client: reqwest::Client,
-    pub verification_channel: VerificationChannel,
+    pub verification_channel: VerificationSender,
 }
 
 impl ServerState {
     pub fn new(
         router: HashMap<u8, DaProviderConfig>,
-        verification_channel: VerificationChannel,
+        verification_channel: VerificationSender,
     ) -> Self {
         Self {
             router: Arc::new(router),
@@ -306,13 +309,15 @@ mod tests {
         matchers::{body_partial_json, method},
     };
 
-    use crate::da_api::{
+    use crate::{
         VerificationResult,
-        config::DaProviderConfig,
-        nitro::{
-            certificate::CasCertificate,
-            server::{ServerState, server_router},
-            types::{DAStoreResponse, PreImagesResult, RecoverPayloadResult},
+        da_api::{
+            config::DaProviderConfig,
+            nitro::{
+                certificate::CasCertificate,
+                server::{ServerState, server_router},
+                types::{DAStoreResponse, PreImagesResult, RecoverPayloadResult},
+            },
         },
     };
 

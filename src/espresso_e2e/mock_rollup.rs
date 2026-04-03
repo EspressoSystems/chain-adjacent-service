@@ -22,6 +22,7 @@ impl RollupQueueEntry for MockEntry {
 }
 
 pub struct MockRollup;
+#[derive(Default)]
 pub struct MockVerificationContext;
 pub struct MockBatchMessage;
 
@@ -35,17 +36,16 @@ fn mock_build_espresso_tx_payload(_entries: &mut Vec<MockEntry>) -> Vec<u8> {
 
 impl Rollup for MockRollup {
     type Entry = MockEntry;
+    type Error = std::convert::Infallible;
+    type StackConfig = ();
     type BatchMessage = MockBatchMessage;
     type FeedMessage = MockEntry;
     type VerificationContext = MockVerificationContext;
     const PARSE_BATCH_FN: fn(alloy::primitives::Bytes) -> anyhow::Result<Vec<MockBatchMessage>> =
         mock_parse_batch;
 
-    const ESPRESSO_TX_PAYLOAD_BUILD_FN: fn(&mut Vec<Self::Entry>) -> Vec<u8> =
-        mock_build_espresso_tx_payload;
-
     fn parse_hotshot_transactions(
-        &self,
+        _config: &Self::StackConfig,
         entries: Vec<NamespaceTransactionsInRange>,
         starting_hotshot_height: u64,
     ) -> Vec<Self::Entry> {
@@ -76,7 +76,6 @@ impl Rollup for MockRollup {
     }
 
     fn verify_batch_messages(
-        &self,
         _batch_messages: &[Self::BatchMessage],
         _streamer_queue: &[Self::Entry],
         _context: &Self::VerificationContext,
@@ -84,7 +83,22 @@ impl Rollup for MockRollup {
         todo!()
     }
 
-    fn namespace_id(&self) -> NamespaceId {
+    fn build_espresso_tx_payload(messages: &mut Vec<Self::FeedMessage>) -> Vec<u8> {
+        mock_build_espresso_tx_payload(messages)
+    }
+
+    async fn start_feed_relay(
+        _config: Self::StackConfig,
+        _espresso_submission_sender: tokio::sync::mpsc::Sender<Self::FeedMessage>,
+        _espresso_finalization_receiver: tokio::sync::mpsc::Receiver<Self::FeedMessage>,
+        // Receives the latest L1-finalized message.
+        // Used to prune the backlog.
+        _l1_finalized_msg_idx_receiver: tokio::sync::watch::Receiver<u64>,
+    ) -> anyhow::Result<(), Self::Error> {
+        todo!()
+    }
+
+    fn rollup_type() -> crate::config::RollupType {
         todo!()
     }
 }

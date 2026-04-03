@@ -8,9 +8,9 @@ use tokio::{
 };
 
 use chain_agnostic_service::{
+    VerificationResult,
     config::RollupType,
     da_api::{
-        VerificationResult,
         config::{DaApiConfig, DaProviderConfig},
         nitro::utils::{
             SEQUENCER_HEADER_LEN, extract_da_sequencer_msg_from_espresso_da_certificate,

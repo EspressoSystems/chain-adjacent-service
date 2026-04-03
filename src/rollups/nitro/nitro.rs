@@ -1,5 +1,9 @@
+use crate::config::RollupType;
 use crate::espresso_client::types::NamespaceTransactionsInRange;
+use crate::rollups::nitro::config::NitroConfig;
 use crate::rollups::nitro::feed::message::BroadcastFeedMessage;
+use crate::rollups::nitro::feed::relay::FeedRelay;
+use crate::rollups::nitro::feed::relay::FeedRelayError;
 use crate::rollups::nitro::types::BatchMessage;
 use crate::rollups::nitro::types::LastBatchInfo;
 use crate::rollups::nitro::types::LegacyParsedNitroEspressoTransaction;
@@ -31,17 +35,17 @@ impl RollupQueueEntry for NitroRollupQueueEntry {
 }
 
 impl Rollup for Nitro {
+    type Error = FeedRelayError;
+    type StackConfig = NitroConfig;
     type Entry = NitroRollupQueueEntry;
     type BatchMessage = BatchMessage;
     type VerificationContext = VerificationContext;
     type FeedMessage = BroadcastFeedMessage;
     const PARSE_BATCH_FN: fn(Bytes) -> Result<Vec<BatchMessage>> =
         super::batch_parsing::parse_batch;
-    const ESPRESSO_TX_PAYLOAD_BUILD_FN: fn(&mut Vec<Self::FeedMessage>) -> Vec<u8> =
-        build_espresso_tx_payload;
 
     fn parse_hotshot_transactions(
-        &self,
+        config: &Self::StackConfig,
         namespace_transactions: Vec<NamespaceTransactionsInRange>,
         starting_hotshot_height: u64,
     ) -> Vec<Self::Entry> {
@@ -51,7 +55,9 @@ impl Rollup for Nitro {
         for namespace_tx in namespace_transactions {
             for tx in namespace_tx.transactions {
                 // Try V1 format first
-                if let Ok(broadcast_messages) = self.parse_nitro_hotshot_payload(tx.payload()) {
+                if let Ok(broadcast_messages) =
+                    Self::parse_nitro_hotshot_payload(config, tx.payload())
+                {
                     for message in broadcast_messages {
                         entries.push(NitroRollupQueueEntry {
                             message_with_meta: message.message,
@@ -63,8 +69,11 @@ impl Rollup for Nitro {
                 }
 
                 // Fall back to legacy format
-                entries
-                    .extend(self.legacy_parse_nitro_hotshot_payload(tx.payload(), hotshot_height));
+                entries.extend(Self::legacy_parse_nitro_hotshot_payload(
+                    config,
+                    tx.payload(),
+                    hotshot_height,
+                ));
             }
             // There is a namespace transaction for each hotshot height
             // even if there are no transactions
@@ -79,7 +88,6 @@ impl Rollup for Nitro {
     }
 
     fn verify_batch_messages(
-        &self,
         batch_messages: &[Self::BatchMessage],
         streamer_queue: &[Self::Entry],
         context: &Self::VerificationContext,
@@ -133,8 +141,35 @@ impl Rollup for Nitro {
         true
     }
 
-    fn namespace_id(&self) -> NamespaceId {
-        self.namespace_id
+    async fn start_feed_relay(
+        config: Self::StackConfig,
+        espresso_submission_sender: mpsc::Sender<Self::FeedMessage>,
+        espresso_finalization_receiver: mpsc::Receiver<Self::FeedMessage>,
+        // Receives the latest L1-finalized message.
+        // Used to prune the backlog.
+        l1_finalized_msg_idx_receiver: tokio::sync::watch::Receiver<u64>,
+    ) -> Result<(), Self::Error> {
+        let chain_id = config.chain_id;
+        let config = config.feed_config.clone();
+
+        let feed_relay = FeedRelay::new(
+            chain_id,
+            config,
+            espresso_submission_sender,
+            espresso_finalization_receiver,
+            l1_finalized_msg_idx_receiver,
+        );
+        feed_relay.start().await
+    }
+
+    fn build_espresso_tx_payload(messages: &mut Vec<Self::FeedMessage>) -> Vec<u8> {
+        let result = build_espresso_tx_payload(messages);
+        messages.clear();
+        result
+    }
+
+    fn rollup_type() -> RollupType {
+        RollupType::Nitro
     }
 }
 
@@ -153,10 +188,13 @@ impl Nitro {
         }
     }
 
-    pub fn verify_broadcast_feed_message(&self, message: &BroadcastFeedMessage) -> Result<()> {
+    pub fn verify_broadcast_feed_message(
+        config: &NitroConfig,
+        message: &BroadcastFeedMessage,
+    ) -> Result<()> {
         verify_broadcast_feed_message_signature(
-            self.chain_id,
-            &self.legacy_signer_addresses,
+            config.chain_id,
+            &config.legacy_signer_addresses,
             message,
         )
     }
@@ -164,11 +202,11 @@ impl Nitro {
     /// Parses a legacy Nitro hotshot payload (binary format with batch poster signature)
     /// into queue entries, performing signature verification and RLP decoding.
     fn legacy_parse_nitro_hotshot_payload(
-        &self,
+        config: &NitroConfig,
         tx_payload: &[u8],
         hotshot_height: u64,
     ) -> Vec<NitroRollupQueueEntry> {
-        let parsed = match self.parse_legacy_payload_bytes(tx_payload) {
+        let parsed = match parse_legacy_payload_bytes(tx_payload) {
             Ok(p) => p,
             Err(e) => {
                 tracing::warn!("failed to parse legacy hotshot payload: {e}");
@@ -177,7 +215,7 @@ impl Nitro {
         };
 
         if let Ok(signer) = recover_signer_address(parsed.messages_hash, &parsed.signature) {
-            if !self.legacy_signer_addresses.contains(&signer) {
+            if !config.legacy_signer_addresses.contains(&signer) {
                 tracing::warn!(
                     "recovered signer: {:?} is not in the list of legacy signer addresses",
                     signer
@@ -221,67 +259,9 @@ impl Nitro {
         entries
     }
 
-    /// Low-level binary parsing of the legacy payload format:
-    /// `[signature_len (8b)] [signature] [index (8b)] [message_len (8b)] [message] ...`
-    fn parse_legacy_payload_bytes(
-        &self,
-        tx_payload: &[u8],
-    ) -> Result<LegacyParsedNitroEspressoTransaction> {
-        if tx_payload.len() < LEN_SIZE {
-            return Err(anyhow::anyhow!("payload too short to parse signature size"));
-        }
-        let signature_len = u64::from_be_bytes(tx_payload[..LEN_SIZE].try_into()?);
-
-        let mut current_pos = LEN_SIZE;
-        if tx_payload[current_pos..].len() < signature_len as usize {
-            return Err(anyhow::anyhow!("payload too short to parse signature"));
-        }
-        let signature = &tx_payload[current_pos..current_pos + signature_len as usize];
-        current_pos += signature_len as usize;
-
-        let mut keccak_hasher = Keccak256::new();
-        keccak_hasher.update(&tx_payload[current_pos..]);
-        let message_data_hash = keccak_hasher.finalize();
-
-        let mut indices = Vec::<u64>::new();
-        let mut messages = VecDeque::<Vec<u8>>::new();
-        loop {
-            if current_pos >= tx_payload.len() {
-                break;
-            }
-
-            if tx_payload[current_pos..].len() < LEN_SIZE + INDEX_SIZE {
-                return Err(anyhow::Error::msg("payload too short to index size"));
-            }
-            let index =
-                u64::from_be_bytes(tx_payload[current_pos..current_pos + INDEX_SIZE].try_into()?);
-            current_pos += INDEX_SIZE;
-            let message_size =
-                u64::from_be_bytes(tx_payload[current_pos..current_pos + LEN_SIZE].try_into()?);
-            current_pos += LEN_SIZE;
-            if tx_payload[current_pos..].len() < message_size as usize {
-                return Err(anyhow::Error::msg("payload too short to message size"));
-            }
-            let message = &tx_payload[current_pos..current_pos + message_size as usize];
-            current_pos += message_size as usize;
-            if message.is_empty() {
-                tracing::warn!("empty message");
-                continue;
-            }
-            indices.push(index);
-            messages.push_back(message.to_vec());
-        }
-        Ok(LegacyParsedNitroEspressoTransaction {
-            signature: signature.into(),
-            messages_hash: message_data_hash,
-            indices,
-            messages,
-        })
-    }
-
     // Parses the payload of an Espresso transaction into an array of BroadcastFeedMessage
     pub fn parse_nitro_hotshot_payload(
-        &self,
+        config: &NitroConfig,
         tx_payload: &[u8],
     ) -> Result<Vec<BroadcastFeedMessage>> {
         // Parse the header first
@@ -316,7 +296,7 @@ impl Nitro {
             current_pos += message_size as usize;
             let message: BroadcastFeedMessage = serde_json::from_slice(message_bytes)
                 .map_err(|e| anyhow::anyhow!("failed to parse nitro hotshot message: {e}"))?;
-            match self.verify_broadcast_feed_message(&message) {
+            match Self::verify_broadcast_feed_message(config, &message) {
                 Ok(()) => messages.push(message),
                 Err(e) => {
                     tracing::warn!(seq_num = message.sequence_number, error = %e, "skipping message with invalid signature in hotshot payload");
@@ -396,6 +376,61 @@ fn build_espresso_tx_payload(messages: &mut Vec<BroadcastFeedMessage>) -> Vec<u8
     payload
 }
 
+/// Low-level binary parsing of the legacy payload format:
+/// `[signature_len (8b)] [signature] [index (8b)] [message_len (8b)] [message] ...`
+fn parse_legacy_payload_bytes(tx_payload: &[u8]) -> Result<LegacyParsedNitroEspressoTransaction> {
+    if tx_payload.len() < LEN_SIZE {
+        return Err(anyhow::anyhow!("payload too short to parse signature size"));
+    }
+    let signature_len = u64::from_be_bytes(tx_payload[..LEN_SIZE].try_into()?);
+
+    let mut current_pos = LEN_SIZE;
+    if tx_payload[current_pos..].len() < signature_len as usize {
+        return Err(anyhow::anyhow!("payload too short to parse signature"));
+    }
+    let signature = &tx_payload[current_pos..current_pos + signature_len as usize];
+    current_pos += signature_len as usize;
+
+    let mut keccak_hasher = Keccak256::new();
+    keccak_hasher.update(&tx_payload[current_pos..]);
+    let message_data_hash = keccak_hasher.finalize();
+
+    let mut indices = Vec::<u64>::new();
+    let mut messages = VecDeque::<Vec<u8>>::new();
+    loop {
+        if current_pos >= tx_payload.len() {
+            break;
+        }
+
+        if tx_payload[current_pos..].len() < LEN_SIZE + INDEX_SIZE {
+            return Err(anyhow::Error::msg("payload too short to index size"));
+        }
+        let index =
+            u64::from_be_bytes(tx_payload[current_pos..current_pos + INDEX_SIZE].try_into()?);
+        current_pos += INDEX_SIZE;
+        let message_size =
+            u64::from_be_bytes(tx_payload[current_pos..current_pos + LEN_SIZE].try_into()?);
+        current_pos += LEN_SIZE;
+        if tx_payload[current_pos..].len() < message_size as usize {
+            return Err(anyhow::Error::msg("payload too short to message size"));
+        }
+        let message = &tx_payload[current_pos..current_pos + message_size as usize];
+        current_pos += message_size as usize;
+        if message.is_empty() {
+            tracing::warn!("empty message");
+            continue;
+        }
+        indices.push(index);
+        messages.push_back(message.to_vec());
+    }
+    Ok(LegacyParsedNitroEspressoTransaction {
+        signature: signature.into(),
+        messages_hash: message_data_hash,
+        indices,
+        messages,
+    })
+}
+
 #[cfg(test)]
 pub mod testing {
     use std::str::FromStr;
@@ -404,7 +439,6 @@ pub mod testing {
     use base64::Engine;
     use base64::engine::general_purpose;
     use espresso_types::{NamespaceId, Transaction};
-    use tokio::sync::mpsc;
 
     use alloy::primitives::Bytes as AlloyBytes;
 
@@ -440,82 +474,82 @@ pub mod testing {
         }
     }
 
-    fn make_nitro() -> Nitro {
-        let (_tx, rx) = mpsc::channel(1);
-        Nitro::new(vec![], NamespaceId::default(), 0, rx)
-    }
-
     #[test]
     fn test_verify_batch_more_batch_than_streamer() {
-        let nitro = make_nitro();
         let ctx = VerificationContext {
             last_batch_delayed_messages_read: 0,
         };
         let batch = vec![BatchMessage::DelayedMsg, BatchMessage::DelayedMsg];
         let queue = vec![make_entry_no_message(1, 0)];
-        assert!(!nitro.verify_batch_messages(&batch, &queue, &ctx));
+        assert!(!<Nitro as Rollup>::verify_batch_messages(
+            &batch, &queue, &ctx
+        ));
     }
 
     #[test]
     fn test_verify_batch_l2msg_match() {
-        let nitro = make_nitro();
         let ctx = VerificationContext {
             last_batch_delayed_messages_read: 0,
         };
         let content = b"hello world";
         let batch = vec![BatchMessage::L2Msg(AlloyBytes::copy_from_slice(content))];
         let queue = vec![make_entry_with_l2msg(content, 0, 0)];
-        assert!(nitro.verify_batch_messages(&batch, &queue, &ctx));
+        assert!(<Nitro as Rollup>::verify_batch_messages(
+            &batch, &queue, &ctx
+        ));
     }
 
     #[test]
     fn test_verify_batch_l2msg_mismatch() {
-        let nitro = make_nitro();
         let ctx = VerificationContext {
             last_batch_delayed_messages_read: 0,
         };
         let batch = vec![BatchMessage::L2Msg(AlloyBytes::copy_from_slice(b"hello"))];
         let queue = vec![make_entry_with_l2msg(b"world", 0, 0)];
-        assert!(!nitro.verify_batch_messages(&batch, &queue, &ctx));
+        assert!(!<Nitro as Rollup>::verify_batch_messages(
+            &batch, &queue, &ctx
+        ));
     }
 
     #[test]
     fn test_verify_batch_l2msg_none_message() {
-        let nitro = make_nitro();
         let ctx = VerificationContext {
             last_batch_delayed_messages_read: 0,
         };
         let batch = vec![BatchMessage::L2Msg(AlloyBytes::copy_from_slice(b"hello"))];
         let queue = vec![make_entry_no_message(0, 0)];
-        assert!(!nitro.verify_batch_messages(&batch, &queue, &ctx));
+        assert!(!<Nitro as Rollup>::verify_batch_messages(
+            &batch, &queue, &ctx
+        ));
     }
 
     #[test]
     fn test_verify_batch_delayed_msg_first_entry_valid() {
-        let nitro = make_nitro();
         let ctx = VerificationContext {
             last_batch_delayed_messages_read: 5,
         };
         let batch = vec![BatchMessage::DelayedMsg];
         let queue = vec![make_entry_no_message(6, 0)];
-        assert!(nitro.verify_batch_messages(&batch, &queue, &ctx));
+        assert!(<Nitro as Rollup>::verify_batch_messages(
+            &batch, &queue, &ctx
+        ));
     }
 
     #[test]
     fn test_verify_batch_delayed_msg_first_entry_invalid() {
-        let nitro = make_nitro();
         let ctx = VerificationContext {
             last_batch_delayed_messages_read: 5,
         };
         let batch = vec![BatchMessage::DelayedMsg];
         // delayed_messages_read should be 6 (5+1), but it's 7
         let queue = vec![make_entry_no_message(7, 0)];
-        assert!(!nitro.verify_batch_messages(&batch, &queue, &ctx));
+        assert!(!<Nitro as Rollup>::verify_batch_messages(
+            &batch, &queue, &ctx
+        ));
     }
 
     #[test]
     fn test_verify_batch_delayed_msg_subsequent_entry_valid() {
-        let nitro = make_nitro();
         let ctx = VerificationContext {
             last_batch_delayed_messages_read: 0,
         };
@@ -527,12 +561,13 @@ pub mod testing {
             make_entry_with_l2msg(b"tx1", 10, 0),
             make_entry_no_message(11, 1),
         ];
-        assert!(nitro.verify_batch_messages(&batch, &queue, &ctx));
+        assert!(<Nitro as Rollup>::verify_batch_messages(
+            &batch, &queue, &ctx
+        ));
     }
 
     #[test]
     fn test_verify_batch_delayed_msg_subsequent_entry_invalid() {
-        let nitro = make_nitro();
         let ctx = VerificationContext {
             last_batch_delayed_messages_read: 0,
         };
@@ -545,12 +580,13 @@ pub mod testing {
             // Should be 11 (10+1), but it's 13
             make_entry_no_message(13, 1),
         ];
-        assert!(!nitro.verify_batch_messages(&batch, &queue, &ctx));
+        assert!(!<Nitro as Rollup>::verify_batch_messages(
+            &batch, &queue, &ctx
+        ));
     }
 
     #[test]
     fn test_verify_batch_mixed_messages() {
-        let nitro = make_nitro();
         let ctx = VerificationContext {
             last_batch_delayed_messages_read: 5,
         };
@@ -564,12 +600,13 @@ pub mod testing {
             make_entry_with_l2msg(b"data", 6, 1),
             make_entry_no_message(7, 2),
         ];
-        assert!(nitro.verify_batch_messages(&batch, &queue, &ctx));
+        assert!(<Nitro as Rollup>::verify_batch_messages(
+            &batch, &queue, &ctx
+        ));
     }
 
     #[test]
     fn test_verify_batch_streamer_has_extra_entries() {
-        let nitro = make_nitro();
         let ctx = VerificationContext {
             last_batch_delayed_messages_read: 0,
         };
@@ -579,7 +616,9 @@ pub mod testing {
             make_entry_with_l2msg(b"extra", 0, 1),
         ];
         // batch has fewer entries than queue - should still pass
-        assert!(nitro.verify_batch_messages(&batch, &queue, &ctx));
+        assert!(<Nitro as Rollup>::verify_batch_messages(
+            &batch, &queue, &ctx
+        ));
     }
 
     #[test]
@@ -593,14 +632,21 @@ pub mod testing {
             .expect("failed to decode base64 tx");
         let sequencer_address = Address::from_str("0x91B62241cCec21Cebb3AbD24599855c009864e1E")
             .expect("failed to parse sequencer address");
-        let (_tx, rx) = mpsc::channel(1);
-        let nitro = Nitro::new(vec![sequencer_address], namespace_id, 0, rx);
         let namespace_transactions_in_range = NamespaceTransactionsInRange {
             transactions: vec![Transaction::new(namespace_id, tx_bytes)],
             proof: None,
         };
+        let config = NitroConfig {
+            legacy_signer_addresses: vec![sequencer_address],
+            chain_id: 1,
+            ..Default::default()
+        };
         let parsed_messages: Vec<NitroRollupQueueEntry> =
-            nitro.parse_hotshot_transactions(vec![namespace_transactions_in_range], 1u64);
+            <Nitro as Rollup>::parse_hotshot_transactions(
+                &config,
+                vec![namespace_transactions_in_range],
+                1u64,
+            );
 
         assert!(
             parsed_messages.len() == 1,

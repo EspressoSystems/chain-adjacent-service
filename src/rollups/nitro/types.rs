@@ -22,6 +22,7 @@ pub enum BatchMessage {
     DelayedMsg,
 }
 
+#[derive(Debug, Clone, Default)]
 pub struct VerificationContext {
     // Should be read from L1 on startup and cached in memory,
     // updated when new batches are read from L1.

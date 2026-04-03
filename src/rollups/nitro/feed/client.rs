@@ -3,6 +3,7 @@ use std::time::Duration;
 use alloy::primitives::Address;
 use base64::Engine as _;
 use futures::StreamExt;
+use serde::Deserialize;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use yawc::frame::OpCode;
@@ -24,6 +25,7 @@ pub const HEADER_REQUESTED_SEQ_NUM: &str = "Arbitrum-Requested-Sequence-Number";
 pub const HEADER_CHAIN_ID: &str = "Arbitrum-Chain-Id";
 pub const MESSAGE_VERSION: i32 = 1;
 
+#[derive(Debug, Clone, Deserialize)]
 pub struct BroadcasterClientConfig {
     pub reconnect_initial_backoff: Duration,
     pub reconnect_maximum_backoff: Duration,

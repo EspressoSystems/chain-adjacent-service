@@ -2,14 +2,15 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
-use espresso_types::Transaction;
+use espresso_types::{NamespaceId, Transaction};
+use serde::Deserialize;
 use tokio::sync::{AcquireError, Semaphore, mpsc};
 
 use crate::espresso_client::client::EspressoClient;
 use crate::utils::exponential_backoff;
 use thiserror::Error;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct SubmitterConfig {
     pub max_in_flight: usize,
     pub finalization_wait_ms: u64,
@@ -45,12 +46,13 @@ pub enum SubmitterError {
 /// before submitting the next transaction.
 pub struct Submitter<M, F>
 where
-    F: Fn(Vec<M>) -> Vec<Transaction> + 'static,
+    F: Fn(NamespaceId, Vec<M>) -> Vec<Transaction> + 'static,
 {
     client: EspressoClient,
     unsubmitted_txs: VecDeque<Transaction>,
     unsubmitted_msgs: mpsc::Receiver<M>,
     config: SubmitterConfig,
+    namespace_id: NamespaceId,
     pub(crate) sem: Arc<Semaphore>,
 
     tx_ctor: F,
@@ -58,12 +60,13 @@ where
 
 impl<M, F> Submitter<M, F>
 where
-    F: Fn(Vec<M>) -> Vec<Transaction> + 'static,
+    F: Fn(NamespaceId, Vec<M>) -> Vec<Transaction> + 'static,
 {
     pub fn new(
         client: EspressoClient,
         channel: mpsc::Receiver<M>,
         config: SubmitterConfig,
+        namespace_id: NamespaceId,
         tx_ctor: F,
     ) -> Self {
         let sem = Arc::new(Semaphore::new(config.max_in_flight));
@@ -73,6 +76,7 @@ where
             unsubmitted_txs: VecDeque::new(),
             config,
             sem,
+            namespace_id,
             tx_ctor,
         }
     }
@@ -100,7 +104,7 @@ where
             }
 
             if !pending_msgs.is_empty() {
-                let txs = (self.tx_ctor)(pending_msgs);
+                let txs = (self.tx_ctor)(self.namespace_id, pending_msgs);
                 if txs.is_empty() {
                     tracing::warn!("tx_ctor produced no transactions, skipping message batch");
                 } else {
@@ -209,13 +213,15 @@ pub mod testing {
             max_backoff_ms: 1000,
             max_finalization_poll_retries: 5,
         };
+        let namespace_id = NamespaceId::from(1918988905u64);
         // Max 256 transactions at a time in the channel
         let (sender, reciever) = mpsc::channel(256);
         let mut submitter = Submitter::new(
             espresso_node.client.clone(),
             reciever,
             config,
-            |txs: Vec<espresso_types::Transaction>| txs,
+            namespace_id,
+            |_namespace_id, txs: Vec<espresso_types::Transaction>| txs,
         );
         let sem = submitter.sem.clone();
 
