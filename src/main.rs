@@ -77,7 +77,8 @@ async fn run<R: Rollup>(config: ServiceConfig<R::StackConfig>) -> Result<()> {
         mpsc::channel(config.runtime.verification_channel_capacity);
     let (latest_batch_sender, latest_batch_receiver) =
         watch::channel(R::VerificationContext::default());
-    let mut streamer: Streamer<R> = Streamer::new(client, config.streamer, config.rollup);
+    let mut streamer: Streamer<R> =
+        Streamer::new(client, config.streamer, config.rollup, config.runtime);
 
     let streamer_task = streamer.run(
         l1_finalized_msg_idx_receiver,

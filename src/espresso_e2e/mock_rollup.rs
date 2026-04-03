@@ -1,6 +1,7 @@
 use espresso_types::{NamespaceId, Transaction};
 
 use crate::{
+    VerificationResult,
     espresso_client::types::NamespaceTransactionsInRange,
     rollups::rollup::{Rollup, RollupQueueEntry},
 };
@@ -73,7 +74,7 @@ impl Rollup for MockRollup {
         _batch_messages: &[Self::BatchMessage],
         _streamer_queue: &[Self::Entry],
         _context: &Self::VerificationContext,
-    ) -> crate::VerificationResult {
+    ) -> VerificationResult {
         todo!()
     }
 

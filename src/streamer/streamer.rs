@@ -4,7 +4,7 @@ use espresso_types::NamespaceId;
 use tokio::sync::{mpsc, watch};
 
 use crate::VerificationReceiver;
-use crate::config::{RollupConfig, StreamerConfig};
+use crate::config::{RollupConfig, RuntimeConfig, StreamerConfig};
 use crate::espresso_client::client::EspressoClient;
 use crate::espresso_client::types::NamespaceTransactionsInRange;
 use crate::rollups::rollup::{Rollup, RollupQueueEntry};
@@ -20,6 +20,7 @@ pub struct Streamer<R: Rollup> {
     queue: Vec<R::Entry>,
     config: StreamerConfig,
     rollup_config: RollupConfig<R::StackConfig>,
+    runtime_config: RuntimeConfig,
 
     latest_batch_info: Option<R::VerificationContext>,
     finalized_idx: u64,
@@ -35,12 +36,14 @@ impl<R: Rollup> Streamer<R> {
         client: EspressoClient,
         config: StreamerConfig,
         rollup_config: RollupConfig<R::StackConfig>,
+        runtime_config: RuntimeConfig,
     ) -> Self {
         Self {
             client,
             queue: Vec::new(),
             config,
             rollup_config,
+            runtime_config,
             latest_batch_info: None,
             finalized_idx: 0,
             last_broadcast_position: 0,
@@ -64,8 +67,9 @@ impl<R: Rollup> Streamer<R> {
         let (broadcast_retry_tx, mut broadcast_retry_rx) = mpsc::channel::<()>(1);
         self.broadcast_retry_tx = Some(broadcast_retry_tx);
 
-        let (sender, mut receiver) =
-            mpsc::channel::<(Vec<NamespaceTransactionsInRange>, u64)>(1024);
+        let (sender, mut receiver) = mpsc::channel::<(Vec<NamespaceTransactionsInRange>, u64)>(
+            self.runtime_config.hotshot_transaction_channel_capacity,
+        );
         let config = self.config.clone();
         let client = self.client.clone();
         let namespace_id = NamespaceId::from(self.rollup_config.namespace_id);
@@ -74,6 +78,8 @@ impl<R: Rollup> Streamer<R> {
         });
         loop {
             tokio::select! {
+                // New L1 finalized message index: prune the queue and update finalized_idx
+                // Also update last_broadcast_position to ensure we don't broadcast messages that are finalized by L1
                 changed = l1_finalized_msg_idx.changed() => {
                     if changed.is_err() {
                         tracing::error!("l1_finalized_msg_idx sender was dropped");
@@ -82,6 +88,10 @@ impl<R: Rollup> Streamer<R> {
                     let new_finalized_idx = *l1_finalized_msg_idx.borrow();
 
                     if new_finalized_idx > self.last_broadcast_position {
+                        // Rare but possible: L1's finalized index has advanced beyond what we've
+                        // last broadcast. In that case, advance `last_broadcast_position` to
+                        // avoid broadcasting messages that are already finalized on L1 and
+                        // therefore unnecessary for building future batches.
                         self.last_broadcast_position = new_finalized_idx;
                     }
 
@@ -122,6 +132,8 @@ impl<R: Rollup> Streamer<R> {
                         self.latest_batch_info = Some(batch_info.clone());
                     }
                 },
+                // New hotshot transactions from the poller: parse and add to the queue,
+                // then attempt a broadcast
                 transactions = receiver.recv() => {
                     let Some((transactions, height)) = transactions else {
                         tracing::error!("hotshot block poller channel was closed");
@@ -129,6 +141,8 @@ impl<R: Rollup> Streamer<R> {
                     };
                     self.handle_hotshot_transactions(transactions, height, espresso_finalization_sender.clone()).await;
                 },
+                // Retry broadcasting feed messages when we get a retry signal
+                // (due to backpressure on the finalization channel)
                 retry = broadcast_retry_rx.recv() => {
                     if retry.is_none() {
                         tracing::error!("broadcast retry channel was closed");
@@ -310,7 +324,7 @@ pub mod testing {
     use tokio::sync::mpsc;
 
     use crate::{
-        config::{RollupConfig, RollupType::Nitro, StreamerConfig},
+        config::{RollupConfig, RollupType::Nitro, RuntimeConfig, StreamerConfig},
         espresso_client::client::EspressoClient,
         espresso_e2e::{
             espresso_dev_node::EspressoDevNode,
@@ -338,6 +352,7 @@ pub mod testing {
                 rollup: (),
                 ty: Nitro,
             },
+            RuntimeConfig::default(),
         )
     }
 
@@ -432,6 +447,7 @@ pub mod testing {
                 rollup: (),
                 ty: Nitro,
             },
+            RuntimeConfig::default(),
         );
 
         // Submit at least 10 transactions to the Espresso sequencer

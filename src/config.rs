@@ -50,6 +50,7 @@ pub struct RollupConfig<C> {
 pub struct RuntimeConfig {
     pub espresso_finalized_message_channel_capacity: usize,
     pub verification_channel_capacity: usize,
+    pub hotshot_transaction_channel_capacity: usize,
 }
 
 impl Default for RuntimeConfig {
@@ -57,6 +58,7 @@ impl Default for RuntimeConfig {
         Self {
             espresso_finalized_message_channel_capacity: 100,
             verification_channel_capacity: 100,
+            hotshot_transaction_channel_capacity: 300,
         }
     }
 }
