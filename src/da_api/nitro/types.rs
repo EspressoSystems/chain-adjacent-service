@@ -36,7 +36,7 @@ pub struct RecoverPayloadResult {
     pub payload: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct PreImagesResult {
     #[serde(rename = "Preimages")]
     pub preimages: HashMap<String, HashMap<FixedBytes<32>, Bytes>>,

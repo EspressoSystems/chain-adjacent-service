@@ -12,7 +12,9 @@ use chain_agnostic_service::{
     da_api::{
         VerificationResult,
         config::{DaApiConfig, DaProviderConfig},
-        nitro::utils::extract_da_sequencer_msg_from_espresso_da_certificate,
+        nitro::utils::{
+            SEQUENCER_HEADER_LEN, extract_da_sequencer_msg_from_espresso_da_certificate,
+        },
         run,
     },
 };
@@ -181,7 +183,7 @@ async fn test_nitro_reference_da_store_and_recover(my_addr: String) {
     let da_cert =
         extract_da_sequencer_msg_from_espresso_da_certificate(&Bytes::from(sequencer_msg.clone()))
             .unwrap()
-            .slice(40..);
+            .slice(SEQUENCER_HEADER_LEN..);
     let keccak_hash_da_cert = keccak256(&da_cert).to_string();
 
     let expected_collect_preimages_response = json!({

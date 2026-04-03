@@ -470,6 +470,8 @@ mod tests {
                 "jsonrpc": "2.0",
                 "id": id,
                 "result": {
+                    // The value is the raw batch data that the downstream DA provider
+                    // retrieved from storage for the given certificate.
                     "Payload": "0x3e5aa08200000000000000000000000000000000000000000000000000000000001249c4000000000000000000000000000000000000000000000000000000000024370b000000000000000000000000e64a54e2533fd126c2e452c5fab544d80e2e4eb50000000000000000000000000000000000000000000000000000000018eab6750000000000000000000000000000000000000000000000000000000018eab845"
                 }
             }))
@@ -511,8 +513,18 @@ mod tests {
                               "jsonrpc": "2.0",
                               "id": id,
                               "result": {
+                                  // The map is keyed by preimage type (outer) and cert hash (inner).
                                   "Preimages": {
+                                    // Outer key: preimage type = 3, which is DACertificatePreimageType.
                                     "3": {
+                                        // Inner key: keccak256(da_certificate), where da_certificate is
+                                        // the inner DA cert extracted from sequencer_msg by
+                                        // extract_da_sequencer_msg_from_espresso_da_certificate(). 
+                                        // Correctness of this falls under the responsibility of the downstream DA provider
+                                        //
+                                        // Value: the raw batch data retrieved from the DA layer — identical
+                                        // to the "Payload" bytes returned by daprovider_recoverPayload for
+                                        // the same certificate.
                                         "0xa63ab36162a4f4ee6622ccd787b0a048c26b93acfc05c6b1843659b253c3c00b": "0x3e5aa08200000000000000000000000000000000000000000000000000000000001249c4000000000000000000000000000000000000000000000000000000000024370b000000000000000000000000e64a54e2533fd126c2e452c5fab544d80e2e4eb50000000000000000000000000000000000000000000000000000000018eab6750000000000000000000000000000000000000000000000000000000018eab845"
                                     }
                                     }
@@ -527,6 +539,7 @@ mod tests {
                 "daprovider_collectPreimages",
                 rpc_params![
                     80,
+                    // this can be any hash value for the purposes of this test...CAS is not responsible for verifying the correctness of the hash in collectPreimages, it just forwards it to the downstream provider. In reality, this would be the blockBatchHash.
                     b256!("0x3e5aa082000000000000000000000000000000000000000000000000001249c4"),
                     sequencer_msg
                 ],
@@ -534,6 +547,7 @@ mod tests {
             .await;
 
         assert!(response3.is_ok());
+        // seq msg+ downstream cert
         let expected = hex::decode(
             "3e5aa08200000000000000000000000000000000000000000000000000000000001249c4000000000000000000000000000000000000000000000000000000000024370b000000000000000000000000e64a54e2533fd126c2e452c5fab544d80e2e4eb50000000000000000000000000000000000000000000000000000000018eab6750000000000000000000000000000000000000000000000000000000018eab845"
         ).unwrap();
