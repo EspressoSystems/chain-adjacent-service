@@ -34,6 +34,8 @@ const HEADER_CONTENT_TYPE: &str = "application/json";
 
 const STORE: &str = "daprovider_store";
 const RECOVER_PAYLOAD: &str = "daprovider_recoverPayload";
+const COLLECT_PREIMAGES: &str = "daprovider_collectPreimages";
+const RECOVER_PAYLOAD_AND_PREIMAGES: &str = "daprovider_recoverPayloadAndPreimages";
 
 #[derive(Clone)]
 pub struct ServerState {
@@ -78,7 +80,11 @@ async fn handle_rpc(State(state): State<ServerState>, body: Bytes) -> Result<Res
 
     match method {
         STORE => handle_store(state, parsed).await,
-        RECOVER_PAYLOAD => handle_recover_payload(state, parsed).await,
+        RECOVER_PAYLOAD => handle_recover_inner(state, parsed, RECOVER_PAYLOAD).await,
+        COLLECT_PREIMAGES => handle_recover_inner(state, parsed, COLLECT_PREIMAGES).await,
+        RECOVER_PAYLOAD_AND_PREIMAGES => {
+            handle_recover_inner(state, parsed, RECOVER_PAYLOAD_AND_PREIMAGES).await
+        }
         _ => forward_raw(state, body).await,
     }
 }
@@ -226,9 +232,14 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
     Ok((StatusCode::OK, bytes).into_response())
 }
 
-/// Strips the espresso wrapper from sequencer_msg and forwards the extracted DA
-/// certificate to the downstream provider.
-async fn handle_recover_payload(state: ServerState, body: Value) -> Result<Response, DaApiError> {
+/// Inner function for the daprovider_recover* RPC methods
+/// Strips the espresso wrapper from `sequencer_msg`, then forwards the request with the
+/// extracted DA certificate to the downstream provider.
+async fn handle_recover_inner(
+    state: ServerState,
+    body: Value,
+    downstream_method: &str,
+) -> Result<Response, DaApiError> {
     let params = body["params"]
         .as_array()
         .filter(|p| p.len() == 3)
@@ -247,8 +258,10 @@ async fn handle_recover_payload(state: ServerState, body: Value) -> Result<Respo
     info!(
         batch_num = %batch_num,
         sequencer_msg_len = sequencer_msg.len(),
-        "received recoverPayload request"
+        method = downstream_method,
+        "received DA certificate request"
     );
+
     let da_certificate = extract_da_sequencer_msg_from_espresso_da_certificate(&sequencer_msg)
         .map_err(|e| DaApiError::InvalidParams(format!("invalid sequencer_msg: {e}")))?;
 
@@ -258,7 +271,7 @@ async fn handle_recover_payload(state: ServerState, body: Value) -> Result<Respo
 
     let forwarded_body = serde_json::json!({
         "jsonrpc": "2.0",
-        "method": "daprovider_recoverPayload",
+        "method": downstream_method,
         "params": [batch_num, batch_block_hash, da_certificate],
         "id": body["id"],
     });
@@ -286,7 +299,7 @@ async fn handle_recover_payload(state: ServerState, body: Value) -> Result<Respo
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::{Bytes, b256};
+    use alloy::primitives::{Bytes, FixedBytes, b256};
     use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder, rpc_params};
     use serde_json::json;
     use std::{collections::HashMap, net::SocketAddr, str::FromStr};
@@ -303,7 +316,7 @@ mod tests {
             nitro::{
                 certificate::CasCertificate,
                 server::{ServerState, server_router},
-                types::{DAStoreResponse, RecoverPayloadResult},
+                types::{DAStoreResponse, PreImagesResult, RecoverPayloadResult},
             },
         },
     };
@@ -462,6 +475,8 @@ mod tests {
                 "jsonrpc": "2.0",
                 "id": id,
                 "result": {
+                    // The value is the raw batch data that the downstream DA provider
+                    // retrieved from storage for the given certificate.
                     "Payload": "0x3e5aa08200000000000000000000000000000000000000000000000000000000001249c4000000000000000000000000000000000000000000000000000000000024370b000000000000000000000000e64a54e2533fd126c2e452c5fab544d80e2e4eb50000000000000000000000000000000000000000000000000000000018eab6750000000000000000000000000000000000000000000000000000000018eab845"
                 }
             }))
@@ -478,7 +493,7 @@ mod tests {
                 rpc_params![
                     80,
                     b256!("0x3e5aa082000000000000000000000000000000000000000000000000001249c4"),
-                    sequencer_msg
+                    sequencer_msg.clone()
                 ],
             )
             .await;
@@ -489,8 +504,69 @@ mod tests {
             "0x3e5aa08200000000000000000000000000000000000000000000000000000000001249c4000000000000000000000000000000000000000000000000000000000024370b000000000000000000000000e64a54e2533fd126c2e452c5fab544d80e2e4eb50000000000000000000000000000000000000000000000000000000018eab6750000000000000000000000000000000000000000000000000000000018eab845"
         );
 
+        // 3. daprovider_collectPreimages
+
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                json!({"method":"daprovider_collectPreimages"}),
+            ))
+            .respond_with(|req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                let id = body.get("id").cloned().unwrap_or(json!(1));
+
+                ResponseTemplate::new(200).set_body_json(json!({
+                              "jsonrpc": "2.0",
+                              "id": id,
+                              "result": {
+                                  // The map is keyed by preimage type (outer) and cert hash (inner).
+                                  "Preimages": {
+                                    // Outer key: preimage type = 3, which is DACertificatePreimageType.
+                                    "3": {
+                                        // Inner key: keccak256(da_certificate), where da_certificate is
+                                        // the inner DA cert extracted from sequencer_msg by
+                                        // extract_da_sequencer_msg_from_espresso_da_certificate(). 
+                                        // Correctness of this falls under the responsibility of the downstream DA provider
+                                        //
+                                        // Value: the raw batch data retrieved from the DA layer — identical
+                                        // to the "Payload" bytes returned by daprovider_recoverPayload for
+                                        // the same certificate.
+                                        "0xa63ab36162a4f4ee6622ccd787b0a048c26b93acfc05c6b1843659b253c3c00b": "0x3e5aa08200000000000000000000000000000000000000000000000000000000001249c4000000000000000000000000000000000000000000000000000000000024370b000000000000000000000000e64a54e2533fd126c2e452c5fab544d80e2e4eb50000000000000000000000000000000000000000000000000000000018eab6750000000000000000000000000000000000000000000000000000000018eab845"
+                                    }
+                                    }
+                              }
+                          }))
+            })
+            .mount(&mock_da_provider)
+            .await;
+
+        let response3: Result<PreImagesResult, _> = client
+            .request(
+                "daprovider_collectPreimages",
+                rpc_params![
+                    80,
+                    // this can be any hash value for the purposes of this test...CAS is not responsible for verifying the correctness of the hash in collectPreimages, it just forwards it to the downstream provider. In reality, this would be the blockBatchHash.
+                    b256!("0x3e5aa082000000000000000000000000000000000000000000000000001249c4"),
+                    sequencer_msg
+                ],
+            )
+            .await;
+
+        assert!(response3.is_ok());
+        // seq msg+ downstream cert
+        let expected = hex::decode(
+            "3e5aa08200000000000000000000000000000000000000000000000000000000001249c4000000000000000000000000000000000000000000000000000000000024370b000000000000000000000000e64a54e2533fd126c2e452c5fab544d80e2e4eb50000000000000000000000000000000000000000000000000000000018eab6750000000000000000000000000000000000000000000000000000000018eab845"
+        ).unwrap();
+
+        assert_eq!(
+            *response3.as_ref().unwrap().preimages["3"][&FixedBytes::from_str(
+                "0xa63ab36162a4f4ee6622ccd787b0a048c26b93acfc05c6b1843659b253c3c00b"
+            )
+            .unwrap()],
+            expected
+        );
+
         let reqs = mock_da_provider.received_requests().await.unwrap();
-        assert_eq!(reqs.len(), 4);
+        assert_eq!(reqs.len(), 5);
         let body0: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
         assert_eq!(body0["method"], "daprovider_getMaxMessageSize");
         let body1: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
@@ -499,6 +575,8 @@ mod tests {
         assert_eq!(body2["method"], "daprovider_store");
         let body3: serde_json::Value = serde_json::from_slice(&reqs[3].body).unwrap();
         assert_eq!(body3["method"], "daprovider_recoverPayload");
+        let body3: serde_json::Value = serde_json::from_slice(&reqs[4].body).unwrap();
+        assert_eq!(body3["method"], "daprovider_collectPreimages");
     }
 
     #[tokio::test]
