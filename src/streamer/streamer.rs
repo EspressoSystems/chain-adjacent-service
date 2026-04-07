@@ -4,7 +4,7 @@ use espresso_types::NamespaceId;
 use tokio::sync::{mpsc, watch};
 
 use crate::VerificationReceiver;
-use crate::config::{RollupConfig, RuntimeConfig, StreamerConfig};
+use crate::config::{AdvancedConfig, RollupConfig, StreamerConfig};
 use crate::espresso_client::client::EspressoClient;
 use crate::espresso_client::types::NamespaceTransactionsInRange;
 use crate::rollups::rollup::{Rollup, RollupQueueEntry};
@@ -20,7 +20,7 @@ pub struct Streamer<R: Rollup> {
     queue: Vec<R::Entry>,
     config: StreamerConfig,
     rollup_config: RollupConfig<R::StackConfig>,
-    runtime_config: RuntimeConfig,
+    advanced_config: AdvancedConfig,
 
     latest_batch_info: Option<R::VerificationContext>,
     finalized_idx: u64,
@@ -36,14 +36,14 @@ impl<R: Rollup> Streamer<R> {
         client: EspressoClient,
         config: StreamerConfig,
         rollup_config: RollupConfig<R::StackConfig>,
-        runtime_config: RuntimeConfig,
+        advanced_config: AdvancedConfig,
     ) -> Self {
         Self {
             client,
             queue: Vec::new(),
             config,
             rollup_config,
-            runtime_config,
+            advanced_config,
             latest_batch_info: None,
             finalized_idx: 0,
             last_broadcast_position: 0,
@@ -68,7 +68,7 @@ impl<R: Rollup> Streamer<R> {
         self.broadcast_retry_tx = Some(broadcast_retry_tx);
 
         let (sender, mut receiver) = mpsc::channel::<(Vec<NamespaceTransactionsInRange>, u64)>(
-            self.runtime_config.hotshot_transaction_channel_capacity,
+            self.advanced_config.hotshot_transaction_channel_capacity,
         );
         let config = self.config.clone();
         let client = self.client.clone();
@@ -177,7 +177,10 @@ impl<R: Rollup> Streamer<R> {
             let feed_message = R::convert_entry_to_feed_message(entry);
             match sender.try_send(feed_message) {
                 Ok(()) => {}
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    tracing::warn!(
+                        "finalization channel is full; cannot broadcast feed message with sequence number {seq}"
+                    );
                     // Downstream channel is full. Schedule exactly one delayed retry.
                     if !self.broadcast_retry_scheduled {
                         self.broadcast_retry_scheduled = true;
@@ -188,14 +191,14 @@ impl<R: Rollup> Streamer<R> {
                                 let _ = tx.send(()).await;
                             });
                         } else {
-                            tracing::debug!(
+                            tracing::warn!(
                                 "finalization channel is full but retry channel is not configured"
                             );
                         }
                     }
                     return;
                 }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                Err(mpsc::error::TrySendError::Closed(_)) => {
                     tracing::error!("finalization channel was closed; cannot broadcast");
                     return;
                 }
@@ -324,7 +327,7 @@ pub mod testing {
     use tokio::sync::mpsc;
 
     use crate::{
-        config::{RollupConfig, RollupType::Nitro, RuntimeConfig, StreamerConfig},
+        config::{AdvancedConfig, RollupConfig, RollupType::Nitro, StreamerConfig},
         espresso_client::client::EspressoClient,
         espresso_e2e::{
             espresso_dev_node::EspressoDevNode,
@@ -352,7 +355,7 @@ pub mod testing {
                 rollup: (),
                 ty: Nitro,
             },
-            RuntimeConfig::default(),
+            AdvancedConfig::default(),
         )
     }
 
@@ -447,7 +450,7 @@ pub mod testing {
                 rollup: (),
                 ty: Nitro,
             },
-            RuntimeConfig::default(),
+            AdvancedConfig::default(),
         );
 
         // Submit at least 10 transactions to the Espresso sequencer

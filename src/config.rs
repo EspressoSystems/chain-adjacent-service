@@ -13,7 +13,7 @@ pub struct ServiceConfig<C> {
     pub da_server_config: DaApiConfig,
     pub submitter_config: SubmitterConfig,
     #[serde(default)]
-    pub runtime: RuntimeConfig,
+    pub advanced: AdvancedConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -47,13 +47,13 @@ pub struct RollupConfig<C> {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct RuntimeConfig {
+pub struct AdvancedConfig {
     pub espresso_finalized_message_channel_capacity: usize,
     pub verification_channel_capacity: usize,
     pub hotshot_transaction_channel_capacity: usize,
 }
 
-impl Default for RuntimeConfig {
+impl Default for AdvancedConfig {
     fn default() -> Self {
         Self {
             espresso_finalized_message_channel_capacity: 100,
