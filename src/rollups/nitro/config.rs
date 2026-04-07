@@ -9,4 +9,7 @@ pub struct NitroConfig {
     pub chain_id: u64,
 
     pub feed_config: FeedConfig,
+
+    pub l1_ws_url: String,
+    pub sequencer_inbox_address: Address,
 }

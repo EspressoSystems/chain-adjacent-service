@@ -22,7 +22,7 @@ pub struct Streamer<R: Rollup> {
     rollup_config: RollupConfig<R::StackConfig>,
     advanced_config: AdvancedConfig,
 
-    latest_batch_info: Option<R::VerificationContext>,
+    latest_batch_info: Option<R::LatestBatchInfo>,
     finalized_idx: u64,
     last_broadcast_position: u64,
 
@@ -57,7 +57,7 @@ impl<R: Rollup> Streamer<R> {
     pub async fn run(
         &mut self,
         mut l1_finalized_msg_idx: watch::Receiver<u64>,
-        mut latest_batch_receiver: watch::Receiver<R::VerificationContext>,
+        mut latest_batch_receiver: watch::Receiver<R::LatestBatchInfo>,
         mut verification_receiver: VerificationReceiver,
         espresso_finalization_sender: mpsc::Sender<R::FeedMessage>,
     ) {
@@ -74,7 +74,14 @@ impl<R: Rollup> Streamer<R> {
         let client = self.client.clone();
         let namespace_id = NamespaceId::from(self.rollup_config.namespace_id);
         tokio::spawn(async move {
-            poll_hotshot_blocks(&config, &client, config.starting_pos, namespace_id, sender).await
+            poll_hotshot_blocks(
+                &config,
+                &client,
+                config.starting_hotshot_height,
+                namespace_id,
+                sender,
+            )
+            .await
         });
         loop {
             tokio::select! {
@@ -162,7 +169,7 @@ impl<R: Rollup> Streamer<R> {
         sender: mpsc::Sender<R::FeedMessage>,
     ) {
         let parsed_rollup_entries =
-            R::parse_hotshot_transactions(&self.rollup_config.rollup, transactions, height);
+            R::parse_hotshot_transactions(&self.rollup_config.stack, transactions, height);
         self.filter_messages(parsed_rollup_entries);
 
         // Attempt an immediate broadcast; if the channel is full we'll retry via the ticker.
@@ -347,12 +354,13 @@ pub mod testing {
                 initial_backoff_ms: 1,
                 max_backoff_ms: 1,
                 starting_pos,
+                starting_hotshot_height: 1,
                 retry_broadcast_delay_ms: 1000,
             },
             RollupConfig {
                 namespace_id: 1918988905u64,
                 start_block: 0,
-                rollup: (),
+                stack: (),
                 ty: Nitro,
             },
             AdvancedConfig::default(),
@@ -441,13 +449,14 @@ pub mod testing {
                 max_sequencer_number_drift: 1000,
                 initial_backoff_ms: 100,
                 max_backoff_ms: 500,
+                starting_hotshot_height: 1,
                 starting_pos: 1,
                 retry_broadcast_delay_ms: 1000,
             },
             RollupConfig {
                 namespace_id: 1918988905u64,
                 start_block: 0,
-                rollup: (),
+                stack: (),
                 ty: Nitro,
             },
             AdvancedConfig::default(),

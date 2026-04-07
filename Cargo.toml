@@ -29,6 +29,10 @@ alloy = { version = "1.6.3", default-features = false, features = [
     "sol-types",
     "serde",
     "rlp",
+    "provider-http",
+    "provider-ws",
+    "pubsub",
+    "contract",
 ] }
 alloy-rlp = { version = "0.3.13", features = ["derive"] }
 anyhow = "1.0.101"

@@ -1,9 +1,10 @@
 use espresso_types::{NamespaceId, Transaction};
+use tokio::sync::watch;
 
 use crate::{
     VerificationResult,
     espresso_client::types::NamespaceTransactionsInRange,
-    rollups::rollup::{Rollup, RollupQueueEntry},
+    rollups::rollup::{L1Monitor, Rollup, RollupQueueEntry},
 };
 
 #[derive(Clone, Debug)]
@@ -24,7 +25,7 @@ impl RollupQueueEntry for MockEntry {
 
 pub struct MockRollup;
 #[derive(Default, Clone)]
-pub struct MockVerificationContext;
+pub struct MockLatestBatchInfo;
 pub struct MockBatchMessage;
 
 fn mock_parse_batch(_: alloy::primitives::Bytes) -> anyhow::Result<Vec<MockBatchMessage>> {
@@ -41,7 +42,8 @@ impl Rollup for MockRollup {
     type StackConfig = ();
     type BatchMessage = MockBatchMessage;
     type FeedMessage = MockEntry;
-    type VerificationContext = MockVerificationContext;
+    type LatestBatchInfo = MockLatestBatchInfo;
+    type L1Monitor = MockL1Monitor;
 
     fn parse_hotshot_transactions(
         _config: &Self::StackConfig,
@@ -73,7 +75,7 @@ impl Rollup for MockRollup {
     fn verify_batch_messages(
         _batch_messages: &[Self::BatchMessage],
         _streamer_queue: &[Self::Entry],
-        _context: &Self::VerificationContext,
+        _context: &Self::LatestBatchInfo,
     ) -> VerificationResult {
         todo!()
     }
@@ -88,7 +90,7 @@ impl Rollup for MockRollup {
         _espresso_finalization_receiver: tokio::sync::mpsc::Receiver<Self::FeedMessage>,
         // Receives the latest L1-finalized message.
         // Used to prune the backlog.
-        _l1_finalized_msg_idx_receiver: tokio::sync::watch::Receiver<u64>,
+        _l1_finalized_msg_idx_receiver: watch::Receiver<u64>,
     ) -> anyhow::Result<(), Self::Error> {
         todo!()
     }
@@ -106,6 +108,19 @@ impl Rollup for MockRollup {
     fn convert_entry_to_feed_message(entry: Self::Entry) -> Self::FeedMessage {
         entry
     }
+
+    async fn create_l1_monitor(
+        _config: &Self::StackConfig,
+    ) -> Result<Self::L1Monitor, Self::Error> {
+        Ok(MockL1Monitor)
+    }
+
+    fn resolve_config_with_latest_batch_info(
+        _config: crate::config::ServiceConfig<Self::StackConfig>,
+        _latest_batch_info: Option<Self::LatestBatchInfo>,
+    ) -> crate::config::ServiceConfig<Self::StackConfig> {
+        todo!()
+    }
 }
 
 pub fn make_entry(seq_num: u64, hotshot_height: u64) -> MockEntry {
@@ -118,4 +133,21 @@ pub fn make_entry(seq_num: u64, hotshot_height: u64) -> MockEntry {
 pub fn make_mock_espresso_transaction(seq: u64) -> Transaction {
     let namespace_id = NamespaceId::from(1918988905u64);
     Transaction::new(namespace_id, seq.to_be_bytes().to_vec())
+}
+
+pub struct MockL1Monitor;
+
+impl L1Monitor<MockLatestBatchInfo, std::convert::Infallible> for MockL1Monitor {
+    async fn fetch_latest_batch_info_on_startup(
+        &self,
+    ) -> anyhow::Result<Option<MockLatestBatchInfo>, std::convert::Infallible> {
+        Ok(Some(MockLatestBatchInfo))
+    }
+
+    async fn start(
+        &mut self,
+        _l1_finalized_msg_idx_sender: watch::Sender<u64>,
+        _latest_batch_info_sender: watch::Sender<MockLatestBatchInfo>,
+    ) {
+    }
 }

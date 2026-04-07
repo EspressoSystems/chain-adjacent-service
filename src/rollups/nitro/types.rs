@@ -4,7 +4,6 @@ use espresso_types::NamespaceId;
 use serde::{Deserialize, Serialize};
 use serde_with::{base64::Base64, serde_as};
 use std::collections::VecDeque;
-use tokio::sync::mpsc;
 
 use crate::rollups::nitro::feed::message::BroadcastFeedMessage;
 
@@ -23,11 +22,24 @@ pub enum BatchMessage {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct VerificationContext {
+pub struct LatestBatchInfo {
     // Should be read from L1 on startup and cached in memory,
     // updated when new batches are read from L1.
     pub last_batch_delayed_messages_read: u64,
     pub next_batch_start_pos: u64,
+    // pub hotshot_height: u64
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum L1MonitorError {
+    #[error("contract error: {0}")]
+    Contract(String),
+
+    #[error(transparent)]
+    Transport(#[from] alloy::providers::transport::TransportError),
+
+    #[error("block not found")]
+    BlockNotFound,
 }
 
 impl Decodable for MessageWithMetadata {
@@ -305,19 +317,11 @@ pub struct NitroRollupQueueEntry {
     pub hotshot_height: u64,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct LastBatchInfo {
-    pub delayed_messages_read: u64,
-    pub last_message_pos: u64,
-    pub hotshot_height: u64,
-}
-
 #[derive(Debug)]
 pub struct Nitro {
     pub legacy_signer_addresses: Vec<Address>,
     pub namespace_id: NamespaceId,
     pub chain_id: u64,
-    pub last_batch_info_receiver: mpsc::Receiver<LastBatchInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

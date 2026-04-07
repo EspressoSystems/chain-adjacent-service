@@ -1,19 +1,22 @@
 use crate::VerificationResult;
 use crate::config::RollupType;
+use crate::config::ServiceConfig;
 use crate::espresso_client::types::NamespaceTransactionsInRange;
 use crate::rollups::nitro::batch_parsing;
 use crate::rollups::nitro::config::NitroConfig;
 use crate::rollups::nitro::feed::message::BroadcastFeedMessage;
 use crate::rollups::nitro::feed::relay::FeedRelay;
 use crate::rollups::nitro::feed::relay::FeedRelayError;
+use crate::rollups::nitro::l1_monitor::L1MonitorConfig;
+use crate::rollups::nitro::l1_monitor::NitroL1Monitor;
 use crate::rollups::nitro::types::BatchMessage;
-use crate::rollups::nitro::types::LastBatchInfo;
+use crate::rollups::nitro::types::L1MonitorError;
+use crate::rollups::nitro::types::LatestBatchInfo;
 use crate::rollups::nitro::types::LegacyParsedNitroEspressoTransaction;
 use crate::rollups::nitro::types::MessageWithMetadata;
 use crate::rollups::nitro::types::Nitro;
 use crate::rollups::nitro::types::NitroHeader;
 use crate::rollups::nitro::types::NitroRollupQueueEntry;
-use crate::rollups::nitro::types::VerificationContext;
 use crate::rollups::nitro::utils::recover_signer_address;
 use crate::rollups::rollup::Rollup;
 use crate::rollups::rollup::RollupQueueEntry;
@@ -23,6 +26,7 @@ use alloy::primitives::{Address, Keccak256};
 use anyhow::Result;
 use espresso_types::NamespaceId;
 use std::collections::VecDeque;
+use thiserror::Error;
 use tokio::sync::mpsc;
 
 const LEN_SIZE: usize = 8;
@@ -37,13 +41,22 @@ impl RollupQueueEntry for NitroRollupQueueEntry {
     }
 }
 
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error(transparent)]
+    FeedRelayError(#[from] FeedRelayError),
+    #[error(transparent)]
+    L1MonitorError(#[from] L1MonitorError),
+}
+
 impl Rollup for Nitro {
-    type Error = FeedRelayError;
+    type Error = Error;
     type StackConfig = NitroConfig;
     type Entry = NitroRollupQueueEntry;
     type BatchMessage = BatchMessage;
-    type VerificationContext = VerificationContext;
+    type LatestBatchInfo = LatestBatchInfo;
     type FeedMessage = BroadcastFeedMessage;
+    type L1Monitor = NitroL1Monitor;
 
     fn parse_batch_data(bytes: Bytes) -> Result<Vec<Self::BatchMessage>> {
         batch_parsing::parse_batch(bytes)
@@ -90,7 +103,7 @@ impl Rollup for Nitro {
     fn verify_batch_messages(
         batch_messages: &[Self::BatchMessage],
         streamer_queue: &[Self::Entry],
-        context: &Self::VerificationContext,
+        context: &Self::LatestBatchInfo,
     ) -> VerificationResult {
         let pos = streamer_queue
             .binary_search_by_key(&context.next_batch_start_pos, |e| e.sequence_number());
@@ -188,7 +201,7 @@ impl Rollup for Nitro {
             espresso_finalization_receiver,
             l1_finalized_msg_idx_receiver,
         );
-        feed_relay.start().await
+        feed_relay.start().await.map_err(|e| e.into())
     }
 
     fn build_espresso_tx_payload(messages: &mut Vec<Self::FeedMessage>) -> Vec<u8> {
@@ -204,6 +217,31 @@ impl Rollup for Nitro {
     fn convert_entry_to_feed_message(entry: Self::Entry) -> Self::FeedMessage {
         entry.feed_message
     }
+
+    async fn create_l1_monitor(config: &Self::StackConfig) -> Result<Self::L1Monitor, Self::Error> {
+        let l1_config = L1MonitorConfig {
+            ws_url: config.l1_ws_url.clone(),
+            sequencer_inbox_address: config.sequencer_inbox_address,
+        };
+
+        NitroL1Monitor::new(&l1_config).await.map_err(Into::into)
+    }
+
+    fn resolve_config_with_latest_batch_info(
+        config: ServiceConfig<Self::StackConfig>,
+        latest_batch_info: Option<Self::LatestBatchInfo>,
+    ) -> ServiceConfig<Self::StackConfig> {
+        if let Some(info) = latest_batch_info {
+            let mut new_config = config;
+            new_config.rollup.stack.feed_config.current_message_count = info.next_batch_start_pos;
+            new_config.streamer.starting_pos = info.next_batch_start_pos;
+            // also update hotshot starting block height
+            // new_config.streamer.starting_hotshot_height = info.hotshot_height;
+            new_config
+        } else {
+            config
+        }
+    }
 }
 
 impl Nitro {
@@ -211,13 +249,11 @@ impl Nitro {
         legacy_signer_addresses: Vec<Address>,
         namespace_id: NamespaceId,
         chain_id: u64,
-        last_batch_info_receiver: mpsc::Receiver<LastBatchInfo>,
     ) -> Self {
         Self {
             legacy_signer_addresses,
             namespace_id,
             chain_id,
-            last_batch_info_receiver,
         }
     }
 
@@ -532,7 +568,7 @@ pub mod testing {
 
     #[test]
     fn test_verify_batch_more_batch_than_streamer() {
-        let ctx = VerificationContext {
+        let ctx = LatestBatchInfo {
             last_batch_delayed_messages_read: 0,
             next_batch_start_pos: 0,
         };
@@ -544,7 +580,7 @@ pub mod testing {
 
     #[test]
     fn test_verify_batch_l2msg_match() {
-        let ctx = VerificationContext {
+        let ctx = LatestBatchInfo {
             last_batch_delayed_messages_read: 0,
             next_batch_start_pos: 0,
         };
@@ -559,7 +595,7 @@ pub mod testing {
 
     #[test]
     fn test_verify_batch_l2msg_mismatch() {
-        let ctx = VerificationContext {
+        let ctx = LatestBatchInfo {
             last_batch_delayed_messages_read: 0,
             next_batch_start_pos: 0,
         };
@@ -571,7 +607,7 @@ pub mod testing {
 
     #[test]
     fn test_verify_batch_l2msg_none_message() {
-        let ctx = VerificationContext {
+        let ctx = LatestBatchInfo {
             last_batch_delayed_messages_read: 0,
             next_batch_start_pos: 0,
         };
@@ -583,7 +619,7 @@ pub mod testing {
 
     #[test]
     fn test_verify_batch_delayed_msg_first_entry_valid() {
-        let ctx = VerificationContext {
+        let ctx = LatestBatchInfo {
             last_batch_delayed_messages_read: 5,
             next_batch_start_pos: 0,
         };
@@ -597,7 +633,7 @@ pub mod testing {
 
     #[test]
     fn test_verify_batch_delayed_msg_first_entry_invalid() {
-        let ctx = VerificationContext {
+        let ctx = LatestBatchInfo {
             last_batch_delayed_messages_read: 5,
             next_batch_start_pos: 0,
         };
@@ -610,7 +646,7 @@ pub mod testing {
 
     #[test]
     fn test_verify_batch_delayed_msg_subsequent_entry_valid() {
-        let ctx = VerificationContext {
+        let ctx = LatestBatchInfo {
             last_batch_delayed_messages_read: 0,
             next_batch_start_pos: 0,
         };
@@ -630,7 +666,7 @@ pub mod testing {
 
     #[test]
     fn test_verify_batch_delayed_msg_subsequent_entry_invalid() {
-        let ctx = VerificationContext {
+        let ctx = LatestBatchInfo {
             last_batch_delayed_messages_read: 0,
             next_batch_start_pos: 0,
         };
@@ -649,7 +685,7 @@ pub mod testing {
 
     #[test]
     fn test_verify_batch_mixed_messages() {
-        let ctx = VerificationContext {
+        let ctx = LatestBatchInfo {
             last_batch_delayed_messages_read: 5,
             next_batch_start_pos: 0,
         };
@@ -671,7 +707,7 @@ pub mod testing {
 
     #[test]
     fn test_verify_batch_streamer_has_extra_entries() {
-        let ctx = VerificationContext {
+        let ctx = LatestBatchInfo {
             last_batch_delayed_messages_read: 0,
             next_batch_start_pos: 0,
         };
@@ -689,7 +725,7 @@ pub mod testing {
 
     #[test]
     fn test_verify_batch_nonzero_start_pos() {
-        let ctx = VerificationContext {
+        let ctx = LatestBatchInfo {
             last_batch_delayed_messages_read: 5,
             next_batch_start_pos: 10,
         };
@@ -712,7 +748,7 @@ pub mod testing {
 
     #[test]
     fn test_verify_batch_nonzero_start_pos_not_found() {
-        let ctx = VerificationContext {
+        let ctx = LatestBatchInfo {
             last_batch_delayed_messages_read: 0,
             next_batch_start_pos: 50,
         };

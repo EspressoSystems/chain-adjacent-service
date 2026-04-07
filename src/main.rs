@@ -3,6 +3,7 @@ use chain_agnostic_service::config::RollupType;
 use chain_agnostic_service::da_api;
 use chain_agnostic_service::espresso_client::client::EspressoClient;
 use chain_agnostic_service::rollups::nitro::types::Nitro;
+use chain_agnostic_service::rollups::rollup::L1Monitor;
 use chain_agnostic_service::streamer::streamer::Streamer;
 use chain_agnostic_service::{cas_init, config::ServiceConfig, rollups::rollup::Rollup};
 
@@ -36,6 +37,11 @@ async fn main() -> Result<()> {
 }
 
 async fn run<R: Rollup>(config: ServiceConfig<R::StackConfig>) -> Result<()> {
+    let l1_monitor = R::create_l1_monitor(&config.rollup.stack).await?;
+    let latest_batch_info = l1_monitor.fetch_latest_batch_info_on_startup().await?;
+
+    let config = R::resolve_config_with_latest_batch_info(config, latest_batch_info);
+
     let client = EspressoClient::from_config(config.espresso_client.clone());
     let (submitter_sender, submitter_receiver) = mpsc::channel::<R::FeedMessage>(100);
 
@@ -66,7 +72,7 @@ async fn run<R: Rollup>(config: ServiceConfig<R::StackConfig>) -> Result<()> {
         mpsc::channel(config.advanced.espresso_finalized_message_channel_capacity);
 
     let feed_task = R::start_feed_relay(
-        config.rollup.rollup.clone(),
+        config.rollup.stack.clone(),
         submitter_sender,
         espresso_finalization_receiver,
         l1_finalized_msg_idx_receiver.clone(),
@@ -76,7 +82,7 @@ async fn run<R: Rollup>(config: ServiceConfig<R::StackConfig>) -> Result<()> {
     let (verification_sender, verification_receiver) =
         mpsc::channel(config.advanced.verification_channel_capacity);
     let (latest_batch_sender, latest_batch_receiver) =
-        watch::channel(R::VerificationContext::default());
+        watch::channel(R::LatestBatchInfo::default());
     let mut streamer: Streamer<R> =
         Streamer::new(client, config.streamer, config.rollup, config.advanced);
 
