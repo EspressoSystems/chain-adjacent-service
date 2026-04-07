@@ -20,6 +20,33 @@ pub struct VerificationResult {
     pub min_espresso_block_still_in_queue: u32,
 }
 
+impl VerificationResult {
+    pub fn success(
+        start_message_position: u32,
+        end_message_position: u32,
+        start_espresso_block: u32,
+        min_espresso_block_still_in_queue: u32,
+    ) -> Self {
+        Self {
+            success: true,
+            start_message_position,
+            end_message_position,
+            start_espresso_block,
+            min_espresso_block_still_in_queue,
+        }
+    }
+
+    pub fn failure() -> Self {
+        Self {
+            success: false,
+            start_message_position: 0,
+            end_message_position: 0,
+            start_espresso_block: 0,
+            min_espresso_block_still_in_queue: 0,
+        }
+    }
+}
+
 pub type VerificationSender = mpsc::Sender<(Bytes, oneshot::Sender<VerificationResult>)>;
 pub type VerificationReceiver = mpsc::Receiver<(Bytes, oneshot::Sender<VerificationResult>)>;
 

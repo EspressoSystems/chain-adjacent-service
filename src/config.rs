@@ -13,7 +13,7 @@ pub struct ServiceConfig<C> {
     pub da_server_config: DaApiConfig,
     pub submitter_config: SubmitterConfig,
     #[serde(default)]
-    pub runtime: RuntimeConfig,
+    pub advanced: AdvancedConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -22,6 +22,7 @@ pub struct StreamerConfig {
     pub initial_backoff_ms: u64,
     pub max_backoff_ms: u64,
     pub starting_pos: u64,
+    pub retry_broadcast_delay_ms: u64,
 }
 
 impl Default for StreamerConfig {
@@ -31,6 +32,7 @@ impl Default for StreamerConfig {
             initial_backoff_ms: 1000,
             max_backoff_ms: 30000,
             starting_pos: 0,
+            retry_broadcast_delay_ms: 300,
         }
     }
 }
@@ -45,16 +47,18 @@ pub struct RollupConfig<C> {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct RuntimeConfig {
+pub struct AdvancedConfig {
     pub espresso_finalized_message_channel_capacity: usize,
     pub verification_channel_capacity: usize,
+    pub hotshot_transaction_channel_capacity: usize,
 }
 
-impl Default for RuntimeConfig {
+impl Default for AdvancedConfig {
     fn default() -> Self {
         Self {
             espresso_finalized_message_channel_capacity: 100,
             verification_channel_capacity: 100,
+            hotshot_transaction_channel_capacity: 300,
         }
     }
 }

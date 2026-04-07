@@ -1,5 +1,7 @@
+use crate::VerificationResult;
 use crate::config::RollupType;
 use crate::espresso_client::types::NamespaceTransactionsInRange;
+use crate::rollups::nitro::batch_parsing;
 use crate::rollups::nitro::config::NitroConfig;
 use crate::rollups::nitro::feed::message::BroadcastFeedMessage;
 use crate::rollups::nitro::feed::relay::FeedRelay;
@@ -16,6 +18,7 @@ use crate::rollups::nitro::utils::recover_signer_address;
 use crate::rollups::rollup::Rollup;
 use crate::rollups::rollup::RollupQueueEntry;
 use alloy::primitives::Bytes;
+use alloy::primitives::FixedBytes;
 use alloy::primitives::{Address, Keccak256};
 use anyhow::Result;
 use espresso_types::NamespaceId;
@@ -27,7 +30,7 @@ const INDEX_SIZE: usize = 8;
 
 impl RollupQueueEntry for NitroRollupQueueEntry {
     fn sequence_number(&self) -> u64 {
-        self.pos
+        self.feed_message.sequence_number
     }
     fn hotshot_height(&self) -> u64 {
         self.hotshot_height
@@ -41,8 +44,10 @@ impl Rollup for Nitro {
     type BatchMessage = BatchMessage;
     type VerificationContext = VerificationContext;
     type FeedMessage = BroadcastFeedMessage;
-    const PARSE_BATCH_FN: fn(Bytes) -> Result<Vec<BatchMessage>> =
-        super::batch_parsing::parse_batch;
+
+    fn parse_batch_data(bytes: Bytes) -> Result<Vec<Self::BatchMessage>> {
+        batch_parsing::parse_batch(bytes)
+    }
 
     fn parse_hotshot_transactions(
         config: &Self::StackConfig,
@@ -60,8 +65,7 @@ impl Rollup for Nitro {
                 {
                     for message in broadcast_messages {
                         entries.push(NitroRollupQueueEntry {
-                            message_with_meta: message.message,
-                            pos: message.sequence_number,
+                            feed_message: message,
                             hotshot_height,
                         });
                     }
@@ -83,37 +87,44 @@ impl Rollup for Nitro {
         entries
     }
 
-    fn remove_finalized_messages(&self) -> u64 {
-        todo!()
-    }
-
     fn verify_batch_messages(
         batch_messages: &[Self::BatchMessage],
         streamer_queue: &[Self::Entry],
         context: &Self::VerificationContext,
-    ) -> bool {
-        if batch_messages.len() > streamer_queue.len() {
+    ) -> VerificationResult {
+        let pos = streamer_queue
+            .binary_search_by_key(&context.next_batch_start_pos, |e| e.sequence_number());
+        let Ok(pos) = pos else {
+            tracing::warn!(
+                "streamer queue does not contain an entry with pos: {}",
+                context.next_batch_start_pos
+            );
+            return VerificationResult::failure();
+        };
+
+        let queue = &streamer_queue[pos..];
+        if batch_messages.len() > queue.len() {
             // the streamer has not enough messages to match the batch messages
             tracing::warn!(
                 "batch messages length: {} is greater than streamer queue length: {}",
                 batch_messages.len(),
-                streamer_queue.len()
+                queue.len()
             );
-            return false;
+            return VerificationResult::failure();
         }
         for (index, msg) in batch_messages.iter().enumerate() {
             match msg {
                 BatchMessage::L2Msg(content) => {
                     // Safe here because we have already checked that batch_messages
-                    // length is not greater than streamer_queue length
-                    let entry = &streamer_queue[index];
-                    let Some(msg_bytes) = entry.message_with_meta.message.as_ref() else {
+                    // length is not greater than queuelength
+                    let entry = &queue[index];
+                    let Some(msg_bytes) = entry.feed_message.message.message.as_ref() else {
                         tracing::warn!("message with metadata does not contain a message");
-                        return false;
+                        return VerificationResult::failure();
                     };
                     if *content != *msg_bytes.l2msg {
                         tracing::warn!("message content does not match streamer queue entry");
-                        return false;
+                        return VerificationResult::failure();
                     }
                 }
                 BatchMessage::DelayedMsg => {
@@ -121,24 +132,42 @@ impl Rollup for Nitro {
                         context.last_batch_delayed_messages_read
                     } else {
                         // Safe here because delayed messages should always be less than batch messages
-                        let prev_entry = &streamer_queue[index - 1];
-                        prev_entry.message_with_meta.delayed_messages_read
+                        let prev_entry = &queue[index - 1];
+                        prev_entry.feed_message.message.delayed_messages_read
                     };
 
                     if prev_delayed_message_read + 1
-                        != streamer_queue[index]
-                            .message_with_meta
-                            .delayed_messages_read
+                        != queue[index].feed_message.message.delayed_messages_read
                     {
                         tracing::warn!(
                             "delayed messages read count does not match streamer queue entry"
                         );
-                        return false;
+                        return VerificationResult::failure();
                     }
                 }
             }
         }
-        true
+
+        let start_message_position = context.next_batch_start_pos as u32;
+        // end index
+        let end_message_position = start_message_position + batch_messages.len() as u32 - 1;
+        let start_espresso_block = queue[0..batch_messages.len()]
+            .iter()
+            .map(|e| e.hotshot_height())
+            .min()
+            .unwrap_or(0) as u32;
+        let min_espresso_block_still_in_queue = queue[batch_messages.len()..]
+            .iter()
+            .map(|e| e.hotshot_height())
+            .min()
+            .unwrap_or(0) as u32;
+        VerificationResult {
+            success: true,
+            start_message_position,
+            end_message_position,
+            start_espresso_block,
+            min_espresso_block_still_in_queue,
+        }
     }
 
     async fn start_feed_relay(
@@ -170,6 +199,10 @@ impl Rollup for Nitro {
 
     fn rollup_type() -> RollupType {
         RollupType::Nitro
+    }
+
+    fn convert_entry_to_feed_message(entry: Self::Entry) -> Self::FeedMessage {
+        entry.feed_message
     }
 }
 
@@ -246,8 +279,14 @@ impl Nitro {
             match data {
                 Ok(message_with_meta) => {
                     entries.push(NitroRollupQueueEntry {
-                        message_with_meta,
-                        pos: parsed.indices[index],
+                        feed_message: BroadcastFeedMessage {
+                            sequence_number: parsed.indices[index],
+                            message: message_with_meta,
+                            block_hash: None,
+                            signature: vec![],
+                            block_metadata: Vec::new(),
+                            cumulative_sum_msg_size: 0,
+                        },
                         hotshot_height,
                     });
                 }
@@ -322,7 +361,7 @@ pub fn compute_message_hash(
     message: &MessageWithMetadata,
     sequence_number: u64,
     chain_id: u64,
-) -> Vec<u8> {
+) -> FixedBytes<32> {
     use alloy::primitives::Keccak256;
 
     // Match Go: 24 bytes of big-endian extra data
@@ -341,7 +380,7 @@ pub fn compute_message_hash(
     hasher.update(b"Arbitrum Nitro Feed:");
     hasher.update(extra_data);
     hasher.update(&serialized_message);
-    hasher.finalize().to_vec()
+    hasher.finalize()
 }
 
 // TODO: consider the Espresso transaction size limit
@@ -448,8 +487,8 @@ pub mod testing {
         pos: u64,
     ) -> NitroRollupQueueEntry {
         use crate::rollups::nitro::types::L1IncomingMessage;
-        NitroRollupQueueEntry {
-            message_with_meta: MessageWithMetadata {
+        let feed_msg = make_feed_message(
+            MessageWithMetadata {
                 message: Some(L1IncomingMessage {
                     header: None,
                     l2msg: l2msg.to_vec(),
@@ -459,17 +498,34 @@ pub mod testing {
                 delayed_messages_read,
             },
             pos,
+        );
+        NitroRollupQueueEntry {
+            feed_message: feed_msg,
             hotshot_height: 1,
         }
     }
 
+    fn make_feed_message(msg: MessageWithMetadata, pos: u64) -> BroadcastFeedMessage {
+        BroadcastFeedMessage {
+            sequence_number: pos,
+            message: msg,
+            block_hash: None,
+            signature: Vec::new(),
+            block_metadata: Vec::new(),
+            cumulative_sum_msg_size: 0,
+        }
+    }
+
     fn make_entry_no_message(delayed_messages_read: u64, pos: u64) -> NitroRollupQueueEntry {
-        NitroRollupQueueEntry {
-            message_with_meta: MessageWithMetadata {
+        let feed_msg = make_feed_message(
+            MessageWithMetadata {
                 message: None,
                 delayed_messages_read,
             },
             pos,
+        );
+        NitroRollupQueueEntry {
+            feed_message: feed_msg,
             hotshot_height: 1,
         }
     }
@@ -478,80 +534,85 @@ pub mod testing {
     fn test_verify_batch_more_batch_than_streamer() {
         let ctx = VerificationContext {
             last_batch_delayed_messages_read: 0,
+            next_batch_start_pos: 0,
         };
         let batch = vec![BatchMessage::DelayedMsg, BatchMessage::DelayedMsg];
         let queue = vec![make_entry_no_message(1, 0)];
-        assert!(!<Nitro as Rollup>::verify_batch_messages(
-            &batch, &queue, &ctx
-        ));
+        let result = <Nitro as Rollup>::verify_batch_messages(&batch, &queue, &ctx);
+        assert!(!result.success);
     }
 
     #[test]
     fn test_verify_batch_l2msg_match() {
         let ctx = VerificationContext {
             last_batch_delayed_messages_read: 0,
+            next_batch_start_pos: 0,
         };
         let content = b"hello world";
         let batch = vec![BatchMessage::L2Msg(AlloyBytes::copy_from_slice(content))];
         let queue = vec![make_entry_with_l2msg(content, 0, 0)];
-        assert!(<Nitro as Rollup>::verify_batch_messages(
-            &batch, &queue, &ctx
-        ));
+        let result = <Nitro as Rollup>::verify_batch_messages(&batch, &queue, &ctx);
+        assert!(result.success);
+        assert_eq!(result.start_message_position, 0);
+        assert_eq!(result.end_message_position, 0);
     }
 
     #[test]
     fn test_verify_batch_l2msg_mismatch() {
         let ctx = VerificationContext {
             last_batch_delayed_messages_read: 0,
+            next_batch_start_pos: 0,
         };
         let batch = vec![BatchMessage::L2Msg(AlloyBytes::copy_from_slice(b"hello"))];
         let queue = vec![make_entry_with_l2msg(b"world", 0, 0)];
-        assert!(!<Nitro as Rollup>::verify_batch_messages(
-            &batch, &queue, &ctx
-        ));
+        let result = <Nitro as Rollup>::verify_batch_messages(&batch, &queue, &ctx);
+        assert!(!result.success);
     }
 
     #[test]
     fn test_verify_batch_l2msg_none_message() {
         let ctx = VerificationContext {
             last_batch_delayed_messages_read: 0,
+            next_batch_start_pos: 0,
         };
         let batch = vec![BatchMessage::L2Msg(AlloyBytes::copy_from_slice(b"hello"))];
         let queue = vec![make_entry_no_message(0, 0)];
-        assert!(!<Nitro as Rollup>::verify_batch_messages(
-            &batch, &queue, &ctx
-        ));
+        let result = <Nitro as Rollup>::verify_batch_messages(&batch, &queue, &ctx);
+        assert!(!result.success);
     }
 
     #[test]
     fn test_verify_batch_delayed_msg_first_entry_valid() {
         let ctx = VerificationContext {
             last_batch_delayed_messages_read: 5,
+            next_batch_start_pos: 0,
         };
         let batch = vec![BatchMessage::DelayedMsg];
         let queue = vec![make_entry_no_message(6, 0)];
-        assert!(<Nitro as Rollup>::verify_batch_messages(
-            &batch, &queue, &ctx
-        ));
+        let result = <Nitro as Rollup>::verify_batch_messages(&batch, &queue, &ctx);
+        assert!(result.success);
+        assert_eq!(result.start_message_position, 0);
+        assert_eq!(result.end_message_position, 0);
     }
 
     #[test]
     fn test_verify_batch_delayed_msg_first_entry_invalid() {
         let ctx = VerificationContext {
             last_batch_delayed_messages_read: 5,
+            next_batch_start_pos: 0,
         };
         let batch = vec![BatchMessage::DelayedMsg];
         // delayed_messages_read should be 6 (5+1), but it's 7
         let queue = vec![make_entry_no_message(7, 0)];
-        assert!(!<Nitro as Rollup>::verify_batch_messages(
-            &batch, &queue, &ctx
-        ));
+        let result = <Nitro as Rollup>::verify_batch_messages(&batch, &queue, &ctx);
+        assert!(!result.success);
     }
 
     #[test]
     fn test_verify_batch_delayed_msg_subsequent_entry_valid() {
         let ctx = VerificationContext {
             last_batch_delayed_messages_read: 0,
+            next_batch_start_pos: 0,
         };
         let batch = vec![
             BatchMessage::L2Msg(AlloyBytes::copy_from_slice(b"tx1")),
@@ -561,15 +622,17 @@ pub mod testing {
             make_entry_with_l2msg(b"tx1", 10, 0),
             make_entry_no_message(11, 1),
         ];
-        assert!(<Nitro as Rollup>::verify_batch_messages(
-            &batch, &queue, &ctx
-        ));
+        let result = <Nitro as Rollup>::verify_batch_messages(&batch, &queue, &ctx);
+        assert!(result.success);
+        assert_eq!(result.start_message_position, 0);
+        assert_eq!(result.end_message_position, 1);
     }
 
     #[test]
     fn test_verify_batch_delayed_msg_subsequent_entry_invalid() {
         let ctx = VerificationContext {
             last_batch_delayed_messages_read: 0,
+            next_batch_start_pos: 0,
         };
         let batch = vec![
             BatchMessage::L2Msg(AlloyBytes::copy_from_slice(b"tx1")),
@@ -580,15 +643,15 @@ pub mod testing {
             // Should be 11 (10+1), but it's 13
             make_entry_no_message(13, 1),
         ];
-        assert!(!<Nitro as Rollup>::verify_batch_messages(
-            &batch, &queue, &ctx
-        ));
+        let result = <Nitro as Rollup>::verify_batch_messages(&batch, &queue, &ctx);
+        assert!(!result.success);
     }
 
     #[test]
     fn test_verify_batch_mixed_messages() {
         let ctx = VerificationContext {
             last_batch_delayed_messages_read: 5,
+            next_batch_start_pos: 0,
         };
         let batch = vec![
             BatchMessage::DelayedMsg,
@@ -600,15 +663,17 @@ pub mod testing {
             make_entry_with_l2msg(b"data", 6, 1),
             make_entry_no_message(7, 2),
         ];
-        assert!(<Nitro as Rollup>::verify_batch_messages(
-            &batch, &queue, &ctx
-        ));
+        let result = <Nitro as Rollup>::verify_batch_messages(&batch, &queue, &ctx);
+        assert!(result.success);
+        assert_eq!(result.start_message_position, 0);
+        assert_eq!(result.end_message_position, 2);
     }
 
     #[test]
     fn test_verify_batch_streamer_has_extra_entries() {
         let ctx = VerificationContext {
             last_batch_delayed_messages_read: 0,
+            next_batch_start_pos: 0,
         };
         let batch = vec![BatchMessage::L2Msg(AlloyBytes::copy_from_slice(b"tx"))];
         let queue = vec![
@@ -616,9 +681,49 @@ pub mod testing {
             make_entry_with_l2msg(b"extra", 0, 1),
         ];
         // batch has fewer entries than queue - should still pass
-        assert!(<Nitro as Rollup>::verify_batch_messages(
-            &batch, &queue, &ctx
-        ));
+        let result = <Nitro as Rollup>::verify_batch_messages(&batch, &queue, &ctx);
+        assert!(result.success);
+        assert_eq!(result.start_message_position, 0);
+        assert_eq!(result.end_message_position, 0);
+    }
+
+    #[test]
+    fn test_verify_batch_nonzero_start_pos() {
+        let ctx = VerificationContext {
+            last_batch_delayed_messages_read: 5,
+            next_batch_start_pos: 10,
+        };
+        let batch = vec![
+            BatchMessage::DelayedMsg,
+            BatchMessage::L2Msg(AlloyBytes::copy_from_slice(b"data")),
+        ];
+        // Queue has earlier entries that should be skipped, plus the batch-relevant ones
+        let queue = vec![
+            make_entry_with_l2msg(b"old1", 3, 8),
+            make_entry_with_l2msg(b"old2", 4, 9),
+            make_entry_no_message(6, 10),
+            make_entry_with_l2msg(b"data", 6, 11),
+        ];
+        let result = <Nitro as Rollup>::verify_batch_messages(&batch, &queue, &ctx);
+        assert!(result.success);
+        assert_eq!(result.start_message_position, 10);
+        assert_eq!(result.end_message_position, 11);
+    }
+
+    #[test]
+    fn test_verify_batch_nonzero_start_pos_not_found() {
+        let ctx = VerificationContext {
+            last_batch_delayed_messages_read: 0,
+            next_batch_start_pos: 50,
+        };
+        let batch = vec![BatchMessage::L2Msg(AlloyBytes::copy_from_slice(b"tx"))];
+        // Queue doesn't contain an entry with pos 50
+        let queue = vec![
+            make_entry_with_l2msg(b"tx", 0, 0),
+            make_entry_with_l2msg(b"tx", 0, 1),
+        ];
+        let result = <Nitro as Rollup>::verify_batch_messages(&batch, &queue, &ctx);
+        assert!(!result.success);
     }
 
     #[test]
@@ -658,12 +763,17 @@ pub mod testing {
         );
 
         assert!(
-            parsed_messages[0].message_with_meta.delayed_messages_read == 13004,
+            parsed_messages[0]
+                .feed_message
+                .message
+                .delayed_messages_read
+                == 13004,
             "Incorrect delayed messages read"
         );
 
         let l1_incoming_message = parsed_messages[0]
-            .message_with_meta
+            .feed_message
+            .message
             .message
             .as_ref()
             .unwrap();

@@ -1,6 +1,7 @@
 use espresso_types::{NamespaceId, Transaction};
 
 use crate::{
+    VerificationResult,
     espresso_client::types::NamespaceTransactionsInRange,
     rollups::rollup::{Rollup, RollupQueueEntry},
 };
@@ -22,7 +23,7 @@ impl RollupQueueEntry for MockEntry {
 }
 
 pub struct MockRollup;
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct MockVerificationContext;
 pub struct MockBatchMessage;
 
@@ -41,8 +42,6 @@ impl Rollup for MockRollup {
     type BatchMessage = MockBatchMessage;
     type FeedMessage = MockEntry;
     type VerificationContext = MockVerificationContext;
-    const PARSE_BATCH_FN: fn(alloy::primitives::Bytes) -> anyhow::Result<Vec<MockBatchMessage>> =
-        mock_parse_batch;
 
     fn parse_hotshot_transactions(
         _config: &Self::StackConfig,
@@ -71,15 +70,11 @@ impl Rollup for MockRollup {
         parsed_entries
     }
 
-    fn remove_finalized_messages(&self) -> u64 {
-        todo!()
-    }
-
     fn verify_batch_messages(
         _batch_messages: &[Self::BatchMessage],
         _streamer_queue: &[Self::Entry],
         _context: &Self::VerificationContext,
-    ) -> bool {
+    ) -> VerificationResult {
         todo!()
     }
 
@@ -100,6 +95,16 @@ impl Rollup for MockRollup {
 
     fn rollup_type() -> crate::config::RollupType {
         todo!()
+    }
+
+    fn parse_batch_data(
+        bytes: alloy::primitives::Bytes,
+    ) -> anyhow::Result<Vec<Self::BatchMessage>> {
+        mock_parse_batch(bytes)
+    }
+
+    fn convert_entry_to_feed_message(entry: Self::Entry) -> Self::FeedMessage {
+        entry
     }
 }
 
