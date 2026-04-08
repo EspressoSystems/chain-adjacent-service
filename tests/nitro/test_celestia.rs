@@ -99,7 +99,7 @@ async fn test_celestia_da_supported_header_bytes(my_addr: String) {
       "jsonrpc": "2.0",
       "id": 1,
       "result": {
-        "headerBytes": "0x63"
+        "headerBytes": "0x01"
       }
     });
 

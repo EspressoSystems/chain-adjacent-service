@@ -106,6 +106,7 @@ startCelestiaApp() {
     --api.enable \
     --grpc.enable \
     --grpc-web.enable \
+    --force-no-bbr \
     --delayed-precommit-timeout 1s
 }
 

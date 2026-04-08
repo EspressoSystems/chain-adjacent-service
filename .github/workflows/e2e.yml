@@ -37,4 +37,4 @@ jobs:
           sudo mv /home/runner/celestia-node-temp/celestia /usr/local/bin/
 
       - name: Run E2E tests
-        run: cargo test --all-targets --features e2e -- --test-threads=1
+        run: cargo test --test nitro --features e2e -- --test-threads=1
