@@ -27,10 +27,14 @@ jobs:
           go-version: "stable"
 
       - name: Install celestia-appd
-        run: curl -L https://raw.githubusercontent.com/celestiaorg/docs/main/public/celestia-app.sh | bash
+        run: |
+          curl -L https://raw.githubusercontent.com/celestiaorg/docs/main/public/celestia-app.sh | bash
+          sudo mv /home/runner/celestia-app-temp/celestia-appd /usr/local/bin/
 
       - name: Install celestia node
-        run: curl -L https://raw.githubusercontent.com/celestiaorg/docs/main/public/celestia-node.sh | bash
+        run: |
+          curl -L https://raw.githubusercontent.com/celestiaorg/docs/main/public/celestia-node.sh | bash
+          sudo mv /home/runner/celestia-node-temp/celestia-node /usr/local/bin/
 
       - name: Run E2E tests
         run: cargo test --all-targets --features e2e -- --test-threads=1
