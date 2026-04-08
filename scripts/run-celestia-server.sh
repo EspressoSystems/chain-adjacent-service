@@ -24,10 +24,19 @@ mkdir -p "$LOG_DIR"
 # -------------------------------
 cleanup() {
   echo "🧹 Cleaning up..."
-  pkill -f celestia-appd || true
-  pkill -f "celestia bridge" || true
-  pkill -f celestia-server || true
-  docker rm -f celestia-das 2>/dev/null || true
+
+  if [[ -n "${SERVER_PID:-}" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
+    kill -9 "$SERVER_PID" 2>/dev/null || true
+  fi
+  pkill -9 -f "celestia-server" 2>/dev/null || true
+
+  kill "${NODE_PID:-}" "${BRIDGE_PID:-}" 2>/dev/null || true
+  sleep 1
+  pkill -9 -f celestia-appd     2>/dev/null || true
+  pkill -9 -f "celestia bridge" 2>/dev/null || true
+
+  wait "${SERVER_PID:-}" "${NODE_PID:-}" "${BRIDGE_PID:-}" 2>/dev/null || true
+  # docker rm -f celestia-das 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -124,27 +133,31 @@ echo $AUTH_TOKEN
 # -------------------------------
 # 6. Start DAS Server
 # -------------------------------
-echo "🖥️ Starting DAS server..."
-echo "🖥️ Starting DAS server (Docker)..."
+echo "🖥️ Starting DAS server(Submodule)..."
 
-docker rm -f celestia-das 2>/dev/null || true
+DAS_DIR="${DAS_DIR:-./nitro-das-celestia}"
 
-docker run -d \
-  --name celestia-das \
-  --platform linux/amd64 \
-  --add-host=host.docker.internal:host-gateway \
-  -p "$SERVER_PORT:$SERVER_PORT" \
-  --entrypoint /bin/celestia-server \
-  ghcr.io/celestiaorg/nitro-das-celestia:v0.7.0-mocha \
+
+if [ ! -f "$DAS_DIR/cmd/celestia-server" ]; then
+  echo "🔨 Building DAS server..."
+  pushd "$DAS_DIR/cmd" > /dev/null
+  go build -o celestia-server
+  popd > /dev/null
+fi
+
+echo "🚀 Starting DAS server..."
+
+"$DAS_DIR/cmd/celestia-server" \
   --enable-rpc \
   --rpc-addr 0.0.0.0 \
   --rpc-port "$SERVER_PORT" \
   --celestia.with-writer \
-  --celestia.rpc "$DOCKER_BRIDGE_RPC_ENDPOINT" \
+  --celestia.rpc "$BRIDGE_RPC_ENDPOINT/" \
   --celestia.auth-token "$AUTH_TOKEN" \
-  --celestia.namespace-id "$NAMESPACE_ID"
+  --celestia.namespace-id "$NAMESPACE_ID" \
+  > "$LOG_DIR/server.log" 2>&1 &
 
-SERVER_CONTAINER="celestia-das"
+SERVER_PID=$!
 
 echo "⏳ Waiting for DAS server..."
 
@@ -154,14 +167,56 @@ for i in {1..30}; do
     break
   fi
 
-  if ! docker ps | grep -q "$SERVER_CONTAINER"; then
-    echo "❌ DAS container crashed"
-    docker logs "$SERVER_CONTAINER"
+  # detect crash early
+  if ! kill -0 $SERVER_PID 2>/dev/null; then
+    echo "❌ DAS server crashed"
+    tail -n 50 "$LOG_DIR/server.log"
     exit 1
   fi
 
   sleep 2
 done
+
+# tail -f "$LOG_DIR/server.log"
+
+
+# echo "🖥️ Starting DAS server (Docker)..."
+
+# docker rm -f celestia-das 2>/dev/null || true
+
+# docker run -d \
+#   --name celestia-das \
+#   --platform linux/amd64 \
+#   --add-host=host.docker.internal:host-gateway \
+#   -p "$SERVER_PORT:$SERVER_PORT" \
+#   --entrypoint /bin/celestia-server \
+#   ghcr.io/celestiaorg/nitro-das-celestia:v0.7.0-mocha \
+#   --enable-rpc \
+#   --rpc-addr 0.0.0.0 \
+#   --rpc-port "$SERVER_PORT" \
+#   --celestia.with-writer \
+#   --celestia.rpc "$DOCKER_BRIDGE_RPC_ENDPOINT" \
+#   --celestia.auth-token "$AUTH_TOKEN" \
+#   --celestia.namespace-id "$NAMESPACE_ID"
+
+# SERVER_CONTAINER="celestia-das"
+
+# echo "⏳ Waiting for DAS server..."
+
+# for i in {1..30}; do
+#   if curl -s "http://localhost:$SERVER_PORT" >/dev/null 2>&1; then
+#     echo "✅ DAS server ready"
+#     break
+#   fi
+
+#   if ! docker ps | grep -q "$SERVER_CONTAINER"; then
+#     echo "❌ DAS container crashed"
+#     docker logs "$SERVER_CONTAINER"
+#     exit 1
+#   fi
+
+#   sleep 2
+# done
 
 echo "🎉 FULL FLOW COMPLETE"
 

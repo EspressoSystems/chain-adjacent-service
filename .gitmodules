@@ -1,3 +1,7 @@
 [submodule "nitro-testnode"]
 	path = nitro-testnode
 	url = https://github.com/OffchainLabs/nitro-testnode.git
+[submodule "nitro-das-celestia"]
+	path = nitro-das-celestia
+	url = https://github.com/celestiaorg/nitro-das-celestia.git
+	branch = tux/upgrade-da-api
