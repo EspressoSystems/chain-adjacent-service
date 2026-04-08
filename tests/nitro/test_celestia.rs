@@ -108,7 +108,6 @@ async fn test_celestia_da_supported_header_bytes(my_addr: String) {
 
 #[allow(clippy::unwrap_used)]
 async fn test_celestia_da_store_and_recover(my_addr: String) {
-
     let expected_recover_payload_response = String::from(
         "iOBaxMa5Cwkk1VN76lois9CM1aJ8jFbK9XWTYNp6z9okponMpBu8omzLHYeXBMUPd3fyXq972op6UxHJ96FZwPsAAAAAacZHWwEAAAAAAAAAAQjzxzlAMrW6s3wSA6OILAQ9danW7ROBrpW8NFyybsyGar1u/AGllnCo/Pu2Oe3wHwwwY8NZoNdHnNwrkLUoDI/rFCVJJ1vv6vw+KsKzfH0k4Vx0Ga56LVklTFN4aJDD2g==",
     );
