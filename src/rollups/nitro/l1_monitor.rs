@@ -247,3 +247,98 @@ impl L1Monitor<LatestBatchInfo, nitro::Error> for NitroL1Monitor {
         tracing::warn!("SequencerBatchDelivered subscription stream ended");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::address;
+
+    const SEQUENCER_INBOX: Address = address!("7D38b171aCC8a61f4092817a08a51D99cC85Ef74");
+
+    async fn setup_monitor() -> NitroL1Monitor {
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .ok();
+        let ws_url = std::env::var("L1_WS_URL")
+            .unwrap_or_else(|_| "wss://arbitrum-sepolia.drpc.org".to_string());
+        let config = L1MonitorConfig {
+            ws_url,
+            sequencer_inbox_address: SEQUENCER_INBOX,
+        };
+        NitroL1Monitor::new(&config)
+            .await
+            .expect("failed to create monitor")
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn new_resolves_bridge_address() {
+        let monitor = setup_monitor().await;
+        assert_ne!(monitor.bridge_address, Address::ZERO);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn fetch_message_count_returns_nonzero() {
+        let monitor = setup_monitor().await;
+        let count = monitor
+            .fetch_message_count(BlockNumberOrTag::Latest)
+            .await
+            .unwrap();
+        assert!(count > 0, "expected nonzero message count, got {count}");
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn fetch_message_count_finalized() {
+        let monitor = setup_monitor().await;
+        let finalized = monitor
+            .fetch_message_count(BlockNumberOrTag::Finalized)
+            .await
+            .unwrap();
+        let latest = monitor
+            .fetch_message_count(BlockNumberOrTag::Latest)
+            .await
+            .unwrap();
+        assert!(finalized > 0);
+        assert!(
+            latest >= finalized,
+            "latest ({latest}) < finalized ({finalized})"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn fetch_delayed_messages_read_returns_nonzero() {
+        let monitor = setup_monitor().await;
+        let count = monitor
+            .fetch_delayed_messages_read(BlockNumberOrTag::Latest)
+            .await
+            .unwrap();
+        assert!(
+            count > 0,
+            "expected nonzero delayed messages read, got {count}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn fetch_latest_batch_info_on_startup_returns_valid_info() {
+        let monitor = setup_monitor().await;
+        let info = monitor
+            .fetch_latest_batch_info_on_startup()
+            .await
+            .expect("fetch failed")
+            .expect("expected Some");
+        assert!(
+            info.next_batch_start_pos > 0,
+            "expected nonzero next_batch_start_pos, got {}",
+            info.next_batch_start_pos
+        );
+        assert!(
+            info.last_batch_delayed_messages_read > 0,
+            "expected nonzero last_batch_delayed_messages_read, got {}",
+            info.last_batch_delayed_messages_read
+        );
+    }
+}
