@@ -19,7 +19,9 @@ use chain_agnostic_service::{
     },
 };
 
-use crate::nitro_node::nitro_node::NitroNode;
+use crate::{
+    EXPECTED_RECOVER_PAYLOAD_RESPONSE, STORE_REQUEST_DATA, nitro_node::nitro_node::NitroNode,
+};
 
 #[allow(clippy::unwrap_used)]
 fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
@@ -112,27 +114,24 @@ async fn test_nitro_reference_da_supported_header_bytes(my_addr: String) {
 async fn test_nitro_reference_da_store_and_recover(my_addr: String) {
     let _expected_store_response=Bytes::from_str("0x010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1bc93d7c92fd65dbd4809a2dcfd0f31c201f52aedbb700e3462d6cc1058ec2ac194723c2f1d41d7a65c1d2cf9a0683fe6a458ac269aaeb00c1b0cf8854afc05166").unwrap();
 
-    let expected_recover_payload_response = String::from(
-        "iOBaxMa5Cwkk1VN76lois9CM1aJ8jFbK9XWTYNp6z9okponMpBu8omzLHYeXBMUPd3fyXq972op6UxHJ96FZwPsAAAAAacZHWwEAAAAAAAAAAQjzxzlAMrW6s3wSA6OILAQ9danW7ROBrpW8NFyybsyGar1u/AGllnCo/Pu2Oe3wHwwwY8NZoNdHnNwrkLUoDI/rFCVJJ1vv6vw+KsKzfH0k4Vx0Ga56LVklTFN4aJDD2g==",
-    );
-
     let client = reqwest::Client::new();
 
-    let response :Result<Value, _>= client
-            .post(format!("http://{my_addr}"))
-            .json(&json!({
-                "jsonrpc": "2.0",
-                "method": "daprovider_store",
-                "params": [
-                    "0x88e05ac4c6b90b0924d5537bea5a22b3d08cd5a27c8c56caf5759360da7acfda24a689cca41bbca26ccb1d879704c50f7777f25eaf7bda8a7a5311c9f7a159c0fb0000000069c6475b01000000000000000108f3c7394032b5bab37c1203a3882c043d75a9d6ed1381ae95bc345cb26ecc866abd6efc01a59670a8fcfbb639edf01f0c3063c359a0d7479cdc2b90b5280c8feb142549275befeafc3e2ac2b37c7d24e15c7419ae7a2d59254c53786890c3da",
-                "0x67a305801"
-                ],
-                "id": 1
-            }))
-            .send()
-            .await
-            .unwrap().json()
-            .await;
+    let response: Result<Value, _> = client
+        .post(format!("http://{my_addr}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "method": "daprovider_store",
+            "params": [
+                STORE_REQUEST_DATA,
+                "0x67a305801"   // random timestamp
+            ],
+            "id": 1
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await;
 
     assert!(response.is_ok());
 
@@ -174,7 +173,7 @@ async fn test_nitro_reference_da_store_and_recover(my_addr: String) {
       "jsonrpc": "2.0",
       "id": 1,
       "result": {
-        "Payload": expected_recover_payload_response
+        "Payload": EXPECTED_RECOVER_PAYLOAD_RESPONSE
       }
     });
 
@@ -188,7 +187,7 @@ async fn test_nitro_reference_da_store_and_recover(my_addr: String) {
 
     let expected_collect_preimages_response = json!({
     "3": {
-        keccak_hash_da_cert.clone(): expected_recover_payload_response
+        keccak_hash_da_cert.clone(): EXPECTED_RECOVER_PAYLOAD_RESPONSE
       }
     });
 

@@ -177,47 +177,6 @@ for i in {1..30}; do
   sleep 2
 done
 
-# tail -f "$LOG_DIR/server.log"
-
-
-# echo "🖥️ Starting DAS server (Docker)..."
-
-# docker rm -f celestia-das 2>/dev/null || true
-
-# docker run -d \
-#   --name celestia-das \
-#   --platform linux/amd64 \
-#   --add-host=host.docker.internal:host-gateway \
-#   -p "$SERVER_PORT:$SERVER_PORT" \
-#   --entrypoint /bin/celestia-server \
-#   ghcr.io/celestiaorg/nitro-das-celestia:v0.7.0-mocha \
-#   --enable-rpc \
-#   --rpc-addr 0.0.0.0 \
-#   --rpc-port "$SERVER_PORT" \
-#   --celestia.with-writer \
-#   --celestia.rpc "$DOCKER_BRIDGE_RPC_ENDPOINT" \
-#   --celestia.auth-token "$AUTH_TOKEN" \
-#   --celestia.namespace-id "$NAMESPACE_ID"
-
-# SERVER_CONTAINER="celestia-das"
-
-# echo "⏳ Waiting for DAS server..."
-
-# for i in {1..30}; do
-#   if curl -s "http://localhost:$SERVER_PORT" >/dev/null 2>&1; then
-#     echo "✅ DAS server ready"
-#     break
-#   fi
-
-#   if ! docker ps | grep -q "$SERVER_CONTAINER"; then
-#     echo "❌ DAS container crashed"
-#     docker logs "$SERVER_CONTAINER"
-#     exit 1
-#   fi
-
-#   sleep 2
-# done
-
 echo "🎉 FULL FLOW COMPLETE"
 
 echo ""
