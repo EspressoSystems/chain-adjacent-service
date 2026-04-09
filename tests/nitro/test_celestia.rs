@@ -75,9 +75,6 @@ async fn test_celestia_da() {
     println!("running test_celestia_da_max_supported_size");
     test_celestia_da_max_supported_size(my_addr.to_string()).await;
 
-    // println!("running test_celestia_da_supported_header_bytes");
-    // test_celestia_da_supported_header_bytes(my_addr.to_string()).await;
-
     println!("running test_celestia_da_store_and_recover");
     test_celestia_da_store_and_recover(my_addr.to_string()).await;
 }
@@ -112,6 +109,7 @@ async fn test_celestia_da_max_supported_size(my_addr: String) {
     assert_eq!(response, expected);
 }
 
+// this is not running in the test right now as there is a bug in the celestia DA Server implementation where it returns `0x01` instead of `0x63` for the supported header bytes. Once that is fixed or clarified, we can enable this test back and it should pass.
 #[allow(clippy::unwrap_used)]
 async fn _test_celestia_da_supported_header_bytes(my_addr: String) {
     let client = reqwest::Client::new();
