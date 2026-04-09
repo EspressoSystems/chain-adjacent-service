@@ -21,8 +21,10 @@ pub struct StreamerConfig {
     pub max_sequencer_number_drift: u64,
     pub initial_backoff_ms: u64,
     pub max_backoff_ms: u64,
-    pub starting_pos: u64,
     pub retry_broadcast_delay_ms: u64,
+
+    pub starting_pos: u64,
+    pub starting_hotshot_height: u64,
 }
 
 impl Default for StreamerConfig {
@@ -31,8 +33,9 @@ impl Default for StreamerConfig {
             max_sequencer_number_drift: 1000,
             initial_backoff_ms: 1000,
             max_backoff_ms: 30000,
-            starting_pos: 0,
             retry_broadcast_delay_ms: 300,
+            starting_pos: 0,
+            starting_hotshot_height: 0,
         }
     }
 }
@@ -43,7 +46,7 @@ pub struct RollupConfig<C> {
     pub ty: RollupType,
     pub namespace_id: u64,
     pub start_block: u64,
-    pub rollup: C,
+    pub stack: C,
 }
 
 #[derive(Debug, Clone, Deserialize)]

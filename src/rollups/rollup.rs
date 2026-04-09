@@ -5,7 +5,9 @@ use anyhow::Result;
 use tokio::sync::{mpsc, watch};
 
 use crate::{
-    VerificationResult, config::RollupType, espresso_client::types::NamespaceTransactionsInRange,
+    VerificationResult,
+    config::{RollupType, ServiceConfig},
+    espresso_client::types::NamespaceTransactionsInRange,
 };
 
 pub trait RollupQueueEntry: Clone {
@@ -22,7 +24,10 @@ pub trait Rollup {
     /// The type of message received from upstream and
     /// sent to the feed subscribers
     type FeedMessage;
-    type VerificationContext: Default + Clone;
+    /// The necessary context from the latest batch to verify a new batch or
+    /// to start the CAS from the correct state.
+    type LatestBatchInfo: Default + Clone;
+    type L1Monitor: L1Monitor<Self::LatestBatchInfo, Self::Error>;
 
     fn parse_batch_data(bytes: Bytes) -> Result<Vec<Self::BatchMessage>>;
 
@@ -53,8 +58,30 @@ pub trait Rollup {
     fn verify_batch_messages(
         batch_messages: &[Self::BatchMessage],
         streamer_queue: &[Self::Entry],
-        context: &Self::VerificationContext,
+        context: &Self::LatestBatchInfo,
     ) -> VerificationResult;
 
+    fn create_l1_monitor(
+        config: &Self::StackConfig,
+    ) -> impl Future<Output = Result<Self::L1Monitor, Self::Error>>;
+
+    // This function is used to update/override config file.
+    // TODO: find a better way to resolve config because `LatestBatchInfo`
+    // is merely needed by some parts of the service config.
+    fn resolve_config_with_latest_batch_info(
+        config: ServiceConfig<Self::StackConfig>,
+        latest_batch_info: Option<Self::LatestBatchInfo>,
+    ) -> ServiceConfig<Self::StackConfig>;
+
     fn rollup_type() -> RollupType;
+}
+
+pub trait L1Monitor<T, E> {
+    fn fetch_latest_batch_info_on_startup(&self) -> impl Future<Output = Result<Option<T>, E>>;
+
+    fn start(
+        &self,
+        l1_finalized_msg_idx_sender: watch::Sender<u64>,
+        latest_batch_info_sender: watch::Sender<T>,
+    ) -> impl Future<Output = ()>;
 }

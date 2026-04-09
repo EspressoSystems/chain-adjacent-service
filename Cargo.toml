@@ -29,6 +29,10 @@ alloy = { version = "1.6.3", default-features = false, features = [
     "sol-types",
     "serde",
     "rlp",
+    "provider-http",
+    "provider-ws",
+    "pubsub",
+    "contract",
 ] }
 alloy-rlp = { version = "0.3.13", features = ["derive"] }
 anyhow = "1.0.101"
@@ -74,6 +78,7 @@ url = "2"
 yawc = "0.3"
 
 [dev-dependencies]
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 wiremock = "0.6.5"
 hex = "0.4.3"
 k256 = { version = "0.13", features = ["ecdsa"] }
