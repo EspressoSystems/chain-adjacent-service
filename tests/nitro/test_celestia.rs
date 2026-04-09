@@ -7,21 +7,20 @@ use tokio::{
     time::sleep,
 };
 
+use crate::{EXPECTED_RECOVER_PAYLOAD_RESPONSE, STORE_REQUEST_DATA, celestia_node::CelestiaNode};
+use chain_agnostic_service::da_api::nitro::utils::SEQUENCER_HEADER_LEN;
+use chain_agnostic_service::da_api::nitro::utils::extract_da_sequencer_msg_from_espresso_da_certificate;
 use chain_agnostic_service::{
     VerificationResult,
     config::RollupType,
     da_api::{
         config::{DaApiConfig, DaProviderConfig},
-        nitro::utils::{
-            SEQUENCER_HEADER_LEN, extract_da_sequencer_msg_from_espresso_da_certificate,
-        },
         run,
     },
 };
 
-use crate::{
-    EXPECTED_RECOVER_PAYLOAD_RESPONSE, STORE_REQUEST_DATA, nitro_node::nitro_node::NitroNode,
-};
+pub const CELESTIA_DA_IDENTIFIER: &str = "0x63";
+pub const CELESTIA_DA_MAX_SIZE: usize = 33554432;
 
 #[allow(clippy::unwrap_used)]
 fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
@@ -29,7 +28,7 @@ fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
     da_providers.insert(
         0,
         DaProviderConfig {
-            da_type_byte: Bytes::from_str("0x01").unwrap(),
+            da_type_byte: Bytes::from_str(CELESTIA_DA_IDENTIFIER).unwrap(),
             endpoint_url: da_provider_url,
         },
     );
@@ -64,31 +63,31 @@ fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
 }
 
 #[tokio::test]
-async fn test_nitro_reference_da() {
-    let nitro_node = NitroNode::start().await;
-    println!("Nitro node started");
+async fn test_celestia_da() {
+    let celestia_node = CelestiaNode::start().await;
+    println!("Celestia node started");
 
-    let my_addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+    let my_addr: SocketAddr = "127.0.0.1:8081".parse().unwrap();
 
-    let _server = spawn_server(my_addr, nitro_node.client.reference_da_url.to_string());
-    sleep(Duration::from_millis(100)).await;
+    let _server = spawn_server(my_addr, celestia_node.das_server_url.to_string());
+    sleep(Duration::from_millis(5000)).await;
 
-    println!("running test_nitro_reference_da_supported_header_bytes");
-    test_nitro_reference_da_supported_header_bytes(my_addr.to_string()).await;
+    println!("running test_celestia_da_max_supported_size");
+    test_celestia_da_max_supported_size(my_addr.to_string()).await;
 
-    println!("running test_nitro_reference_da_store_and_recover");
-    test_nitro_reference_da_store_and_recover(my_addr.to_string()).await;
+    println!("running test_celestia_da_store_and_recover");
+    test_celestia_da_store_and_recover(my_addr.to_string()).await;
 }
 
 #[allow(clippy::unwrap_used)]
-async fn test_nitro_reference_da_supported_header_bytes(my_addr: String) {
+async fn test_celestia_da_max_supported_size(my_addr: String) {
     let client = reqwest::Client::new();
 
     let response: Value = client
         .post(format!("http://{my_addr}"))
         .json(&json!({
             "jsonrpc": "2.0",
-            "method": "daprovider_getSupportedHeaderBytes",
+            "method": "daprovider_getMaxMessageSize",
             "params": [],
             "id": 1
         }))
@@ -103,7 +102,40 @@ async fn test_nitro_reference_da_supported_header_bytes(my_addr: String) {
       "jsonrpc": "2.0",
       "id": 1,
       "result": {
-        "headerBytes": "0x01"
+        "maxSize": CELESTIA_DA_MAX_SIZE
+      }
+    });
+
+    assert_eq!(response, expected);
+}
+
+// this is not running in the test right now as there is a bug in the celestia DA Server implementation where it returns `0x01` instead of `0x63` for the supported header bytes. Once that is fixed or clarified, we can enable this test back and it should pass.
+#[allow(clippy::unwrap_used)]
+async fn _test_celestia_da_supported_header_bytes(my_addr: String) {
+    let client = reqwest::Client::new();
+
+    let response: Value = client
+        .post(format!("http://{my_addr}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "method": "daprovider_getMaxMessageSize",
+            "params": [],
+            "id": 1
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    // this is implemented wrong in the current celestia DA Server. it should return `0x63` but it returns `0x01`
+    // Related issue: https://github.com/celestiaorg/nitro-das-celestia/issues/44
+    let expected = json!({
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "headerBytes": CELESTIA_DA_IDENTIFIER
       }
     });
 
@@ -111,9 +143,7 @@ async fn test_nitro_reference_da_supported_header_bytes(my_addr: String) {
 }
 
 #[allow(clippy::unwrap_used)]
-async fn test_nitro_reference_da_store_and_recover(my_addr: String) {
-    let _expected_store_response=Bytes::from_str("0x010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1bc93d7c92fd65dbd4809a2dcfd0f31c201f52aedbb700e3462d6cc1058ec2ac194723c2f1d41d7a65c1d2cf9a0683fe6a458ac269aaeb00c1b0cf8854afc05166").unwrap();
-
+async fn test_celestia_da_store_and_recover(my_addr: String) {
     let client = reqwest::Client::new();
 
     let response: Result<Value, _> = client
@@ -185,12 +215,6 @@ async fn test_nitro_reference_da_store_and_recover(my_addr: String) {
             .slice(SEQUENCER_HEADER_LEN..);
     let keccak_hash_da_cert = keccak256(&da_cert).to_string();
 
-    let expected_collect_preimages_response = json!({
-    "3": {
-        keccak_hash_da_cert.clone(): EXPECTED_RECOVER_PAYLOAD_RESPONSE
-      }
-    });
-
     // daprovider_collectPreimages
     let collect_preimages: Result<Value, _> = client
         .post(format!("http://{my_addr}"))
@@ -213,50 +237,12 @@ async fn test_nitro_reference_da_store_and_recover(my_addr: String) {
     assert!(collect_preimages.is_ok());
     let collect_preimages = collect_preimages.unwrap();
 
-    let expected = json!({
-      "jsonrpc": "2.0",
-      "id": 1,
-      "result": {
-        "Preimages": expected_collect_preimages_response
-      }
-    });
-
-    assert_eq!(collect_preimages, expected);
-
-    // daprovider_recoverPayloadAndPreimages is not supported by nitro-node v3.9.6 which is the latest on nitro-testnode right now.
-
-    // daprovider_recoverPayloadAndPreimages
-    // let recover_and_collect_preimages: Result<Value, _> = client
-    //     .post(format!("http://{my_addr}"))
-    //     .json(&json!({
-    //         "jsonrpc": "2.0",
-    //         "method": "daprovider_recoverPayloadAndPreimages",
-    //         "params": [
-    //             "0xD88",
-    //             "0x4D1CF3D08C6C7755E3622F55E7D03CA009A4D706BCF79A13AB9F52E3C4526990",
-    //             Bytes::from(sequencer_msg).to_string()
-    //         ],
-    //         "id": 1
-    //     }))
-    //     .send()
-    //     .await
-    //     .unwrap()
-    //     .json()
-    //     .await;
-
-    // assert!(recover_and_collect_preimages.is_ok());
-    // let recover_and_collect_preimages = recover_and_collect_preimages.unwrap();
-
-    // let expected_recover_and_collect_preimages_response = json!({
-    //   "jsonrpc": "2.0",
-    //   "id": 1,
-    //   "result": {
-    //     "Payload": expected_recover_payload_response,
-    //     "3": {
-    //         keccak_hash_da_cert: expected_recover_payload_response
-    //     }
-    //   }
-    // });
-
-    // assert_eq!(recover_and_collect_preimages, expected_recover_and_collect_preimages_response);
+    // celestia response to collectPreimages contains additional fields which include roots on NMT proof they build internally.
+    // we only care that the data being returned is what is expected and hence we do not assert the entire json
+    assert_eq!(
+        collect_preimages["result"]["Preimages"]["3"],
+        json!({
+            keccak_hash_da_cert.clone(): EXPECTED_RECOVER_PAYLOAD_RESPONSE
+        })
+    );
 }
