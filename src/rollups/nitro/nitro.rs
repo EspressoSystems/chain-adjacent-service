@@ -855,4 +855,78 @@ pub mod testing {
             "Incorrect legacy batch data cost"
         )
     }
+
+    #[test]
+    fn test_resolve_config_with_latest_batch_info() {
+        use crate::config::{ServiceConfig, StreamerConfig};
+        use crate::da_api::config::DaApiConfig;
+        use crate::espresso_client::client::Config as EspressoClientConfig;
+        use crate::rollups::nitro::config::NitroConfig;
+        use crate::rollups::nitro::feed::broadcaster::BroadcasterConfig;
+        use crate::rollups::nitro::feed::client::BroadcasterClientConfig;
+        use crate::rollups::nitro::feed::relay::FeedConfig;
+        use crate::submitter::submitter::SubmitterConfig;
+        use reqwest::Url;
+
+        // Create initial config with minimal valid values
+        let initial_streamer_config = StreamerConfig::default();
+
+        let initial_feed_config = FeedConfig {
+            client_config: BroadcasterClientConfig::default(),
+            server_config: BroadcasterConfig::default(),
+            web_socket_url: "wss://example.com".to_string(),
+            current_message_count: 0,
+        };
+
+        let initial_nitro_config = NitroConfig {
+            legacy_signer_addresses: vec![Address::ZERO],
+            chain_id: 1,
+            feed_config: initial_feed_config.clone(),
+            l1_ws_url: "wss://example.com".to_string(),
+            sequencer_inbox_address: Address::ZERO,
+        };
+
+        let initial_config = ServiceConfig {
+            rollup: crate::config::RollupConfig {
+                ty: RollupType::Nitro,
+                namespace_id: 0,
+                start_block: 0,
+                stack: initial_nitro_config.clone(),
+            },
+            streamer: initial_streamer_config.clone(),
+            espresso_client: EspressoClientConfig {
+                base_url: Url::parse("http://localhost:8000").unwrap(),
+                client_timeout_secs: 30,
+            },
+            submitter_config: SubmitterConfig::default(),
+            da_server_config: DaApiConfig::default(),
+            advanced: crate::config::AdvancedConfig::default(),
+        };
+
+        // Test with None (should return config unchanged)
+        let result = Nitro::resolve_config_with_latest_batch_info(initial_config.clone(), None);
+        assert_eq!(result.streamer.starting_pos, 0);
+        assert_eq!(result.rollup.stack.feed_config.current_message_count, 0);
+
+        // Test with Some info
+        let latest_batch_info = LatestBatchInfo {
+            last_batch_delayed_messages_read: 100,
+            next_batch_start_pos: 200,
+        };
+
+        let result =
+            Nitro::resolve_config_with_latest_batch_info(initial_config, Some(latest_batch_info));
+
+        // Verify that the config was updated
+        assert_eq!(result.streamer.starting_pos, 200);
+        assert_eq!(result.rollup.stack.feed_config.current_message_count, 200);
+
+        // Verify other parts are unchanged
+        assert_eq!(result.rollup.stack.chain_id, 1);
+        assert_eq!(result.rollup.namespace_id, 0);
+        assert_eq!(
+            result.rollup.stack.legacy_signer_addresses,
+            vec![Address::ZERO]
+        );
+    }
 }

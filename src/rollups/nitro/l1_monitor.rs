@@ -149,20 +149,33 @@ impl NitroL1Monitor {
             }
         } else {
             tracing::warn!("finalized block not available");
+            return Err(L1MonitorError::BlockNotFound);
         }
 
-        // Always fetch both counts at the latest block
-        let (msg_count, delayed_read) = tokio::try_join!(
-            self.fetch_message_count(BlockNumberOrTag::Latest),
-            self.fetch_delayed_messages_read(BlockNumberOrTag::Latest),
-        )?;
+        let latest_block = self
+            .provider
+            .get_block_by_number(BlockNumberOrTag::Latest)
+            .await?;
+        if let Some(block) = latest_block {
+            let block_number = block.header.number;
+            // Always fetch both counts at the latest block.
+            let (msg_count, delayed_read) = tokio::try_join!(
+                self.fetch_message_count(BlockNumberOrTag::Number(block_number)),
+                self.fetch_delayed_messages_read(BlockNumberOrTag::Number(block_number)),
+            )?;
 
-        let _ = latest_batch_info_sender.send(LatestBatchInfo {
-            last_batch_delayed_messages_read: delayed_read,
-            next_batch_start_pos: msg_count,
-        });
+            // A new batch is posted. This is the most up-to-date batch info
+            // needed by verifying upcoming batches.
+            let _ = latest_batch_info_sender.send(LatestBatchInfo {
+                last_batch_delayed_messages_read: delayed_read,
+                next_batch_start_pos: msg_count,
+            });
 
-        Ok(())
+            Ok(())
+        } else {
+            tracing::warn!("latest block not available");
+            Err(L1MonitorError::BlockNotFound)
+        }
     }
 
     /// Returns the number of delayed messages that have been read by the sequencer.
