@@ -80,7 +80,7 @@ pub trait L1Monitor<T, E> {
     fn fetch_latest_batch_info_on_startup(&self) -> impl Future<Output = Result<Option<T>, E>>;
 
     fn start(
-        &mut self,
+        &self,
         l1_finalized_msg_idx_sender: watch::Sender<u64>,
         latest_batch_info_sender: watch::Sender<T>,
     ) -> impl Future<Output = ()>;

@@ -145,7 +145,7 @@ impl L1Monitor<MockLatestBatchInfo, std::convert::Infallible> for MockL1Monitor 
     }
 
     async fn start(
-        &mut self,
+        &self,
         _l1_finalized_msg_idx_sender: watch::Sender<u64>,
         _latest_batch_info_sender: watch::Sender<MockLatestBatchInfo>,
     ) {

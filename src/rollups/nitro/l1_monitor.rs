@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use alloy::{
     eips::{BlockId, BlockNumberOrTag},
     primitives::Address,
@@ -9,12 +11,15 @@ use alloy::{
 use futures::StreamExt;
 use tokio::sync::watch;
 
-use crate::rollups::{
-    nitro::{
-        nitro,
-        types::{L1MonitorError, LatestBatchInfo},
+use crate::{
+    rollups::{
+        nitro::{
+            nitro,
+            types::{L1MonitorError, LatestBatchInfo},
+        },
+        rollup::L1Monitor,
     },
-    rollup::L1Monitor,
+    utils::exponential_backoff,
 };
 
 sol! {
@@ -110,6 +115,57 @@ impl NitroL1Monitor {
         Ok(result.to::<u64>())
     }
 
+    /// Processes a single SequencerBatchDelivered event: updates finalized message
+    /// count (if the finalized head advanced) and latest batch info.
+    ///
+    /// Returns `Err` on RPC failures so the caller can retry.
+    async fn process_event(
+        &self,
+        last_finalized_block: &mut u64,
+        l1_finalized_msg_idx_sender: &watch::Sender<u64>,
+        latest_batch_info_sender: &watch::Sender<LatestBatchInfo>,
+    ) -> Result<(), L1MonitorError> {
+        // Check the current finalized block number
+        let finalized_block = self
+            .provider
+            .get_block_by_number(BlockNumberOrTag::Finalized)
+            .await?;
+
+        if let Some(block) = finalized_block {
+            let finalized_block = block.header.number;
+
+            // Only broadcast finalized message count when the finalized head advances
+            if finalized_block > *last_finalized_block {
+                let count = self
+                    .fetch_message_count(BlockNumberOrTag::Number(finalized_block))
+                    .await?;
+                tracing::info!(
+                    finalized_block,
+                    finalized_msg_count = count,
+                    "updated finalized message count"
+                );
+                let _ = l1_finalized_msg_idx_sender.send(count);
+                *last_finalized_block = finalized_block;
+            }
+        } else {
+            tracing::warn!("finalized block not available");
+        }
+
+        // Always fetch both counts at the latest block
+        let (msg_count, delayed_read) = tokio::try_join!(
+            self.fetch_message_count(BlockNumberOrTag::Latest),
+            self.fetch_delayed_messages_read(BlockNumberOrTag::Latest),
+        )?;
+
+        let _ = latest_batch_info_sender.send(LatestBatchInfo {
+            last_batch_delayed_messages_read: delayed_read,
+            next_batch_start_pos: msg_count,
+        });
+
+        Ok(())
+    }
+
+    /// Returns the number of delayed messages that have been read by the sequencer.
     async fn fetch_delayed_messages_read(
         &self,
         block_tag: BlockNumberOrTag,
@@ -143,7 +199,7 @@ impl L1Monitor<LatestBatchInfo, nitro::Error> for NitroL1Monitor {
     }
 
     async fn start(
-        &mut self,
+        &self,
         l1_finalized_msg_idx_sender: watch::Sender<u64>,
         latest_batch_info_sender: watch::Sender<LatestBatchInfo>,
     ) {
@@ -151,100 +207,86 @@ impl L1Monitor<LatestBatchInfo, nitro::Error> for NitroL1Monitor {
             .address(self.sequencer_inbox_address)
             .event_signature(ISequencerInbox::SequencerBatchDelivered::SIGNATURE_HASH);
 
-        let subscription = match self.provider.subscribe_logs(&filter).await {
-            Ok(sub) => sub,
-            Err(err) => {
-                tracing::error!("failed to subscribe to SequencerBatchDelivered: {err}");
-                return;
-            }
-        };
-
-        let mut stream = subscription.into_stream();
+        let initial_backoff = Duration::from_secs(1);
+        let max_backoff = Duration::from_secs(30);
+        let mut backoff = initial_backoff;
         let mut last_finalized_block: u64 = 0;
 
-        while let Some(log) = stream.next().await {
-            tracing::info!(
-                block = ?log.block_number,
-                tx = ?log.transaction_hash,
-                "received SequencerBatchDelivered event"
-            );
-
-            // Check the current finalized block number
-            let finalized_block = match self
-                .provider
-                .get_block_by_number(BlockNumberOrTag::Finalized)
-                .await
-            {
-                Ok(Some(block)) => block.header.number,
-                Ok(None) => {
-                    tracing::warn!("finalized block not available");
-                    continue;
+        loop {
+            let subscription = match self.provider.subscribe_logs(&filter).await {
+                Ok(sub) => {
+                    backoff = initial_backoff;
+                    sub
                 }
                 Err(err) => {
-                    tracing::error!("failed to fetch finalized block: {err}");
+                    tracing::error!(
+                        "failed to subscribe to SequencerBatchDelivered: {err}, retrying"
+                    );
+                    backoff = exponential_backoff(backoff, max_backoff).await;
                     continue;
                 }
             };
 
-            // Only broadcast finalized message count when the finalized head advances
-            if finalized_block != last_finalized_block {
-                last_finalized_block = finalized_block;
+            let mut stream = subscription.into_stream();
 
-                match self.fetch_message_count(BlockNumberOrTag::Finalized).await {
-                    Ok(count) => {
-                        tracing::info!(
-                            finalized_block,
-                            finalized_msg_count = count,
-                            "updated finalized message count"
-                        );
-                        // Only fails when the channel is closed, which should never happen since
-                        // the sender is owned by main and lives for the entire program duration
-                        let _ = l1_finalized_msg_idx_sender.send(count);
-                    }
-                    Err(err) => {
-                        tracing::error!("failed to fetch finalized message count: {err}");
+            let mut event_backoff = initial_backoff;
+
+            'events: while let Some(log) = stream.next().await {
+                tracing::info!(
+                    block = ?log.block_number,
+                    tx = ?log.transaction_hash,
+                    "received SequencerBatchDelivered event"
+                );
+
+                loop {
+                    match self
+                        .process_event(
+                            &mut last_finalized_block,
+                            &l1_finalized_msg_idx_sender,
+                            &latest_batch_info_sender,
+                        )
+                        .await
+                    {
+                        Ok(()) => {
+                            event_backoff = initial_backoff;
+                            continue 'events;
+                        }
+                        Err(err) => {
+                            tracing::error!(
+                                "failed to process SequencerBatchDelivered event: {err}, retrying"
+                            );
+                            // Wait for backoff, but if a new event arrives first,
+                            // skip the wait and process immediately — the event is
+                            // just a trigger and RPCs always fetch the latest state.
+                            tokio::select! {
+                                () = tokio::time::sleep(event_backoff) => {
+                                    event_backoff = std::cmp::min(
+                                        event_backoff.saturating_mul(2),
+                                        max_backoff,
+                                    );
+                                }
+                                maybe_log = stream.next() => {
+                                    match maybe_log {
+                                        Some(new_log) => {
+                                            tracing::info!(
+                                                block = ?new_log.block_number,
+                                                tx = ?new_log.transaction_hash,
+                                                "new SequencerBatchDelivered event while retrying"
+                                            );
+                                            event_backoff = initial_backoff;
+                                        }
+                                        None => break 'events,
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
 
-            // Always fetch both counts at the latest block
-            let latest_msg_count = self.fetch_message_count(BlockNumberOrTag::Latest);
-            let latest_delayed_count = self.fetch_delayed_messages_read(BlockNumberOrTag::Latest);
-
-            let (msg_count, delayed_read) =
-                match tokio::join!(latest_msg_count, latest_delayed_count) {
-                    (Ok(count), Ok(delayed_count)) => (count, delayed_count),
-                    (Ok(count), Err(delayed_err)) => {
-                        tracing::info!(latest_msg_count = count);
-                        tracing::error!(
-                            "failed to fetch latest delayed messages read: {delayed_err}"
-                        );
-                        continue;
-                    }
-                    (Err(count_err), Ok(delayed_count)) => {
-                        tracing::info!(latest_delayed_messages_read = delayed_count);
-                        tracing::error!("failed to fetch latest message count: {count_err}");
-                        continue;
-                    }
-                    (Err(count_err), Err(delayed_err)) => {
-                        tracing::error!("failed to fetch latest message count: {count_err}");
-                        tracing::error!(
-                            "failed to fetch latest delayed messages read: {delayed_err}"
-                        );
-                        continue;
-                    }
-                };
-
-            let last_batch_info = LatestBatchInfo {
-                last_batch_delayed_messages_read: delayed_read,
-                next_batch_start_pos: msg_count,
-            };
-            // Only fails when the channel is closed, which should never happen since
-            // the sender is owned by main and lives for the entire program duration
-            let _ = latest_batch_info_sender.send(last_batch_info);
+            tracing::warn!("SequencerBatchDelivered subscription stream ended, reconnecting");
+            backoff = exponential_backoff(backoff, max_backoff).await;
         }
-
-        tracing::warn!("SequencerBatchDelivered subscription stream ended");
     }
 }
 
