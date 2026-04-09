@@ -99,9 +99,7 @@ async fn run<R: Rollup>(config: ServiceConfig<R::StackConfig>) -> Result<()> {
         verification_sender,
     );
 
-    // TODO: Run L1 Monitor here
-    let _ = latest_batch_sender;
-    let _ = l1_finalized_msg_idx_sender;
+    let l1_monitor_task = l1_monitor.start(l1_finalized_msg_idx_sender, latest_batch_sender);
 
     tokio::try_join!(
         async { submitter_task.await.map_err(anyhow::Error::from) },
@@ -111,6 +109,10 @@ async fn run<R: Rollup>(config: ServiceConfig<R::StackConfig>) -> Result<()> {
             Ok::<(), anyhow::Error>(())
         },
         async { da_task.await.map_err(anyhow::Error::from) },
+        async {
+            l1_monitor_task.await;
+            Ok::<(), anyhow::Error>(())
+        },
     )?;
     Ok(())
 }
