@@ -1,4 +1,5 @@
 use reqwest::Url;
+use serde_json::json;
 use std::{
     process::{Child, Command, Stdio},
     sync::{Mutex, OnceLock},
@@ -22,6 +23,38 @@ fn celestia_lifecycle_semaphore() -> &'static std::sync::Arc<Semaphore> {
 }
 
 impl CelestiaNode {
+
+     pub async fn fetch_da_provider_byte(&self) -> anyhow::Result<()> {
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "method": "daprovider_getSupportedHeaderBytes",
+            "params": [],
+            "id": 1
+        });
+        let client = reqwest::Client::new();
+
+        let response = client
+            .post(self.das_server_url.clone())
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|err| anyhow::anyhow!("Connection failed: {err}"))?;
+
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!(
+                "Service returned status: {}",
+                response.status()
+            ));
+        }
+
+        let body: serde_json::Value = response.json().await?;
+        if body.get("error").is_some() {
+            return Err(anyhow::anyhow!("DA Provider returned a JSON-RPC error"));
+        }
+
+        Ok(())
+    }
+
     pub async fn start() -> Self {
         let lifecycle_permit = celestia_lifecycle_semaphore()
             .clone()
@@ -55,21 +88,18 @@ impl CelestiaNode {
         node
     }
 
-    /// Polls the DAS server endpoint until it responds, matching what the script checks.
     async fn wait_until_ready(&self) {
-        let deadline = Instant::now() + Duration::from_secs(300);
-        let client = reqwest::Client::new();
+        let deadline = Instant::now() + Duration::from_secs(600);
         println!("Waiting for Celestia DAS server to be ready...");
         loop {
             if Instant::now() >= deadline {
                 self.stop();
                 panic!("timed out waiting for Celestia DAS server");
             }
-            if client.get(self.das_server_url.clone()).send().await.is_ok() {
-                println!("Celestia DAS server ready");
-                break;
+            match self.fetch_da_provider_byte().await {
+                Ok(_) => break,
+                _ => sleep(Duration::from_millis(100)).await,
             }
-            sleep(Duration::from_secs(2)).await;
         }
     }
 
