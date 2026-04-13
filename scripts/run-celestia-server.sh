@@ -36,7 +36,9 @@ cleanup() {
   pkill -9 -f "celestia bridge" 2>/dev/null || true
 
   wait "${SERVER_PID:-}" "${NODE_PID:-}" "${BRIDGE_PID:-}" 2>/dev/null || true
-  # docker rm -f celestia-das 2>/dev/null || true
+  docker rm -f celestia-das 2>/dev/null || true
+
+  echo "✅ Cleanup complete"
 }
 trap cleanup EXIT
 
@@ -133,31 +135,27 @@ echo $AUTH_TOKEN
 # -------------------------------
 # 6. Start DAS Server
 # -------------------------------
-echo "🖥️ Starting DAS server(Submodule)..."
 
-DAS_DIR="${DAS_DIR:-./nitro-das-celestia}"
+echo "🖥️ Starting DAS server (Docker)..."
 
+docker rm -f celestia-das 2>/dev/null || true
 
-if [ ! -f "$DAS_DIR/cmd/celestia-server" ]; then
-  echo "🔨 Building DAS server..."
-  pushd "$DAS_DIR/cmd" > /dev/null
-  go build -o celestia-server
-  popd > /dev/null
-fi
+SERVER_CONTAINER="celestia-das"
 
-echo "🚀 Starting DAS server..."
-
-"$DAS_DIR/cmd/celestia-server" \
+docker run -d \
+  --name celestia-das \
+  --platform linux/amd64 \
+  --add-host=host.docker.internal:host-gateway \
+  -p "$SERVER_PORT:$SERVER_PORT" \
+  --entrypoint /bin/celestia-server \
+  opcelestia/nitro-das-celestia:pr-33-61f6535e8bbb \
   --enable-rpc \
   --rpc-addr 0.0.0.0 \
   --rpc-port "$SERVER_PORT" \
   --celestia.with-writer \
-  --celestia.rpc "$BRIDGE_RPC_ENDPOINT/" \
+  --celestia.rpc "$DOCKER_BRIDGE_RPC_ENDPOINT" \
   --celestia.auth-token "$AUTH_TOKEN" \
-  --celestia.namespace-id "$NAMESPACE_ID" \
-  > "$LOG_DIR/server.log" 2>&1 &
-
-SERVER_PID=$!
+  --celestia.namespace-id "$NAMESPACE_ID"
 
 echo "⏳ Waiting for DAS server..."
 
@@ -167,10 +165,9 @@ for i in {1..30}; do
     break
   fi
 
-  # detect crash early
-  if ! kill -0 $SERVER_PID 2>/dev/null; then
-    echo "❌ DAS server crashed"
-    tail -n 50 "$LOG_DIR/server.log"
+  if ! docker ps | grep -q "$SERVER_CONTAINER"; then
+    echo "❌ DAS container crashed"
+    docker logs "$SERVER_CONTAINER"
     exit 1
   fi
 
@@ -188,4 +185,4 @@ echo "Bridge:               $BRIDGE_ADDR"
 echo "DAS server:           $SERVER_PORT"
 echo "----------------------------------"
 
-wait $NODE_PID $BRIDGE_PID $SERVER_PID
+wait $NODE_PID $BRIDGE_PID
