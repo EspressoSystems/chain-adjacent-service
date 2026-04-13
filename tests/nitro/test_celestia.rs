@@ -19,7 +19,7 @@ use chain_agnostic_service::{
     },
 };
 
-pub const CELESTIA_DA_IDENTIFIER: &str = "0x63";
+pub const _CELESTIA_DA_IDENTIFIER: &str = "0x63";
 pub const CELESTIA_DA_MAX_SIZE: usize = 33554432;
 
 #[allow(clippy::unwrap_used)]
@@ -28,7 +28,6 @@ fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
     da_providers.insert(
         0,
         DaProviderConfig {
-            da_type_byte: Bytes::from_str(CELESTIA_DA_IDENTIFIER).unwrap(),
             endpoint_url: da_provider_url,
         },
     );
@@ -135,7 +134,7 @@ async fn _test_celestia_da_supported_header_bytes(my_addr: String) {
       "jsonrpc": "2.0",
       "id": 1,
       "result": {
-        "headerBytes": CELESTIA_DA_IDENTIFIER
+        "headerBytes": _CELESTIA_DA_IDENTIFIER
       }
     });
 

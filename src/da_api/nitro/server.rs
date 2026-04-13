@@ -378,14 +378,12 @@ mod tests {
         da_providers.insert(
             0,
             DaProviderConfig {
-                da_type_byte: Bytes::from_str("0x05").unwrap(),
                 endpoint_url: endpoint.clone(),
             },
         );
         da_providers.insert(
             1,
             DaProviderConfig {
-                da_type_byte: Bytes::from_str("0x80").unwrap(),
                 endpoint_url: fallback_uri.unwrap_or(endpoint.clone()),
             },
         );
@@ -821,7 +819,6 @@ mod tests {
 
     fn provider_cfg(endpoint: &str) -> DaProviderConfig {
         DaProviderConfig {
-            da_type_byte: Bytes::from_str("0x05").unwrap(),
             endpoint_url: endpoint.to_string(),
         }
     }
