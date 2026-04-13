@@ -24,7 +24,8 @@ use crate::{
         config::DaProviderConfig,
         error::DaApiError,
         nitro::{
-            certificate::CasCertificate, types::DAStoreResponse,
+            certificate::CasCertificate,
+            types::{DAStoreResponse, JsonRpcError},
             utils::extract_da_sequencer_msg_from_espresso_da_certificate,
         },
     },
@@ -63,6 +64,20 @@ impl ServerState {
         self.router
             .get(&self.current_da_provider.load(Ordering::Acquire))
             .map(|c| c.endpoint_url.clone())
+    }
+
+    /// Tries to advance `current_da_provider` to the next sequential key.
+    /// Returns `true` if a next provider exists and the index was advanced,
+    /// `false` if all providers are exhausted.
+    fn try_advance_provider(&self) -> bool {
+        let current = self.current_da_provider.load(Ordering::Acquire);
+        if let Some(next) = current.checked_add(1)
+            && self.router.contains_key(&next)
+        {
+            self.current_da_provider.store(next, Ordering::Release);
+            return true;
+        }
+        false
     }
 }
 
@@ -160,16 +175,16 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
         ));
     }
 
-    let endpoint = state
-        .current_endpoint()
-        .ok_or(DaApiError::NoDaProvidersConfigured)?;
-
     let forwarded_body = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "daprovider_store",
         "params": [data, timeout],
         "id": body["id"]
     });
+
+    let endpoint = state
+        .current_endpoint()
+        .ok_or(DaApiError::NoDaProvidersConfigured)?;
 
     let downstream = state
         .client
@@ -197,7 +212,23 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
     let downstream_json: Value =
         serde_json::from_slice(&bytes).map_err(|e| DaApiError::ParsingError(e.to_string()))?;
 
-    if downstream_json.get("error").is_some() {
+    if let Some(error_val) = downstream_json.get("error") {
+        if let Ok(rpc_err) = serde_json::from_value::<JsonRpcError>(error_val.clone())
+            && matches!(DaApiError::from(rpc_err), DaApiError::FallbackRequested(_))
+        {
+            let current = state.current_da_provider.load(Ordering::Acquire);
+            if state.try_advance_provider() {
+                let next = state.current_da_provider.load(Ordering::Acquire);
+                info!(
+                    "DA provider {} requested fallback, advancing to provider {}",
+                    current, next
+                );
+            } else {
+                // All providers exhausted: reset to 0 so the next AltDA attempt
+                state.current_da_provider.store(0, Ordering::Relaxed);
+                info!("All DA providers exhausted, resetting to provider 0");
+            }
+        }
         return Ok((
             status,
             [(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)],
@@ -299,10 +330,19 @@ async fn handle_recover_inner(
 
 #[cfg(test)]
 mod tests {
+    use super::handle_store;
     use alloy::primitives::{Bytes, FixedBytes, b256};
     use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder, rpc_params};
     use serde_json::json;
-    use std::{collections::HashMap, net::SocketAddr, str::FromStr};
+    use std::{
+        collections::HashMap,
+        net::SocketAddr,
+        str::FromStr,
+        sync::{
+            Arc,
+            atomic::{AtomicU8, Ordering},
+        },
+    };
     use tokio::{sync::oneshot, task::JoinHandle};
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
@@ -747,5 +787,241 @@ mod tests {
             err.contains("storage backend unavailable"),
             "unexpected error: {err}"
         );
+    }
+
+    fn make_verified_state(
+        providers: HashMap<u8, DaProviderConfig>,
+        initial_provider: u8,
+    ) -> (ServerState, Arc<AtomicU8>) {
+        let (verification_channel, mut rx) =
+            tokio::sync::mpsc::channel::<(Bytes, oneshot::Sender<crate::VerificationResult>)>(1);
+        tokio::spawn(async move {
+            while let Some((_, reply)) = rx.recv().await {
+                let _ = reply.send(crate::VerificationResult::success(0, 0, 0, 0));
+            }
+        });
+        let index = Arc::new(AtomicU8::new(initial_provider));
+        let state = ServerState {
+            router: Arc::new(providers),
+            current_da_provider: Arc::clone(&index),
+            client: reqwest::Client::new(),
+            verification_channel,
+        };
+        (state, index)
+    }
+
+    fn store_body() -> serde_json::Value {
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "daprovider_store",
+            "params": [valid_message(), 5000u64],
+            "id": 1
+        })
+    }
+
+    fn provider_cfg(endpoint: &str) -> DaProviderConfig {
+        DaProviderConfig {
+            da_type_byte: Bytes::from_str("0x05").unwrap(),
+            endpoint_url: endpoint.to_string(),
+        }
+    }
+
+    fn fallback_response() -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": { "code": -32603, "message": "DA provider requests fallback to next writer" }
+        }))
+    }
+
+    fn success_store_response() -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": { "serialized-da-cert": mock_downstream_cert_hex() }
+        }))
+    }
+
+    fn generic_error_response() -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": { "code": -32603, "message": "storage backend unavailable" }
+        }))
+    }
+
+    fn dynamic_resize_response() -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": { "code": -32603, "message": "message too large for current DA backend" }
+        }))
+    }
+
+    // Scenario: downstream returns FallbackRequested and a next provider exists.
+    // Expected: current_da_provider advances 0 → 1; error response is passed through.
+    #[tokio::test]
+    async fn test_fallback_advances_provider_index() {
+        let mock_p0 = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(fallback_response())
+            .mount(&mock_p0)
+            .await;
+
+        let mut providers = HashMap::new();
+        providers.insert(0, provider_cfg(&mock_p0.uri()));
+        providers.insert(1, provider_cfg("http://127.0.0.1:1"));
+
+        let (state, index) = make_verified_state(providers, 0);
+
+        let resp = handle_store(state, store_body()).await.unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        // index advanced to 1 for the next batch-poster call
+        assert_eq!(index.load(Ordering::Acquire), 1);
+
+        assert_eq!(mock_p0.received_requests().await.unwrap().len(), 1);
+    }
+
+    // Scenario: FallbackRequested on the last provider (no next one available).
+    // Expected: current_da_provider resets to 0; error response is passed through.
+    #[tokio::test]
+    async fn test_fallback_on_last_provider_resets_to_zero() {
+        let mock_p1 = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(fallback_response())
+            .mount(&mock_p1)
+            .await;
+
+        let mut providers = HashMap::new();
+        providers.insert(0, provider_cfg("http://127.0.0.1:1"));
+        providers.insert(1, provider_cfg(&mock_p1.uri()));
+
+        let (state, index) = make_verified_state(providers, 1);
+
+        let resp = handle_store(state, store_body()).await.unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        // reset to 0 after success
+        assert_eq!(index.load(Ordering::Acquire), 0);
+        assert_eq!(mock_p1.received_requests().await.unwrap().len(), 1);
+    }
+
+    // Scenario: store succeeds while current_da_provider is non-zero.
+    // Expected: current_da_provider resets to 0 on success.
+    #[tokio::test]
+    async fn test_success_resets_provider_index_to_zero() {
+        let mock_p1 = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(success_store_response())
+            .mount(&mock_p1)
+            .await;
+
+        let mut providers = HashMap::new();
+        providers.insert(0, provider_cfg("http://127.0.0.1:1"));
+        providers.insert(1, provider_cfg(&mock_p1.uri()));
+
+        let (state, index) = make_verified_state(providers, 1);
+
+        handle_store(state, store_body()).await.unwrap();
+        assert_eq!(index.load(Ordering::Acquire), 0);
+        assert_eq!(mock_p1.received_requests().await.unwrap().len(), 1);
+    }
+
+    // Scenario: downstream returns a generic (non-fallback) JSON-RPC error.
+    // Expected: current_da_provider unchanged; error response passed through.
+    #[tokio::test]
+    async fn test_generic_error_does_not_change_provider_index() {
+        let mock_p0 = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(generic_error_response())
+            .mount(&mock_p0)
+            .await;
+
+        let mut providers = HashMap::new();
+        providers.insert(0, provider_cfg(&mock_p0.uri()));
+        providers.insert(1, provider_cfg("http://127.0.0.1:1"));
+
+        let (state, index) = make_verified_state(providers, 0);
+
+        let resp = handle_store(state, store_body()).await.unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        assert_eq!(index.load(Ordering::Acquire), 0);
+    }
+
+    // Scenario: downstream returns DynamicBatchingResize ("message too large").
+    // Expected: current_da_provider unchanged; error response passed through.
+    #[tokio::test]
+    async fn test_dynamic_batching_resize_does_not_change_provider_index() {
+        let mock_p0 = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(dynamic_resize_response())
+            .mount(&mock_p0)
+            .await;
+
+        let mut providers = HashMap::new();
+        providers.insert(0, provider_cfg(&mock_p0.uri()));
+        providers.insert(1, provider_cfg("http://127.0.0.1:1"));
+
+        let (state, index) = make_verified_state(providers, 0);
+
+        let resp = handle_store(state, store_body()).await.unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        assert_eq!(index.load(Ordering::Acquire), 0);
+    }
+
+    // Scenario: downstream returns an HTTP-level non-2xx response.
+    // Expected: current_da_provider unchanged; HTTP status propagated as-is.
+    #[tokio::test]
+    async fn test_http_error_does_not_change_provider_index() {
+        let mock_p0 = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&mock_p0)
+            .await;
+
+        let mut providers = HashMap::new();
+        providers.insert(0, provider_cfg(&mock_p0.uri()));
+        providers.insert(1, provider_cfg("http://127.0.0.1:1"));
+
+        let (state, index) = make_verified_state(providers, 0);
+
+        let resp = handle_store(state, store_body()).await.unwrap();
+        assert_eq!(resp.status().as_u16(), 503);
+        assert_eq!(index.load(Ordering::Acquire), 0);
+    }
+
+    // Scenario: two-call sequence — provider 0 fallback, then provider 1 success.
+    // Expected:
+    //   call 1: index = 1 (advanced), error returned
+    //   call 2: index = 0 (reset on success), success returned
+    #[tokio::test]
+    async fn test_full_sequence_fallback_then_success() {
+        let mock_p0 = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(fallback_response())
+            .mount(&mock_p0)
+            .await;
+
+        let mock_p1 = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(success_store_response())
+            .mount(&mock_p1)
+            .await;
+
+        let mut providers = HashMap::new();
+        providers.insert(0, provider_cfg(&mock_p0.uri()));
+        providers.insert(1, provider_cfg(&mock_p1.uri()));
+
+        let (state, index) = make_verified_state(providers, 0);
+
+        // call 1: provider 0 → FallbackRequested → advance to 1
+        handle_store(state.clone(), store_body()).await.unwrap();
+        assert_eq!(index.load(Ordering::Acquire), 1);
+
+        // call 2: provider 1 → success → reset to 0
+        handle_store(state, store_body()).await.unwrap();
+        assert_eq!(index.load(Ordering::Acquire), 0);
+
+        assert_eq!(mock_p0.received_requests().await.unwrap().len(), 1);
+        assert_eq!(mock_p1.received_requests().await.unwrap().len(), 1);
     }
 }
