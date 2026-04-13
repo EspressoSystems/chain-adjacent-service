@@ -1,6 +1,24 @@
 # Chain Agnostic Service
 
 
+## Development
+
+### Prerequisites
+
+[Nix](https://nixos.org/download/) with flakes enabled.
+
+### Enter the development shell
+
+```bash
+nix develop
+```
+
+### Run the tests
+
+```bash
+just test
+```
+
 ## License
 Copyright
 (c) 2022 Espresso Systems espresso-network was developed by Espresso Systems. While we plan to adopt an open source license, we have not yet selected one. As such, all rights are reserved for the time being. Please reach out to us if you have thoughts on licensing.
