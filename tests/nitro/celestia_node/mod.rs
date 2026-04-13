@@ -23,8 +23,7 @@ fn celestia_lifecycle_semaphore() -> &'static std::sync::Arc<Semaphore> {
 }
 
 impl CelestiaNode {
-
-     pub async fn fetch_da_provider_byte(&self) -> anyhow::Result<()> {
+    pub async fn fetch_da_provider_byte(&self) -> anyhow::Result<()> {
         let request_body = json!({
             "jsonrpc": "2.0",
             "method": "daprovider_getSupportedHeaderBytes",
