@@ -1,5 +1,11 @@
-# Chain Agnostic Service
+# Chain Adjacent Service
 
+The Chain Adjacent Service (CAS) is a middleware that integrates rollups with the [Espresso](https://www.espressosys.com/) Network. It handles both directions of the data flow:
+
+- **Inbound**: pulls transactions from the Espresso network, filtered by rollup namespace, and makes them available to the rollup.
+- **Outbound**: batches rollup messages, submits them to the Espresso Network, and tracks finalization against L1.
+
+CAS exposes a JSON-RPC DA provider API that plugs directly into the rollup's existing DA interface, meaning the rollup does not need to be aware of Espresso internals. The rollup-specific logic (batch parsing, message types, L1 monitoring, verification) is isolated behind a `Rollup` trait, making it straightforward to add support for new rollup stacks. Arbitrum Nitro is the first supported rollup.
 
 ## Development
 
