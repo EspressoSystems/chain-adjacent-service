@@ -467,6 +467,18 @@ fn build_espresso_tx_payload(messages: &mut Vec<BroadcastFeedMessage>) -> Vec<u8
         match serde_json::to_vec(message) {
             Ok(encoded_msg) => {
                 if payload.len() + LEN_SIZE + encoded_msg.len() > HOTSHOT_TX_PAYLOAD_MAX_SIZE {
+                    if payload.is_empty() {
+                        // This should not happen in practice since the message size should be well under the limit,
+                        // but we handle it just in case to avoid panicking on an unexpectedly large message
+                        //
+                        // https://github.com/OffchainLabs/nitro/blob/57d9bf1b80ee2aff11944dec0f6daaca5654b510/arbos/arbostypes/incomingmessage.go#L37
+                        tracing::error!(
+                            "single message size: {} exceeds max hotshot tx payload size, skipping message",
+                            encoded_msg.len()
+                        );
+                        count += 1;
+                        continue;
+                    }
                     tracing::warn!(
                         "reached max hotshot tx payload size, skipping remaining messages"
                     );
@@ -481,6 +493,10 @@ fn build_espresso_tx_payload(messages: &mut Vec<BroadcastFeedMessage>) -> Vec<u8
                     seq = message.sequence_number,
                     "failed to encode message into json: {e}"
                 );
+                // Skip the message that failed to encode, but continue with the rest
+                // This should not happen in practice since the message is already verified and should be well-formed,
+                // but we handle it just in case to avoid losing the entire batch due to one bad message
+                count += 1;
             }
         }
     }
