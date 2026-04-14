@@ -167,7 +167,7 @@ async fn test_celestia_da_store_and_recover(my_addr: String) {
     let binding = response.unwrap();
     let espresso_da_cert = binding
         .get("result")
-        .unwrap()
+        .unwrap_or_else(|| panic!("daprovider_store: no 'result' in response: {binding}"))
         .get("serialized-da-cert")
         .unwrap()
         .as_str()

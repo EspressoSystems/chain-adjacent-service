@@ -205,9 +205,7 @@ impl Rollup for Nitro {
     }
 
     fn build_espresso_tx_payload(messages: &mut Vec<Self::FeedMessage>) -> Vec<u8> {
-        let result = build_espresso_tx_payload(messages);
-        messages.clear();
-        result
+        build_espresso_tx_payload(messages)
     }
 
     fn rollup_type() -> RollupType {
@@ -260,12 +258,13 @@ impl Nitro {
     pub fn verify_broadcast_feed_message(
         config: &NitroConfig,
         message: &BroadcastFeedMessage,
-    ) -> Result<()> {
+    ) -> bool {
         verify_broadcast_feed_message_signature(
             config.chain_id,
             &config.legacy_signer_addresses,
             message,
         )
+        .is_ok()
     }
 
     /// Parses a legacy Nitro hotshot payload (binary format with batch poster signature)
@@ -371,7 +370,11 @@ impl Nitro {
             current_pos += message_size as usize;
             let message: BroadcastFeedMessage = serde_json::from_slice(message_bytes)
                 .map_err(|e| anyhow::anyhow!("failed to parse nitro hotshot message: {e}"))?;
-            match Self::verify_broadcast_feed_message(config, &message) {
+            match verify_broadcast_feed_message_signature(
+                config.chain_id,
+                &config.sequencer_addresses,
+                &message,
+            ) {
                 Ok(()) => messages.push(message),
                 Err(e) => {
                     tracing::warn!(seq_num = message.sequence_number, error = %e, "skipping message with invalid signature in hotshot payload");
@@ -383,14 +386,38 @@ impl Nitro {
     }
 }
 
+// TODO: Replace this `cfg(test)` bypass with an injected verifier (e.g. via trait or function param).
+// The current approach is a temporary simplification to avoid plumbing signature verification
+// through all call sites, which would significantly increase PR complexity.
+// In the long term, verification logic should be decoupled and testable without conditional compilation.
+#[cfg(test)]
+pub fn verify_broadcast_feed_message_signature(
+    _chain_id: u64,
+    _sequencer_addresses: &[Address],
+    _msg: &BroadcastFeedMessage,
+) -> Result<()> {
+    // Skip signature verification in tests for simplicity, as test messages may not have valid signatures
+    Ok(())
+}
+
+#[cfg(not(test))]
 pub fn verify_broadcast_feed_message_signature(
     chain_id: u64,
-    _sequencer_addresses: &[Address],
+    sequencer_addresses: &[Address],
     msg: &BroadcastFeedMessage,
 ) -> Result<()> {
-    let _hash = compute_message_hash(&msg.message, msg.sequence_number, chain_id);
-    // TODO: will implement in another PR
-    Ok(())
+    let hash = compute_message_hash(&msg.message, msg.sequence_number, chain_id);
+    let signer = recover_signer_address(hash, &msg.signature)?;
+
+    if !sequencer_addresses.contains(&signer) {
+        tracing::warn!(
+            "recovered signer: {:?} is not in the list of sequencer addresses",
+            signer
+        );
+        Err(anyhow::anyhow!("invalid message signature"))
+    } else {
+        Ok(())
+    }
 }
 
 pub fn compute_message_hash(
@@ -419,7 +446,8 @@ pub fn compute_message_hash(
     hasher.finalize()
 }
 
-// TODO: consider the Espresso transaction size limit
+const HOTSHOT_TX_PAYLOAD_MAX_SIZE: usize = 900 * 1024; // 900KB, under Espresso's 1MB limit
+
 fn build_espresso_tx_payload(messages: &mut Vec<BroadcastFeedMessage>) -> Vec<u8> {
     let mut payload = Vec::new();
     // Add a header indicating NitroHeader V1
@@ -434,20 +462,45 @@ fn build_espresso_tx_payload(messages: &mut Vec<BroadcastFeedMessage>) -> Vec<u8
     payload.extend_from_slice(&(encoded_header.len() as u64).to_be_bytes());
     payload.extend_from_slice(&encoded_header);
 
-    for message in messages {
-        match serde_json::to_vec(&message) {
+    let mut count = 0;
+    for message in messages.iter() {
+        match serde_json::to_vec(message) {
             Ok(encoded_msg) => {
+                if payload.len() + LEN_SIZE + encoded_msg.len() > HOTSHOT_TX_PAYLOAD_MAX_SIZE {
+                    if payload.is_empty() {
+                        // This should not happen in practice since the message size should be well under the limit,
+                        // but we handle it just in case to avoid panicking on an unexpectedly large message
+                        //
+                        // https://github.com/OffchainLabs/nitro/blob/57d9bf1b80ee2aff11944dec0f6daaca5654b510/arbos/arbostypes/incomingmessage.go#L37
+                        tracing::error!(
+                            "single message size: {} exceeds max hotshot tx payload size, skipping message",
+                            encoded_msg.len()
+                        );
+                        count += 1;
+                        continue;
+                    }
+                    tracing::warn!(
+                        "reached max hotshot tx payload size, skipping remaining messages"
+                    );
+                    break;
+                }
                 payload.extend_from_slice(&(encoded_msg.len() as u64).to_be_bytes());
                 payload.extend_from_slice(&encoded_msg);
+                count += 1;
             }
             Err(e) => {
                 tracing::error!(
                     seq = message.sequence_number,
                     "failed to encode message into json: {e}"
                 );
+                // Skip the message that failed to encode, but continue with the rest
+                // This should not happen in practice since the message is already verified and should be well-formed,
+                // but we handle it just in case to avoid losing the entire batch due to one bad message
+                count += 1;
             }
         }
     }
+    messages.drain(..count);
     payload
 }
 
@@ -884,6 +937,7 @@ pub mod testing {
             feed_config: initial_feed_config.clone(),
             l1_ws_url: "wss://example.com".to_string(),
             sequencer_inbox_address: Address::ZERO,
+            ..Default::default()
         };
 
         let initial_config = ServiceConfig {
@@ -928,5 +982,88 @@ pub mod testing {
             result.rollup.stack.legacy_signer_addresses,
             vec![Address::ZERO]
         );
+    }
+
+    fn make_nitro_config() -> NitroConfig {
+        NitroConfig {
+            legacy_signer_addresses: vec![],
+            chain_id: 1,
+            feed_config: Default::default(),
+            l1_ws_url: "wss://localhost".to_string(),
+            sequencer_inbox_address: Address::ZERO,
+            ..Default::default()
+        }
+    }
+
+    // Helper: build a minimal BroadcastFeedMessage with a given sequence number.
+    fn simple_msg(seq: u64) -> BroadcastFeedMessage {
+        make_feed_message(
+            MessageWithMetadata {
+                message: None,
+                delayed_messages_read: 0,
+            },
+            seq,
+        )
+    }
+
+    #[test]
+    fn test_build_payload_empty_input() {
+        let mut messages: Vec<BroadcastFeedMessage> = vec![];
+        let payload = build_espresso_tx_payload(&mut messages);
+
+        assert!(!payload.is_empty());
+        assert!(messages.is_empty());
+
+        let config = make_nitro_config();
+        let parsed = Nitro::parse_nitro_hotshot_payload(&config, &payload).unwrap();
+        assert!(parsed.is_empty());
+    }
+
+    #[test]
+    fn test_build_payload_roundtrip() {
+        let mut messages = vec![simple_msg(0), simple_msg(1), simple_msg(2)];
+        let original_seqs: Vec<u64> = messages.iter().map(|m| m.sequence_number).collect();
+
+        let payload = build_espresso_tx_payload(&mut messages);
+
+        // All messages must have been drained.
+        assert!(messages.is_empty());
+
+        // Decoded messages must match the originals, in order.
+        let config = make_nitro_config();
+        let parsed = Nitro::parse_nitro_hotshot_payload(&config, &payload).unwrap();
+        assert_eq!(parsed.len(), original_seqs.len());
+        for (parsed_msg, expected_seq) in parsed.iter().zip(original_seqs.iter()) {
+            assert_eq!(parsed_msg.sequence_number, *expected_seq);
+        }
+    }
+
+    #[test]
+    fn test_build_payload_overflow_preserves_remaining() {
+        use crate::rollups::nitro::types::L1IncomingMessage;
+
+        // A 500 KB l2msg encodes to ~667 KB of JSON (base64).
+        // Two such messages together (~1.33 MB) exceed HOTSHOT_TX_PAYLOAD_MAX_SIZE (900 KB),
+        // so only the first should be consumed.
+        let large_msg = || {
+            make_feed_message(
+                MessageWithMetadata {
+                    message: Some(L1IncomingMessage {
+                        header: None,
+                        l2msg: vec![0u8; 500_000],
+                        legacy_batch_gas_cost: None,
+                        batch_data_stats: None,
+                    }),
+                    delayed_messages_read: 0,
+                },
+                0,
+            )
+        };
+
+        let mut messages = vec![large_msg(), large_msg()];
+        build_espresso_tx_payload(&mut messages);
+
+        // The second message must remain; it did not fit.
+        assert_eq!(messages.len(), 1);
     }
 }

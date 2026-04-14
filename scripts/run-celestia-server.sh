@@ -12,7 +12,14 @@ KEY_NAME="${KEY_NAME:-my_celes_key}"
 
 CONSENSUS_RPC_ENDPOINT="${RPC_ENDPOINT:-http://localhost:26657}"
 BRIDGE_RPC_ENDPOINT="${RPC_ENDPOINT:-http://localhost:26658}"
-DOCKER_BRIDGE_RPC_ENDPOINT="http://host.docker.internal:26658/"
+# On Linux, Docker containers cannot reach the host via host.docker.internal the same
+# way macOS/Docker Desktop does. Use --network host so the container shares the host
+# network stack and can reach the bridge RPC directly on 127.0.0.1.
+if [[ "$(uname)" == "Linux" ]]; then
+  DOCKER_BRIDGE_RPC_ENDPOINT="http://127.0.0.1:26658/"
+else
+  DOCKER_BRIDGE_RPC_ENDPOINT="http://host.docker.internal:26658/"
+fi
 SERVER_PORT="${SERVER_PORT:-8080}"
 NAMESPACE_ID="${NAMESPACE_ID:-65636c69707365}"
 
@@ -142,11 +149,21 @@ docker rm -f celestia-das 2>/dev/null || true
 
 SERVER_CONTAINER="celestia-das"
 
+if [[ "$(uname)" == "Linux" ]]; then
+  # --network host: container shares the host network stack, so it can reach
+  # the Celestia bridge RPC on 127.0.0.1:26658 without any extra host mapping.
+  # Port publishing (-p) is not needed with host networking.
+  DOCKER_NETWORK_ARGS="--network host"
+else
+  # On macOS, Docker Desktop handles host.docker.internal automatically.
+  DOCKER_NETWORK_ARGS="--add-host=host.docker.internal:host-gateway -p ${SERVER_PORT}:${SERVER_PORT}"
+fi
+
+# shellcheck disable=SC2086
 docker run -d \
   --name celestia-das \
   --platform linux/amd64 \
-  --add-host=host.docker.internal:host-gateway \
-  -p "$SERVER_PORT:$SERVER_PORT" \
+  $DOCKER_NETWORK_ARGS \
   --entrypoint /bin/celestia-server \
   opcelestia/nitro-das-celestia:pr-33-61f6535e8bbb \
   --enable-rpc \
