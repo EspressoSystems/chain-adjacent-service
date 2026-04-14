@@ -39,6 +39,23 @@ pub fn extract_da_sequencer_msg_from_espresso_da_certificate(
     Ok(res.into())
 }
 
+/// espresso_and_da_cert format is: [Certificate(EspressoCert, Byte1, Byte2, DACert)]
+/// this function removes the espresso metadata to obtain the raw da certificate
+/// Returns: [DACert]
+pub fn extract_raw_da_cert_from_espresso_da_certificate(
+    espresso_and_da_cert: &Bytes,
+) -> Result<Bytes, DaApiError> {
+    let cas_version = CASCertificateVersion::try_from(espresso_and_da_cert[0])?;
+    let header_size = match cas_version {
+        CASCertificateVersion::V0 => CERT_HEADER_SIZE_V0,
+    };
+
+    let da_cert_position = CasCertificate::da_header_start_position(header_size);
+
+    let da_cert = espresso_and_da_cert.slice(da_cert_position + 2..);
+    Ok(da_cert)
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
@@ -84,5 +101,19 @@ mod tests {
             extract_da_sequencer_msg_from_espresso_da_certificate(&sequencer_message).unwrap();
 
         assert_eq!(extracted.len(), 139);
+    }
+
+    #[test]
+    fn test_extract_raw_da_cert_from_espresso_da_certificate() {
+        let mut data = vec![0u8; 101];
+        data.push(0x01);
+        data.push(0x63);
+
+        let da_cert=Bytes::from_str("0x01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1c922debfd918ac649096a41aaa3e891278638a8dfbe0897116310bdb990b859ce0d81ac8ae832893373486301eb3ec8d05d3a3636938b0dc67931d03104b81ced").unwrap();
+        data.extend(da_cert.clone());
+
+        let extracted_da_cert =
+            extract_raw_da_cert_from_espresso_da_certificate(&Bytes::from(data)).unwrap();
+        assert_eq!(da_cert.len(), extracted_da_cert.len());
     }
 }

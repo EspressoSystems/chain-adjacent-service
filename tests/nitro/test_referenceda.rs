@@ -14,6 +14,7 @@ use chain_agnostic_service::{
         config::{DaApiConfig, DaProviderConfig},
         nitro::utils::{
             SEQUENCER_HEADER_LEN, extract_da_sequencer_msg_from_espresso_da_certificate,
+            extract_raw_da_cert_from_espresso_da_certificate,
         },
         run,
     },
@@ -78,6 +79,9 @@ async fn test_nitro_reference_da() {
 
     println!("running test_nitro_reference_da_store_and_recover");
     test_nitro_reference_da_store_and_recover(my_addr.to_string()).await;
+
+    println!("running test_nitro_reference_da_generate_read_preimage_proof");
+    test_nitro_reference_da_generate_read_preimage_proof(my_addr.to_string()).await;
 }
 
 #[allow(clippy::unwrap_used)]
@@ -259,4 +263,99 @@ async fn test_nitro_reference_da_store_and_recover(my_addr: String) {
     // });
 
     // assert_eq!(recover_and_collect_preimages, expected_recover_and_collect_preimages_response);
+}
+
+#[allow(clippy::unwrap_used)]
+async fn test_nitro_reference_da_generate_read_preimage_proof(my_addr: String) {
+    let client = reqwest::Client::new();
+
+    let store_response: Value = client
+        .post(format!("http://{my_addr}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "method": "daprovider_store",
+            "params": [STORE_REQUEST_DATA, "0x67a305801"],
+            "id": 1
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let espresso_da_cert = store_response["result"]["serialized-da-cert"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let raw_da_cert = extract_raw_da_cert_from_espresso_da_certificate(
+        &Bytes::from_str(&espresso_da_cert).unwrap(),
+    )
+    .unwrap();
+    let cert_hash = keccak256(&raw_da_cert);
+
+    let response: Value = client
+        .post(format!("http://{my_addr}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "method": "daprovider_generateReadPreimageProof",
+            "params": [
+                cert_hash.to_string(),
+                "0x0",
+                &Bytes::from_str(&espresso_da_cert).unwrap()
+            ],
+            "id": 1
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert!(
+        response.get("error").is_none(),
+        "unexpected error: {response}"
+    );
+    assert!(
+        response["result"].get("proof").is_some(),
+        "missing proof in result"
+    );
+
+    let proof_bytes = Bytes::from_str(response["result"]["proof"].as_str().unwrap()).unwrap();
+    let store_data_bytes = Bytes::from_str(STORE_REQUEST_DATA).unwrap();
+    assert!(
+        proof_bytes.ends_with(&store_data_bytes),
+        "proof should contain the originally stored data"
+    );
+
+    let response1: Value = client
+        .post(format!("http://{my_addr}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "method": "daprovider_generateCertificateValidityProof",
+            "params": [&Bytes::from_str(&espresso_da_cert).unwrap()],
+            "id": 1
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    println!("Certificate Validity Proof Response: {response1}");
+
+    assert!(
+        response1.get("error").is_none(),
+        "unexpected error: {response1}"
+    );
+    assert!(
+        response1["result"].get("proof").is_some(),
+        "missing proof in result"
+    );
+    assert_eq!(
+        response1["result"].get("proof").unwrap().as_str().unwrap(),
+        "0x0101"
+    );
 }

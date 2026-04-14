@@ -24,8 +24,12 @@ use crate::{
         config::DaProviderConfig,
         error::DaApiError,
         nitro::{
-            certificate::CasCertificate, types::DAStoreResponse,
-            utils::extract_da_sequencer_msg_from_espresso_da_certificate,
+            certificate::CasCertificate,
+            types::DAStoreResponse,
+            utils::{
+                extract_da_sequencer_msg_from_espresso_da_certificate,
+                extract_raw_da_cert_from_espresso_da_certificate,
+            },
         },
     },
 };
@@ -36,6 +40,8 @@ const STORE: &str = "daprovider_store";
 const RECOVER_PAYLOAD: &str = "daprovider_recoverPayload";
 const COLLECT_PREIMAGES: &str = "daprovider_collectPreimages";
 const RECOVER_PAYLOAD_AND_PREIMAGES: &str = "daprovider_recoverPayloadAndPreimages";
+const GENERATE_READ_PREIMAGE_PROOF: &str = "daprovider_generateReadPreimageProof";
+const GENERATE_CERTIFICATE_VALIDITY_PROOF: &str = "daprovider_generateCertificateValidityProof";
 
 #[derive(Clone)]
 pub struct ServerState {
@@ -84,6 +90,17 @@ async fn handle_rpc(State(state): State<ServerState>, body: Bytes) -> Result<Res
         COLLECT_PREIMAGES => handle_recover_inner(state, parsed, COLLECT_PREIMAGES).await,
         RECOVER_PAYLOAD_AND_PREIMAGES => {
             handle_recover_inner(state, parsed, RECOVER_PAYLOAD_AND_PREIMAGES).await
+        }
+        GENERATE_READ_PREIMAGE_PROOF => {
+            handle_validator_inner(state, parsed, GENERATE_READ_PREIMAGE_PROOF).await
+        }
+        GENERATE_CERTIFICATE_VALIDITY_PROOF => {
+            handle_certificate_validity_proof_inner(
+                state,
+                parsed,
+                GENERATE_CERTIFICATE_VALIDITY_PROOF,
+            )
+            .await
         }
         _ => forward_raw(state, body).await,
     }
@@ -273,6 +290,121 @@ async fn handle_recover_inner(
         "jsonrpc": "2.0",
         "method": downstream_method,
         "params": [batch_num, batch_block_hash, da_certificate],
+        "id": body["id"],
+    });
+
+    let downstream = state
+        .client
+        .post(&endpoint)
+        .json(&forwarded_body)
+        .send()
+        .await
+        .map_err(|e| DaApiError::DownstreamDa(e.to_string()))?;
+
+    let status = downstream.status();
+    let bytes = downstream
+        .bytes()
+        .await
+        .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
+
+    Response::builder()
+        .status(status)
+        .header(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)
+        .body(axum::body::Body::from(bytes))
+        .map_err(|e| DaApiError::ParsingError(e.to_string()))
+}
+
+// validator method handler
+async fn handle_validator_inner(
+    state: ServerState,
+    body: Value,
+    downstream_method: &str,
+) -> Result<Response, DaApiError> {
+    let params = body["params"]
+        .as_array()
+        .filter(|p| p.len() == 3)
+        .ok_or_else(|| DaApiError::InvalidParams("expected 3 params".to_string()))?;
+
+    let cert_hash: alloy::primitives::FixedBytes<32> = serde_json::from_value(params[0].clone())
+        .map_err(|e| DaApiError::InvalidParams(format!("bad cert_hash: {e}")))?;
+
+    let offset: alloy::primitives::U64 = serde_json::from_value(params[1].clone())
+        .map_err(|e| DaApiError::InvalidParams(format!("bad offset: {e}")))?;
+
+    let certificate: alloy::primitives::Bytes = serde_json::from_value(params[2].clone())
+        .map_err(|e| DaApiError::InvalidParams(format!("bad certificate: {e}")))?;
+
+    info!(
+        cert_hash = %cert_hash,
+        offset = %offset,
+        method = downstream_method,
+        "received DA validator certificate request"
+    );
+
+    // extxract the raw downstream DA certificate by removing the espresso metadata wrapper
+    let raw_da_cert = extract_raw_da_cert_from_espresso_da_certificate(&certificate)
+        .map_err(|e| DaApiError::InvalidParams(format!("invalid certificate: {e}")))?;
+
+    let endpoint = state
+        .current_endpoint()
+        .ok_or(DaApiError::NoDaProvidersConfigured)?;
+
+    let forwarded_body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": downstream_method,
+        "params": [cert_hash, offset, raw_da_cert],
+        "id": body["id"],
+    });
+
+    let downstream = state
+        .client
+        .post(&endpoint)
+        .json(&forwarded_body)
+        .send()
+        .await
+        .map_err(|e| DaApiError::DownstreamDa(e.to_string()))?;
+
+    let status = downstream.status();
+    let bytes = downstream
+        .bytes()
+        .await
+        .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
+
+    Response::builder()
+        .status(status)
+        .header(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)
+        .body(axum::body::Body::from(bytes))
+        .map_err(|e| DaApiError::ParsingError(e.to_string()))
+}
+
+// validator method handler
+async fn handle_certificate_validity_proof_inner(
+    state: ServerState,
+    body: Value,
+    downstream_method: &str,
+) -> Result<Response, DaApiError> {
+    let params = body["params"]
+        .as_array()
+        .filter(|p| p.len() == 1)
+        .ok_or_else(|| DaApiError::InvalidParams("expected 1 param".to_string()))?;
+
+    let certificate: alloy::primitives::Bytes = serde_json::from_value(params[0].clone())
+        .map_err(|e| DaApiError::InvalidParams(format!("bad certificate: {e}")))?;
+
+    info!(method = downstream_method, "received DA request");
+
+    // extxract the raw downstream DA certificate by removing the espresso metadata wrapper
+    let raw_da_cert = extract_raw_da_cert_from_espresso_da_certificate(&certificate)
+        .map_err(|e| DaApiError::InvalidParams(format!("invalid certificate: {e}")))?;
+
+    let endpoint = state
+        .current_endpoint()
+        .ok_or(DaApiError::NoDaProvidersConfigured)?;
+
+    let forwarded_body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": downstream_method,
+        "params": [raw_da_cert],
         "id": body["id"],
     });
 
