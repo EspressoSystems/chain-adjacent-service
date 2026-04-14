@@ -21,6 +21,15 @@ fn compose_lifecycle_semaphore() -> &'static std::sync::Arc<Semaphore> {
     SEMAPHORE.get_or_init(|| std::sync::Arc::new(Semaphore::new(1)))
 }
 
+impl Drop for EspressoDevNode {
+    fn drop(&mut self) {
+        // Stop the container first, then release the permit.
+        // This ensures the old instance is fully stopped before another one is allowed to start.
+        self.stop();
+        self._lifecycle_permit.take();
+    }
+}
+
 impl EspressoDevNode {
     pub fn new(client: EspressoClient) -> Self {
         Self {
