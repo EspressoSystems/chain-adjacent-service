@@ -50,6 +50,9 @@ async fn run<R: Rollup>(config: ServiceConfig<R::StackConfig>) -> Result<()> {
         let mut txes = Vec::new();
         while !msgs.is_empty() {
             let payload = R::build_espresso_tx_payload(&mut msgs);
+            if payload.is_empty() {
+                panic!("build_espresso_tx_payload returned empty payload for non-empty messages");
+            }
             let tx = espresso_types::Transaction::new(namespace_id, payload);
             txes.push(tx);
         }

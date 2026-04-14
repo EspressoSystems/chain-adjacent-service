@@ -38,3 +38,5 @@ jobs:
 
       - name: Run E2E tests
         run: cargo test --test nitro --features e2e -- --test-threads=1
+        env:
+          RUST_BACKTRACE: 1
