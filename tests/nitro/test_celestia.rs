@@ -19,16 +19,15 @@ use chain_agnostic_service::{
     },
 };
 
-pub const CELESTIA_DA_IDENTIFIER: &str = "0x63";
+pub const _CELESTIA_DA_IDENTIFIER: &str = "0x63";
 pub const CELESTIA_DA_MAX_SIZE: usize = 33554432;
 
 #[allow(clippy::unwrap_used)]
 fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
     let mut da_providers = HashMap::new();
     da_providers.insert(
-        0,
+        "celestia".to_string(),
         DaProviderConfig {
-            da_type_byte: Bytes::from_str(CELESTIA_DA_IDENTIFIER).unwrap(),
             endpoint_url: da_provider_url,
         },
     );
@@ -84,7 +83,7 @@ async fn test_celestia_da_max_supported_size(my_addr: String) {
     let client = reqwest::Client::new();
 
     let response: Value = client
-        .post(format!("http://{my_addr}"))
+        .post(format!("http://{my_addr}/celestia"))
         .json(&json!({
             "jsonrpc": "2.0",
             "method": "daprovider_getMaxMessageSize",
@@ -115,7 +114,7 @@ async fn _test_celestia_da_supported_header_bytes(my_addr: String) {
     let client = reqwest::Client::new();
 
     let response: Value = client
-        .post(format!("http://{my_addr}"))
+        .post(format!("http://{my_addr}/celestia"))
         .json(&json!({
             "jsonrpc": "2.0",
             "method": "daprovider_getMaxMessageSize",
@@ -135,7 +134,7 @@ async fn _test_celestia_da_supported_header_bytes(my_addr: String) {
       "jsonrpc": "2.0",
       "id": 1,
       "result": {
-        "headerBytes": CELESTIA_DA_IDENTIFIER
+        "headerBytes": _CELESTIA_DA_IDENTIFIER
       }
     });
 
@@ -147,7 +146,7 @@ async fn test_celestia_da_store_and_recover(my_addr: String) {
     let client = reqwest::Client::new();
 
     let response: Result<Value, _> = client
-        .post(format!("http://{my_addr}"))
+        .post(format!("http://{my_addr}/celestia"))
         .json(&json!({
             "jsonrpc": "2.0",
             "method": "daprovider_store",
@@ -179,7 +178,7 @@ async fn test_celestia_da_store_and_recover(my_addr: String) {
 
     // daprovider_recoverPayload
     let recover_payload: Result<Value, _> = client
-        .post(format!("http://{my_addr}"))
+        .post(format!("http://{my_addr}/celestia"))
         .json(&json!({
             "jsonrpc": "2.0",
             "method": "daprovider_recoverPayload",
@@ -217,7 +216,7 @@ async fn test_celestia_da_store_and_recover(my_addr: String) {
 
     // daprovider_collectPreimages
     let collect_preimages: Result<Value, _> = client
-        .post(format!("http://{my_addr}"))
+        .post(format!("http://{my_addr}/celestia"))
         .json(&json!({
             "jsonrpc": "2.0",
             "method": "daprovider_collectPreimages",

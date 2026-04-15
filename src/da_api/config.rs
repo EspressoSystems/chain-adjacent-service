@@ -1,4 +1,3 @@
-use alloy::primitives::Bytes;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -7,8 +6,8 @@ pub struct DaApiConfig {
     /// Server bind address
     pub listen_addr: String,
 
-    /// downstream DA providers
-    pub da_providers: HashMap<u8, DaProviderConfig>,
+    /// DA provider name <-> DA provider config
+    pub da_providers: HashMap<String, DaProviderConfig>,
 
     /// Espresso/HotShot configuration
     pub hotshot: HotShotConfig,
@@ -16,9 +15,7 @@ pub struct DaApiConfig {
 
 #[derive(Default, Debug, Clone, Deserialize, Serialize)]
 pub struct DaProviderConfig {
-    /// DA type byte
-    pub da_type_byte: Bytes,
-
+    /// Downstream DA API endpoint
     pub endpoint_url: String,
 }
 

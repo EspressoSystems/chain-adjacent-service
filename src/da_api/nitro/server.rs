@@ -7,13 +7,7 @@ use axum::{
     routing::post,
 };
 use serde_json::Value;
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc,
-        atomic::{AtomicU8, Ordering},
-    },
-};
+use std::collections::HashMap;
 use tokio::sync::oneshot;
 use tracing::info;
 
@@ -39,35 +33,38 @@ const RECOVER_PAYLOAD_AND_PREIMAGES: &str = "daprovider_recoverPayloadAndPreimag
 
 #[derive(Clone)]
 pub struct ServerState {
-    pub router: Arc<HashMap<u8, DaProviderConfig>>,
-    // TODO: dont use AtmoicU8 with hashmap here. update the design
-    pub current_da_provider: Arc<AtomicU8>,
+    pub da_config: DaProviderConfig,
     pub client: reqwest::Client,
     pub verification_channel: VerificationSender,
 }
 
 impl ServerState {
-    pub fn new(
-        router: HashMap<u8, DaProviderConfig>,
-        verification_channel: VerificationSender,
-    ) -> Self {
+    pub fn new(da_config: DaProviderConfig, verification_channel: VerificationSender) -> Self {
         Self {
-            router: Arc::new(router),
-            current_da_provider: Arc::new(AtomicU8::new(0)),
+            da_config,
             client: reqwest::Client::new(),
             verification_channel,
         }
     }
 
-    fn current_endpoint(&self) -> Option<String> {
-        self.router
-            .get(&self.current_da_provider.load(Ordering::Acquire))
-            .map(|c| c.endpoint_url.clone())
+    fn current_endpoint(&self) -> &str {
+        &self.da_config.endpoint_url
     }
 }
 
-pub fn server_router(state: ServerState) -> Router {
-    Router::new().route("/", post(handle_rpc)).with_state(state)
+/// Build the top-level Axum router. Each DA provider is mounted at its own path prefix,
+/// e.g. `/celestia`, `/anytrust`. All paths expose identical RPC handler logic.
+pub fn build_app(
+    providers: HashMap<String, DaProviderConfig>,
+    verification_channel: VerificationSender,
+) -> Router {
+    let mut app = Router::new();
+    for (name, config) in providers {
+        let state = ServerState::new(config, verification_channel.clone());
+        let sub = Router::new().route("/", post(handle_rpc)).with_state(state);
+        app = app.nest(&format!("/{name}"), sub);
+    }
+    app
 }
 
 async fn handle_rpc(State(state): State<ServerState>, body: Bytes) -> Result<Response, DaApiError> {
@@ -91,13 +88,11 @@ async fn handle_rpc(State(state): State<ServerState>, body: Bytes) -> Result<Res
 
 /// Forward the request to the downstream provider without any modification
 async fn forward_raw(state: ServerState, body: Bytes) -> Result<Response, DaApiError> {
-    let endpoint = state
-        .current_endpoint()
-        .ok_or(DaApiError::NoDaProvidersConfigured)?;
+    let endpoint = state.current_endpoint();
 
     let resp = state
         .client
-        .post(&endpoint)
+        .post(endpoint)
         .header("content-type", HEADER_CONTENT_TYPE)
         .body(body)
         .send()
@@ -160,9 +155,7 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
         ));
     }
 
-    let endpoint = state
-        .current_endpoint()
-        .ok_or(DaApiError::NoDaProvidersConfigured)?;
+    let endpoint = state.current_endpoint();
 
     let forwarded_body = serde_json::json!({
         "jsonrpc": "2.0",
@@ -173,7 +166,7 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
 
     let downstream = state
         .client
-        .post(&endpoint)
+        .post(endpoint)
         .json(&forwarded_body)
         .send()
         .await
@@ -217,8 +210,6 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
         &data,
         &raw_cert.serialized_da_certificate,
     )?;
-
-    state.current_da_provider.store(0, Ordering::Relaxed);
 
     let resp = DAStoreResponse::try_from(final_cert)?;
 
@@ -265,9 +256,7 @@ async fn handle_recover_inner(
     let da_certificate = extract_da_sequencer_msg_from_espresso_da_certificate(&sequencer_msg)
         .map_err(|e| DaApiError::InvalidParams(format!("invalid sequencer_msg: {e}")))?;
 
-    let endpoint = state
-        .current_endpoint()
-        .ok_or(DaApiError::NoDaProvidersConfigured)?;
+    let endpoint = state.current_endpoint();
 
     let forwarded_body = serde_json::json!({
         "jsonrpc": "2.0",
@@ -278,7 +267,7 @@ async fn handle_recover_inner(
 
     let downstream = state
         .client
-        .post(&endpoint)
+        .post(endpoint)
         .json(&forwarded_body)
         .send()
         .await
@@ -315,7 +304,7 @@ mod tests {
             config::DaProviderConfig,
             nitro::{
                 certificate::CasCertificate,
-                server::{ServerState, server_router},
+                server::build_app,
                 types::{DAStoreResponse, PreImagesResult, RecoverPayloadResult},
             },
         },
@@ -331,24 +320,19 @@ mod tests {
 
     fn spawn_server(
         addr: SocketAddr,
-        endpoint: String,
-        fallback_uri: Option<String>,
+        names: Vec<String>,
+        endpoints: Vec<String>,
     ) -> JoinHandle<()> {
         let mut da_providers = HashMap::new();
-        da_providers.insert(
-            0,
-            DaProviderConfig {
-                da_type_byte: Bytes::from_str("0x05").unwrap(),
-                endpoint_url: endpoint.clone(),
-            },
-        );
-        da_providers.insert(
-            1,
-            DaProviderConfig {
-                da_type_byte: Bytes::from_str("0x80").unwrap(),
-                endpoint_url: fallback_uri.unwrap_or(endpoint.clone()),
-            },
-        );
+        for (name, endpoint) in names.into_iter().zip(endpoints.into_iter()) {
+            da_providers.insert(
+                name,
+                DaProviderConfig {
+                    endpoint_url: endpoint.clone(),
+                },
+            );
+        }
+
         tokio::spawn(async move {
             let (verification_channel, mut verify_receiver) =
                 tokio::sync::mpsc::channel::<(Bytes, oneshot::Sender<VerificationResult>)>(1);
@@ -366,11 +350,76 @@ mod tests {
                 }
             });
 
-            let state = ServerState::new(da_providers, verification_channel);
-            let app = server_router(state);
+            let app = build_app(da_providers, verification_channel);
             let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
             axum::serve(listener, app).await.unwrap();
         })
+    }
+
+    #[tokio::test]
+    async fn test_namespace_endpoints() {
+        let mock_da_provider = MockServer::start().await;
+        let mock_da_provider2 = MockServer::start().await;
+
+        let addr: SocketAddr = "127.0.0.1:9972".parse().unwrap();
+        let _server = spawn_server(
+            addr,
+            vec!["celestia".to_string(), "anytrust".to_string()],
+            vec![mock_da_provider.uri(), mock_da_provider2.uri()],
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let client_1 = HttpClientBuilder::default()
+            .build(format!("http://{addr}/celestia"))
+            .unwrap();
+
+        let client_2 = HttpClientBuilder::default()
+            .build(format!("http://{addr}/anytrust"))
+            .unwrap();
+
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                json!({ "method": "daprovider_getSupportedHeaderBytes" }),
+            ))
+            .respond_with(|req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                let id = body.get("id").cloned().unwrap_or(json!(1));
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "headerBytes": "0x63" }
+                }))
+            })
+            .mount(&mock_da_provider)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                json!({ "method": "daprovider_getSupportedHeaderBytes" }),
+            ))
+            .respond_with(|req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                let id = body.get("id").cloned().unwrap_or(json!(1));
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "headerBytes": "0x80" }
+                }))
+            })
+            .mount(&mock_da_provider2)
+            .await;
+
+        let response1: serde_json::Value = client_1
+            .request("daprovider_getSupportedHeaderBytes", rpc_params![])
+            .await
+            .expect("RPC call failed");
+        let response2: serde_json::Value = client_2
+            .request("daprovider_getSupportedHeaderBytes", rpc_params![])
+            .await
+            .expect("RPC call failed");
+
+        assert_eq!(response1["headerBytes"], "0x63");
+        assert_eq!(response2["headerBytes"], "0x80");
     }
 
     #[tokio::test]
@@ -378,11 +427,15 @@ mod tests {
         let mock_da_provider = MockServer::start().await;
 
         let addr: SocketAddr = "127.0.0.1:9971".parse().unwrap();
-        let _server = spawn_server(addr, mock_da_provider.uri(), None);
+        let _server = spawn_server(
+            addr,
+            vec!["celestia".to_string()],
+            vec![mock_da_provider.uri()],
+        );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
-            .build(format!("http://{addr}"))
+            .build(format!("http://{addr}/celestia"))
             .unwrap();
 
         // Test all pass through RPC calls
@@ -584,11 +637,15 @@ mod tests {
         let mock_da_provider = MockServer::start().await;
 
         let addr: SocketAddr = "127.0.0.1:9946".parse().unwrap();
-        let _server = spawn_server(addr, mock_da_provider.uri(), None);
+        let _server = spawn_server(
+            addr,
+            vec!["celestia".to_string()],
+            vec![mock_da_provider.uri()],
+        );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
-            .build(format!("http://{addr}"))
+            .build(format!("http://{addr}/celestia"))
             .unwrap();
 
         let short_msg = Bytes::from(vec![0u8; 10]);
@@ -625,11 +682,15 @@ mod tests {
             .await;
 
         let addr: SocketAddr = "127.0.0.1:9960".parse().unwrap();
-        let _server = spawn_server(addr, mock_da_provider.uri(), None);
+        let _server = spawn_server(
+            addr,
+            vec!["celestia".to_string()],
+            vec![mock_da_provider.uri()],
+        );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
-            .build(format!("http://{addr}"))
+            .build(format!("http://{addr}/celestia"))
             .unwrap();
 
         let response: Result<DAStoreResponse, _> = client
@@ -656,11 +717,15 @@ mod tests {
             .await;
 
         let addr: SocketAddr = "127.0.0.1:9963".parse().unwrap();
-        let _server = spawn_server(addr, mock_da_provider.uri(), None);
+        let _server = spawn_server(
+            addr,
+            vec!["celestia".to_string()],
+            vec![mock_da_provider.uri()],
+        );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
-            .build(format!("http://{addr}"))
+            .build(format!("http://{addr}/celestia"))
             .unwrap();
 
         let response: Result<DAStoreResponse, _> = client
@@ -698,11 +763,15 @@ mod tests {
             .await;
 
         let addr: SocketAddr = "127.0.0.1:9964".parse().unwrap();
-        let _server = spawn_server(addr, mock_da_provider.uri(), None);
+        let _server = spawn_server(
+            addr,
+            vec!["celestia".to_string()],
+            vec![mock_da_provider.uri()],
+        );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
-            .build(format!("http://{addr}"))
+            .build(format!("http://{addr}/celestia"))
             .unwrap();
 
         let response: Result<DAStoreResponse, _> = client
@@ -730,11 +799,15 @@ mod tests {
             .await;
 
         let addr: SocketAddr = "127.0.0.1:9965".parse().unwrap();
-        let _server = spawn_server(addr, mock_da_provider.uri(), None);
+        let _server = spawn_server(
+            addr,
+            vec!["celestia".to_string()],
+            vec![mock_da_provider.uri()],
+        );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
-            .build(format!("http://{addr}"))
+            .build(format!("http://{addr}/celestia"))
             .unwrap();
 
         let response: Result<DAStoreResponse, _> = client
