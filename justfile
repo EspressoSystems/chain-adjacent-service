@@ -70,7 +70,7 @@ check:
 
 # ─── Running tests ────────────────────────────────────────────────────────────
 
-# Run all E2E tests (tests must run sequentially
+# Run all E2E tests (tests must run sequentially)
 test-e2e:
     RUST_BACKTRACE=1 cargo test --test nitro --features e2e -- --test-threads=1
 
