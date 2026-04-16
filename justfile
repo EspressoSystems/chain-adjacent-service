@@ -76,3 +76,25 @@ test-e2e:
 
 test:
     RUST_BACKTRACE=1 cargo test --all-features -- --test-threads=1
+
+# ─── Cleanup ──────────────────────────────────────────────────────────────────
+
+# Tear down leftover E2E state (containers, Celestia processes) after a crash or Ctrl-C
+clean:
+    #!/usr/bin/env bash
+    set -u
+    echo "Stopping nitro-testnode containers..."
+    (cd nitro-testnode && docker compose down -v) || true
+
+    echo "Stopping espresso dev-node containers..."
+    docker compose -f src/espresso_e2e/docker-compose.yml down -v --remove-orphans || true
+
+    echo "Killing Celestia processes..."
+    pkill -9 -f celestia-server || true
+    pkill -f celestia-appd || true
+    pkill -f "celestia bridge" || true
+
+    echo "Removing celestia-das container..."
+    docker rm -f celestia-das >/dev/null 2>&1 || true
+
+    echo "Done."
