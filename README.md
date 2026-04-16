@@ -19,21 +19,22 @@ CAS exposes a JSON-RPC DA provider API that plugs directly into the rollup's exi
 nix develop
 ```
 
-### Run the unit tests
+### Initial setup
 
-```bash
-just test
-```
-
-### Run the E2E tests
 
 The E2E tests require Go, Docker, and the Celestia binaries. The Celestia binaries (`celestia-appd`, `celestia`) are provided by the nix devshell. On a fresh machine:
 
 ```bash
 just setup       # initialize git submodules
 just check       # verify all prerequisites are in place
-just test-e2e    # run the E2E tests
 ```
+
+### Run the all the tests
+
+```bash
+just test
+```
+
 
 ## License
 Copyright
