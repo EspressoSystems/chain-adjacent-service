@@ -29,7 +29,7 @@ just setup       # initialize git submodules
 just check       # verify all prerequisites are in place
 ```
 
-### Run the all the tests
+### Run the all tests
 
 ```bash
 just test
