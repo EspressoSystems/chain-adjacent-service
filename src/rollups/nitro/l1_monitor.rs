@@ -15,9 +15,9 @@ use crate::{
     rollups::{
         nitro::{
             nitro,
-            types::{L1MonitorError, LatestBatchInfo},
+            types::{BatchCursor, L1MonitorError},
         },
-        rollup::L1Monitor,
+        rollup::{CasCheckpoint, L1Monitor},
     },
     utils::exponential_backoff,
 };
@@ -36,6 +36,12 @@ sol! {
             uint256 afterDelayedMessagesRead,
             IBridge.TimeBounds timeBounds,
             IBridge.BatchDataLocation dataLocation
+        );
+
+        event BatchVerified(
+            uint256 hotshotBlock,
+            uint256 delayedMessageRead,
+            uint256 messageCount
         );
     }
 
@@ -62,12 +68,17 @@ sol! {
 pub struct L1MonitorConfig {
     pub ws_url: String,
     pub sequencer_inbox_address: Address,
+    /// Number of blocks to step back when scanning for the latest `BatchVerified`
+    /// event. The monitor walks backwards from the current block in chunks of
+    /// this size until it finds an event.
+    pub log_scan_step: u64,
 }
 
 pub struct NitroL1Monitor {
     provider: RootProvider,
     sequencer_inbox_address: Address,
     bridge_address: Address,
+    log_scan_step: u64,
 }
 
 impl NitroL1Monitor {
@@ -84,6 +95,7 @@ impl NitroL1Monitor {
             provider,
             sequencer_inbox_address: config.sequencer_inbox_address,
             bridge_address: bridge_addr,
+            log_scan_step: config.log_scan_step,
         })
     }
 
@@ -123,7 +135,7 @@ impl NitroL1Monitor {
         &self,
         last_finalized_block: &mut u64,
         l1_finalized_msg_idx_sender: &watch::Sender<u64>,
-        latest_batch_info_sender: &watch::Sender<LatestBatchInfo>,
+        batch_cursor_sender: &watch::Sender<BatchCursor>,
     ) -> Result<(), L1MonitorError> {
         // Check the current finalized block number
         let finalized_block = self
@@ -166,7 +178,7 @@ impl NitroL1Monitor {
 
             // A new batch is posted. This is the most up-to-date batch info
             // needed by verifying upcoming batches.
-            let _ = latest_batch_info_sender.send(LatestBatchInfo {
+            let _ = batch_cursor_sender.send(BatchCursor {
                 last_batch_delayed_messages_read: delayed_read,
                 next_batch_start_pos: msg_count,
             });
@@ -195,26 +207,89 @@ impl NitroL1Monitor {
     }
 }
 
-impl L1Monitor<LatestBatchInfo, nitro::Error> for NitroL1Monitor {
-    async fn fetch_latest_batch_info_on_startup(
+impl L1Monitor<BatchCursor, nitro::Error> for NitroL1Monitor {
+    async fn fetch_latest_batch_cursor_on_fresh_deployment(
         &self,
-    ) -> Result<Option<LatestBatchInfo>, nitro::Error> {
+    ) -> Result<BatchCursor, nitro::Error> {
         let (message_count, delayed_read) = tokio::try_join!(
             self.fetch_message_count(BlockNumberOrTag::Latest),
             self.fetch_delayed_messages_read(BlockNumberOrTag::Latest),
         )
         .map_err(nitro::Error::from)?;
 
-        Ok(Some(LatestBatchInfo {
+        Ok(BatchCursor {
             next_batch_start_pos: message_count,
             last_batch_delayed_messages_read: delayed_read,
-        }))
+        })
+    }
+
+    async fn fetch_latest_checkpoint_on_startup(
+        &self,
+    ) -> Result<CasCheckpoint<BatchCursor>, nitro::Error> {
+        let latest_block = self
+            .provider
+            .get_block_number()
+            .await
+            .map_err(L1MonitorError::from)?;
+
+        let mut to_block = latest_block;
+
+        // Walk backwards in chunks of `log_scan_step` until we find a
+        // BatchVerified event.
+        loop {
+            let from_block = to_block.saturating_sub(self.log_scan_step);
+
+            let filter = Filter::new()
+                .address(self.sequencer_inbox_address)
+                .event_signature(ISequencerInbox::BatchVerified::SIGNATURE_HASH)
+                .from_block(from_block)
+                .to_block(to_block);
+
+            let logs = self
+                .provider
+                .get_logs(&filter)
+                .await
+                .map_err(L1MonitorError::from)?;
+
+            // Take the most recent event (last in the returned list).
+            if let Some(log) = logs.last() {
+                let event = ISequencerInbox::BatchVerified::decode_log(&log.inner)
+                    .map_err(|e| L1MonitorError::Contract(e.to_string()))?;
+
+                let hotshot_height = event.data.hotshotBlock.to::<u64>();
+                let delayed_message_read = event.data.delayedMessageRead.to::<u64>();
+                let message_count = event.data.messageCount.to::<u64>();
+
+                tracing::info!(
+                    hotshot_height,
+                    delayed_message_read,
+                    message_count,
+                    "found latest BatchVerified event"
+                );
+
+                return Ok(CasCheckpoint::new(
+                    BatchCursor {
+                        last_batch_delayed_messages_read: delayed_message_read,
+                        next_batch_start_pos: message_count,
+                    },
+                    hotshot_height,
+                ));
+            }
+
+            if from_block == 0 {
+                // Scanned the entire chain — no event found.
+                tracing::warn!("no BatchVerified event found on-chain");
+                return Ok(CasCheckpoint::new(BatchCursor::default(), 0));
+            }
+
+            to_block = from_block.saturating_sub(1);
+        }
     }
 
     async fn start(
         &self,
         l1_finalized_msg_idx_sender: watch::Sender<u64>,
-        latest_batch_info_sender: watch::Sender<LatestBatchInfo>,
+        batch_cursor: watch::Sender<BatchCursor>,
     ) {
         let filter = Filter::new()
             .address(self.sequencer_inbox_address)
@@ -256,7 +331,7 @@ impl L1Monitor<LatestBatchInfo, nitro::Error> for NitroL1Monitor {
                         .process_event(
                             &mut last_finalized_block,
                             &l1_finalized_msg_idx_sender,
-                            &latest_batch_info_sender,
+                            &batch_cursor,
                         )
                         .await
                     {
@@ -319,6 +394,7 @@ mod tests {
         let config = L1MonitorConfig {
             ws_url,
             sequencer_inbox_address: SEQUENCER_INBOX,
+            log_scan_step: 10_000,
         };
         NitroL1Monitor::new(&config)
             .await
@@ -381,10 +457,9 @@ mod tests {
     async fn fetch_latest_batch_info_on_startup_returns_valid_info() {
         let monitor = setup_monitor().await;
         let info = monitor
-            .fetch_latest_batch_info_on_startup()
+            .fetch_latest_batch_cursor_on_fresh_deployment()
             .await
-            .expect("fetch failed")
-            .expect("expected Some");
+            .expect("fetch failed");
         assert!(
             info.next_batch_start_pos > 0,
             "expected nonzero next_batch_start_pos, got {}",

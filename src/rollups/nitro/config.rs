@@ -13,4 +13,12 @@ pub struct NitroConfig {
 
     pub l1_ws_url: String,
     pub sequencer_inbox_address: Address,
+    /// Number of blocks to step back per query when scanning for the latest
+    /// `BatchVerified` event on startup. Defaults to 10 000 if not specified.
+    #[serde(default = "default_log_scan_step")]
+    pub log_scan_step: u64,
+}
+
+fn default_log_scan_step() -> u64 {
+    10_000
 }

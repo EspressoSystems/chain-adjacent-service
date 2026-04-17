@@ -14,6 +14,8 @@ pub struct ServiceConfig<C> {
     pub submitter_config: SubmitterConfig,
     #[serde(default)]
     pub advanced: AdvancedConfig,
+    #[serde(default)]
+    pub is_fresh_deployment: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

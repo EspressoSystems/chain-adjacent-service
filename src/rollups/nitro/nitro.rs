@@ -9,9 +9,9 @@ use crate::rollups::nitro::feed::relay::FeedRelay;
 use crate::rollups::nitro::feed::relay::FeedRelayError;
 use crate::rollups::nitro::l1_monitor::L1MonitorConfig;
 use crate::rollups::nitro::l1_monitor::NitroL1Monitor;
+use crate::rollups::nitro::types::BatchCursor;
 use crate::rollups::nitro::types::BatchMessage;
 use crate::rollups::nitro::types::L1MonitorError;
-use crate::rollups::nitro::types::LatestBatchInfo;
 use crate::rollups::nitro::types::LegacyParsedNitroEspressoTransaction;
 use crate::rollups::nitro::types::MessageWithMetadata;
 use crate::rollups::nitro::types::Nitro;
@@ -54,7 +54,7 @@ impl Rollup for Nitro {
     type StackConfig = NitroConfig;
     type Entry = NitroRollupQueueEntry;
     type BatchMessage = BatchMessage;
-    type LatestBatchInfo = LatestBatchInfo;
+    type BatchCursor = BatchCursor;
     type FeedMessage = BroadcastFeedMessage;
     type L1Monitor = NitroL1Monitor;
 
@@ -103,7 +103,7 @@ impl Rollup for Nitro {
     fn verify_batch_messages(
         batch_messages: &[Self::BatchMessage],
         streamer_queue: &[Self::Entry],
-        context: &Self::LatestBatchInfo,
+        context: &Self::BatchCursor,
     ) -> VerificationResult {
         let pos = streamer_queue
             .binary_search_by_key(&context.next_batch_start_pos, |e| e.sequence_number());
@@ -220,25 +220,25 @@ impl Rollup for Nitro {
         let l1_config = L1MonitorConfig {
             ws_url: config.l1_ws_url.clone(),
             sequencer_inbox_address: config.sequencer_inbox_address,
+            log_scan_step: config.log_scan_step,
         };
 
         NitroL1Monitor::new(&l1_config).await.map_err(Into::into)
     }
 
-    fn resolve_config_with_latest_batch_info(
+    fn resolve_config_with_checkpoint(
         config: ServiceConfig<Self::StackConfig>,
-        latest_batch_info: Option<Self::LatestBatchInfo>,
+        batch_cursor: Self::BatchCursor,
+        starting_hotshot_height: Option<u64>, // None if this is a fresh deployment
     ) -> ServiceConfig<Self::StackConfig> {
-        if let Some(info) = latest_batch_info {
-            let mut new_config = config;
-            new_config.rollup.stack.feed_config.current_message_count = info.next_batch_start_pos;
-            new_config.streamer.starting_pos = info.next_batch_start_pos;
-            // also update hotshot starting block height
-            // new_config.streamer.starting_hotshot_height = info.hotshot_height;
-            new_config
-        } else {
-            config
+        let mut new_config = config;
+        if let Some(hotshot_height) = starting_hotshot_height {
+            new_config.streamer.starting_hotshot_height = hotshot_height;
         }
+        new_config.rollup.stack.feed_config.current_message_count =
+            batch_cursor.next_batch_start_pos;
+        new_config.streamer.starting_pos = batch_cursor.next_batch_start_pos;
+        new_config
     }
 }
 
@@ -621,7 +621,7 @@ pub mod testing {
 
     #[test]
     fn test_verify_batch_more_batch_than_streamer() {
-        let ctx = LatestBatchInfo {
+        let ctx = BatchCursor {
             last_batch_delayed_messages_read: 0,
             next_batch_start_pos: 0,
         };
@@ -633,7 +633,7 @@ pub mod testing {
 
     #[test]
     fn test_verify_batch_l2msg_match() {
-        let ctx = LatestBatchInfo {
+        let ctx = BatchCursor {
             last_batch_delayed_messages_read: 0,
             next_batch_start_pos: 0,
         };
@@ -648,7 +648,7 @@ pub mod testing {
 
     #[test]
     fn test_verify_batch_l2msg_mismatch() {
-        let ctx = LatestBatchInfo {
+        let ctx = BatchCursor {
             last_batch_delayed_messages_read: 0,
             next_batch_start_pos: 0,
         };
@@ -660,7 +660,7 @@ pub mod testing {
 
     #[test]
     fn test_verify_batch_l2msg_none_message() {
-        let ctx = LatestBatchInfo {
+        let ctx = BatchCursor {
             last_batch_delayed_messages_read: 0,
             next_batch_start_pos: 0,
         };
@@ -672,7 +672,7 @@ pub mod testing {
 
     #[test]
     fn test_verify_batch_delayed_msg_first_entry_valid() {
-        let ctx = LatestBatchInfo {
+        let ctx = BatchCursor {
             last_batch_delayed_messages_read: 5,
             next_batch_start_pos: 0,
         };
@@ -686,7 +686,7 @@ pub mod testing {
 
     #[test]
     fn test_verify_batch_delayed_msg_first_entry_invalid() {
-        let ctx = LatestBatchInfo {
+        let ctx = BatchCursor {
             last_batch_delayed_messages_read: 5,
             next_batch_start_pos: 0,
         };
@@ -699,7 +699,7 @@ pub mod testing {
 
     #[test]
     fn test_verify_batch_delayed_msg_subsequent_entry_valid() {
-        let ctx = LatestBatchInfo {
+        let ctx = BatchCursor {
             last_batch_delayed_messages_read: 0,
             next_batch_start_pos: 0,
         };
@@ -719,7 +719,7 @@ pub mod testing {
 
     #[test]
     fn test_verify_batch_delayed_msg_subsequent_entry_invalid() {
-        let ctx = LatestBatchInfo {
+        let ctx = BatchCursor {
             last_batch_delayed_messages_read: 0,
             next_batch_start_pos: 0,
         };
@@ -738,7 +738,7 @@ pub mod testing {
 
     #[test]
     fn test_verify_batch_mixed_messages() {
-        let ctx = LatestBatchInfo {
+        let ctx = BatchCursor {
             last_batch_delayed_messages_read: 5,
             next_batch_start_pos: 0,
         };
@@ -760,7 +760,7 @@ pub mod testing {
 
     #[test]
     fn test_verify_batch_streamer_has_extra_entries() {
-        let ctx = LatestBatchInfo {
+        let ctx = BatchCursor {
             last_batch_delayed_messages_read: 0,
             next_batch_start_pos: 0,
         };
@@ -778,7 +778,7 @@ pub mod testing {
 
     #[test]
     fn test_verify_batch_nonzero_start_pos() {
-        let ctx = LatestBatchInfo {
+        let ctx = BatchCursor {
             last_batch_delayed_messages_read: 5,
             next_batch_start_pos: 10,
         };
@@ -801,7 +801,7 @@ pub mod testing {
 
     #[test]
     fn test_verify_batch_nonzero_start_pos_not_found() {
-        let ctx = LatestBatchInfo {
+        let ctx = BatchCursor {
             last_batch_delayed_messages_read: 0,
             next_batch_start_pos: 50,
         };
@@ -955,21 +955,16 @@ pub mod testing {
             submitter_config: SubmitterConfig::default(),
             da_server_config: DaApiConfig::default(),
             advanced: crate::config::AdvancedConfig::default(),
+            is_fresh_deployment: false,
         };
 
-        // Test with None (should return config unchanged)
-        let result = Nitro::resolve_config_with_latest_batch_info(initial_config.clone(), None);
-        assert_eq!(result.streamer.starting_pos, 0);
-        assert_eq!(result.rollup.stack.feed_config.current_message_count, 0);
-
         // Test with Some info
-        let latest_batch_info = LatestBatchInfo {
+        let cursor = BatchCursor {
             last_batch_delayed_messages_read: 100,
             next_batch_start_pos: 200,
         };
 
-        let result =
-            Nitro::resolve_config_with_latest_batch_info(initial_config, Some(latest_batch_info));
+        let result = Nitro::resolve_config_with_checkpoint(initial_config, cursor, Some(100));
 
         // Verify that the config was updated
         assert_eq!(result.streamer.starting_pos, 200);

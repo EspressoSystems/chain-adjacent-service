@@ -22,12 +22,9 @@ pub enum BatchMessage {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct LatestBatchInfo {
-    // Should be read from L1 on startup and cached in memory,
-    // updated when new batches are read from L1.
+pub struct BatchCursor {
     pub last_batch_delayed_messages_read: u64,
     pub next_batch_start_pos: u64,
-    // pub hotshot_height: u64
 }
 
 #[derive(Debug, thiserror::Error)]
