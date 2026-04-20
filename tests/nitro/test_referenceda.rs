@@ -79,7 +79,7 @@ async fn test_nitro_reference_da_supported_header_bytes(my_addr: String) {
     let client = reqwest::Client::new();
 
     let response: Value = client
-        .post(format!("http://{my_addr}/referenceda"))
+        .post(format!("http://{my_addr}/cas/arb/referenceda"))
         .json(&json!({
             "jsonrpc": "2.0",
             "method": "daprovider_getSupportedHeaderBytes",
@@ -111,7 +111,7 @@ async fn test_nitro_reference_da_store_and_recover(my_addr: String) {
     let client = reqwest::Client::new();
 
     let response: Result<Value, _> = client
-        .post(format!("http://{my_addr}/referenceda"))
+        .post(format!("http://{my_addr}/cas/arb/referenceda"))
         .json(&json!({
             "jsonrpc": "2.0",
             "method": "daprovider_store",
@@ -143,7 +143,7 @@ async fn test_nitro_reference_da_store_and_recover(my_addr: String) {
 
     // daprovider_recoverPayload
     let recover_payload: Result<Value, _> = client
-        .post(format!("http://{my_addr}/referenceda"))
+        .post(format!("http://{my_addr}/cas/arb/referenceda"))
         .json(&json!({
             "jsonrpc": "2.0",
             "method": "daprovider_recoverPayload",
@@ -187,7 +187,7 @@ async fn test_nitro_reference_da_store_and_recover(my_addr: String) {
 
     // daprovider_collectPreimages
     let collect_preimages: Result<Value, _> = client
-        .post(format!("http://{my_addr}/referenceda"))
+        .post(format!("http://{my_addr}/cas/arb/referenceda"))
         .json(&json!({
             "jsonrpc": "2.0",
             "method": "daprovider_collectPreimages",
@@ -221,7 +221,7 @@ async fn test_nitro_reference_da_store_and_recover(my_addr: String) {
 
     // daprovider_recoverPayloadAndPreimages
     // let recover_and_collect_preimages: Result<Value, _> = client
-    //     .post(format!("http://{my_addr}/referenceda"))
+    //     .post(format!("http://{my_addr}/cas/arb/referenceda"))
     //     .json(&json!({
     //         "jsonrpc": "2.0",
     //         "method": "daprovider_recoverPayloadAndPreimages",

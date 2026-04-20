@@ -51,18 +51,19 @@ impl ServerState {
     }
 }
 
-/// Build the top-level Axum router. Each DA provider is mounted at its own path prefix,
-/// e.g. `/celestia`, `/anytrust`. All paths expose identical RPC handler logic.
+/// Build the top-level Axum router. Each DA provider is mounted at `/{rollup_prefix}/{name}`,
+/// e.g. `/arb/celestia`, `/arb/anytrust`. All paths expose identical RPC handler logic.
 pub fn build_app(
     providers: Vec<DaProviderConfig>,
     verification_channel: VerificationSender,
+    rollup_prefix: &str,
 ) -> Router {
     let mut app = Router::new();
     for provider in providers {
         let name = provider.name.clone();
         let state = ServerState::new(provider, verification_channel.clone());
         let sub = Router::new().route("/", post(handle_rpc)).with_state(state);
-        app = app.nest(&format!("/{name}"), sub);
+        app = app.nest(&format!("/{rollup_prefix}/{name}"), sub);
     }
     app
 }
@@ -336,7 +337,7 @@ mod tests {
                 }
             });
 
-            let app = build_app(config, verification_channel);
+            let app = build_app(config, verification_channel, "arb");
             let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
             axum::serve(listener, app).await.unwrap();
         })
@@ -364,11 +365,11 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client_1 = HttpClientBuilder::default()
-            .build(format!("http://{addr}/celestia"))
+            .build(format!("http://{addr}/arb/celestia"))
             .unwrap();
 
         let client_2 = HttpClientBuilder::default()
-            .build(format!("http://{addr}/anytrust"))
+            .build(format!("http://{addr}/arb/anytrust"))
             .unwrap();
 
         Mock::given(method("POST"))
@@ -431,7 +432,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
-            .build(format!("http://{addr}/celestia"))
+            .build(format!("http://{addr}/arb/celestia"))
             .unwrap();
 
         // Test all pass through RPC calls
@@ -643,7 +644,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
-            .build(format!("http://{addr}/celestia"))
+            .build(format!("http://{addr}/arb/celestia"))
             .unwrap();
 
         let short_msg = Bytes::from(vec![0u8; 10]);
@@ -690,7 +691,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
-            .build(format!("http://{addr}/celestia"))
+            .build(format!("http://{addr}/arb/celestia"))
             .unwrap();
 
         let response: Result<DAStoreResponse, _> = client
@@ -727,7 +728,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
-            .build(format!("http://{addr}/celestia"))
+            .build(format!("http://{addr}/arb/celestia"))
             .unwrap();
 
         let response: Result<DAStoreResponse, _> = client
@@ -775,7 +776,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
-            .build(format!("http://{addr}/celestia"))
+            .build(format!("http://{addr}/arb/celestia"))
             .unwrap();
 
         let response: Result<DAStoreResponse, _> = client
@@ -813,7 +814,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
-            .build(format!("http://{addr}/celestia"))
+            .build(format!("http://{addr}/arb/celestia"))
             .unwrap();
 
         let response: Result<DAStoreResponse, _> = client
