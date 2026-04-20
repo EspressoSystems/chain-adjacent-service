@@ -7,7 +7,6 @@ use axum::{
     routing::post,
 };
 use serde_json::Value;
-use std::collections::HashMap;
 use tokio::sync::oneshot;
 use tracing::info;
 
@@ -55,12 +54,13 @@ impl ServerState {
 /// Build the top-level Axum router. Each DA provider is mounted at its own path prefix,
 /// e.g. `/celestia`, `/anytrust`. All paths expose identical RPC handler logic.
 pub fn build_app(
-    providers: HashMap<String, DaProviderConfig>,
+    providers: Vec<DaProviderConfig>,
     verification_channel: VerificationSender,
 ) -> Router {
     let mut app = Router::new();
-    for (name, config) in providers {
-        let state = ServerState::new(config, verification_channel.clone());
+    for provider in providers {
+        let name = provider.name.clone();
+        let state = ServerState::new(provider, verification_channel.clone());
         let sub = Router::new().route("/", post(handle_rpc)).with_state(state);
         app = app.nest(&format!("/{name}"), sub);
     }
@@ -291,7 +291,7 @@ mod tests {
     use alloy::primitives::{Bytes, FixedBytes, b256};
     use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder, rpc_params};
     use serde_json::json;
-    use std::{collections::HashMap, net::SocketAddr, str::FromStr};
+    use std::{net::SocketAddr, str::FromStr};
     use tokio::{sync::oneshot, task::JoinHandle};
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
@@ -318,21 +318,7 @@ mod tests {
         "0x010500000000000000000000" // 0x01, 0x05, then padding
     }
 
-    fn spawn_server(
-        addr: SocketAddr,
-        names: Vec<String>,
-        endpoints: Vec<String>,
-    ) -> JoinHandle<()> {
-        let mut da_providers = HashMap::new();
-        for (name, endpoint) in names.into_iter().zip(endpoints.into_iter()) {
-            da_providers.insert(
-                name,
-                DaProviderConfig {
-                    endpoint_url: endpoint.clone(),
-                },
-            );
-        }
-
+    fn spawn_server(addr: SocketAddr, config: Vec<DaProviderConfig>) -> JoinHandle<()> {
         tokio::spawn(async move {
             let (verification_channel, mut verify_receiver) =
                 tokio::sync::mpsc::channel::<(Bytes, oneshot::Sender<VerificationResult>)>(1);
@@ -350,7 +336,7 @@ mod tests {
                 }
             });
 
-            let app = build_app(da_providers, verification_channel);
+            let app = build_app(config, verification_channel);
             let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
             axum::serve(listener, app).await.unwrap();
         })
@@ -364,8 +350,16 @@ mod tests {
         let addr: SocketAddr = "127.0.0.1:9972".parse().unwrap();
         let _server = spawn_server(
             addr,
-            vec!["celestia".to_string(), "anytrust".to_string()],
-            vec![mock_da_provider.uri(), mock_da_provider2.uri()],
+            vec![
+                DaProviderConfig {
+                    name: "celestia".to_string(),
+                    endpoint_url: mock_da_provider.uri(),
+                },
+                DaProviderConfig {
+                    name: "anytrust".to_string(),
+                    endpoint_url: mock_da_provider2.uri(),
+                },
+            ],
         );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -429,8 +423,10 @@ mod tests {
         let addr: SocketAddr = "127.0.0.1:9971".parse().unwrap();
         let _server = spawn_server(
             addr,
-            vec!["celestia".to_string()],
-            vec![mock_da_provider.uri()],
+            vec![DaProviderConfig {
+                name: "celestia".to_string(),
+                endpoint_url: mock_da_provider.uri(),
+            }],
         );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -639,8 +635,10 @@ mod tests {
         let addr: SocketAddr = "127.0.0.1:9946".parse().unwrap();
         let _server = spawn_server(
             addr,
-            vec!["celestia".to_string()],
-            vec![mock_da_provider.uri()],
+            vec![DaProviderConfig {
+                name: "celestia".to_string(),
+                endpoint_url: mock_da_provider.uri(),
+            }],
         );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -684,8 +682,10 @@ mod tests {
         let addr: SocketAddr = "127.0.0.1:9960".parse().unwrap();
         let _server = spawn_server(
             addr,
-            vec!["celestia".to_string()],
-            vec![mock_da_provider.uri()],
+            vec![DaProviderConfig {
+                name: "celestia".to_string(),
+                endpoint_url: mock_da_provider.uri(),
+            }],
         );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -719,8 +719,10 @@ mod tests {
         let addr: SocketAddr = "127.0.0.1:9963".parse().unwrap();
         let _server = spawn_server(
             addr,
-            vec!["celestia".to_string()],
-            vec![mock_da_provider.uri()],
+            vec![DaProviderConfig {
+                name: "celestia".to_string(),
+                endpoint_url: mock_da_provider.uri(),
+            }],
         );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -765,8 +767,10 @@ mod tests {
         let addr: SocketAddr = "127.0.0.1:9964".parse().unwrap();
         let _server = spawn_server(
             addr,
-            vec!["celestia".to_string()],
-            vec![mock_da_provider.uri()],
+            vec![DaProviderConfig {
+                name: "celestia".to_string(),
+                endpoint_url: mock_da_provider.uri(),
+            }],
         );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -801,8 +805,10 @@ mod tests {
         let addr: SocketAddr = "127.0.0.1:9965".parse().unwrap();
         let _server = spawn_server(
             addr,
-            vec!["celestia".to_string()],
-            vec![mock_da_provider.uri()],
+            vec![DaProviderConfig {
+                name: "celestia".to_string(),
+                endpoint_url: mock_da_provider.uri(),
+            }],
         );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 

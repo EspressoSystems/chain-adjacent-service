@@ -1,6 +1,6 @@
 use alloy::primitives::{Bytes, keccak256};
 use serde_json::{Value, json};
-use std::{collections::HashMap, net::SocketAddr, str::FromStr, time::Duration};
+use std::{net::SocketAddr, str::FromStr, time::Duration};
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
@@ -25,17 +25,12 @@ use crate::{
 
 #[allow(clippy::unwrap_used)]
 fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
-    let mut da_providers = HashMap::new();
-    da_providers.insert(
-        "referenceda".to_string(),
-        DaProviderConfig {
-            endpoint_url: da_provider_url,
-        },
-    );
-
     let config = DaApiConfig {
         listen_addr: addr.to_string(),
-        da_providers,
+        da_providers: vec![DaProviderConfig {
+            name: "referenceda".to_string(),
+            endpoint_url: da_provider_url,
+        }],
         ..Default::default()
     };
 

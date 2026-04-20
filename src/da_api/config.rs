@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 #[derive(Default, Debug, Clone, Deserialize, Serialize)]
 pub struct DaApiConfig {
@@ -7,7 +6,7 @@ pub struct DaApiConfig {
     pub listen_addr: String,
 
     /// DA provider name <-> DA provider config
-    pub da_providers: HashMap<String, DaProviderConfig>,
+    pub da_providers: Vec<DaProviderConfig>,
 
     /// Espresso/HotShot configuration
     pub hotshot: HotShotConfig,
@@ -15,6 +14,7 @@ pub struct DaApiConfig {
 
 #[derive(Default, Debug, Clone, Deserialize, Serialize)]
 pub struct DaProviderConfig {
+    pub name: String,
     /// Downstream DA API endpoint
     pub endpoint_url: String,
 }
