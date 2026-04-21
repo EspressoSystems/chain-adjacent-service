@@ -2,17 +2,16 @@ pub mod config;
 pub mod error;
 pub mod nitro;
 
+use axum::Router;
 use tracing::info;
 
 use crate::{
     VerificationSender,
     config::RollupType,
-    da_api::{
-        config::DaApiConfig,
-        error::DaApiResult,
-        nitro::server::{ServerState, server_router},
-    },
+    da_api::{config::DaApiConfig, error::DaApiResult, nitro::server::build_app},
 };
+
+const ARBITRUM_NITRO: &str = "arb";
 
 pub async fn run(
     da_api_config: DaApiConfig,
@@ -21,8 +20,12 @@ pub async fn run(
 ) -> DaApiResult<()> {
     match rollup_type {
         RollupType::Nitro => {
-            let state = ServerState::new(da_api_config.da_providers, verification_channel);
-            let app = server_router(state);
+            let inner = build_app(
+                da_api_config.da_providers,
+                verification_channel,
+                ARBITRUM_NITRO,
+            );
+            let app = Router::new().nest("/cas", inner);
             let listener = tokio::net::TcpListener::bind(&da_api_config.listen_addr).await?;
 
             info!(
