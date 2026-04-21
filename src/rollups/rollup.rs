@@ -15,6 +15,20 @@ pub trait RollupQueueEntry: Clone {
     fn hotshot_height(&self) -> u64;
 }
 
+pub struct CasCheckpoint<C: Sized> {
+    pub batch_cursor: C,
+    pub hotshot_height: u64,
+}
+
+impl<C> CasCheckpoint<C> {
+    pub fn new(batch_cursor: C, hotshot_height: u64) -> Self {
+        Self {
+            batch_cursor,
+            hotshot_height,
+        }
+    }
+}
+
 pub trait Rollup {
     type StackConfig: Clone;
     type Error: std::error::Error + Send + Sync + 'static;
@@ -26,8 +40,9 @@ pub trait Rollup {
     type FeedMessage;
     /// The necessary context from the latest batch to verify a new batch or
     /// to start the CAS from the correct state.
-    type LatestBatchInfo: Default + Clone;
-    type L1Monitor: L1Monitor<Self::LatestBatchInfo, Self::Error>;
+    type BatchCursor: Default + Clone;
+
+    type L1Monitor: L1Monitor<Self::BatchCursor, Self::Error>;
 
     fn parse_batch_data(bytes: Bytes) -> Result<Vec<Self::BatchMessage>>;
 
@@ -58,30 +73,36 @@ pub trait Rollup {
     fn verify_batch_messages(
         batch_messages: &[Self::BatchMessage],
         streamer_queue: &[Self::Entry],
-        context: &Self::LatestBatchInfo,
+        context: &Self::BatchCursor,
     ) -> VerificationResult;
 
     fn create_l1_monitor(
         config: &Self::StackConfig,
     ) -> impl Future<Output = Result<Self::L1Monitor, Self::Error>>;
 
-    // This function is used to update/override config file.
-    // TODO: find a better way to resolve config because `LatestBatchInfo`
-    // is merely needed by some parts of the service config.
-    fn resolve_config_with_latest_batch_info(
+    fn resolve_config_with_checkpoint(
         config: ServiceConfig<Self::StackConfig>,
-        latest_batch_info: Option<Self::LatestBatchInfo>,
+        batch_cursor: Self::BatchCursor,
+        starting_hotshot_height: Option<u64>, // None if this is a fresh deployment
     ) -> ServiceConfig<Self::StackConfig>;
 
     fn rollup_type() -> RollupType;
 }
 
 pub trait L1Monitor<T, E> {
-    fn fetch_latest_batch_info_on_startup(&self) -> impl Future<Output = Result<Option<T>, E>>;
+    /// A checkpoint is an event emitted by the rollup contract that
+    /// includes all the necessary information to start the CAS from that point.
+    fn fetch_latest_checkpoint_on_startup(
+        &self,
+    ) -> impl Future<Output = Result<CasCheckpoint<T>, E>>;
+
+    /// Fetches the latest batch cursor on a fresh deployment,
+    /// where we don't have the checkpoint information.
+    fn fetch_latest_batch_cursor_on_fresh_deployment(&self) -> impl Future<Output = Result<T, E>>;
 
     fn start(
         &self,
         l1_finalized_msg_idx_sender: watch::Sender<u64>,
-        latest_batch_info_sender: watch::Sender<T>,
+        latest_batch_cursor_sender: watch::Sender<T>,
     ) -> impl Future<Output = ()>;
 }

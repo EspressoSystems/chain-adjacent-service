@@ -22,7 +22,7 @@ pub struct Streamer<R: Rollup> {
     rollup_config: RollupConfig<R::StackConfig>,
     advanced_config: AdvancedConfig,
 
-    latest_batch_info: Option<R::LatestBatchInfo>,
+    latest_batch_cursor: Option<R::BatchCursor>,
     finalized_idx: u64,
     last_broadcast_position: u64,
 
@@ -44,7 +44,7 @@ impl<R: Rollup> Streamer<R> {
             config,
             rollup_config,
             advanced_config,
-            latest_batch_info: None,
+            latest_batch_cursor: None,
             finalized_idx: 0,
             last_broadcast_position: 0,
 
@@ -57,7 +57,7 @@ impl<R: Rollup> Streamer<R> {
     pub async fn run(
         &mut self,
         mut l1_finalized_msg_idx: watch::Receiver<u64>,
-        mut latest_batch_receiver: watch::Receiver<R::LatestBatchInfo>,
+        mut latest_cursor_receiver: watch::Receiver<R::BatchCursor>,
         mut verification_receiver: VerificationReceiver,
         espresso_finalization_sender: mpsc::Sender<R::FeedMessage>,
     ) {
@@ -123,7 +123,7 @@ impl<R: Rollup> Streamer<R> {
                             continue;
                         }
                     };
-                    if let Some(context) = &self.latest_batch_info {
+                    if let Some(context) = &self.latest_batch_cursor {
                         let verification_result = R::verify_batch_messages(&entries, &self.queue, context);
                         let _ = sender.send(verification_result);
                     } else {
@@ -133,10 +133,10 @@ impl<R: Rollup> Streamer<R> {
                     }
 
                 },
-                info = latest_batch_receiver.changed() => {
+                info = latest_cursor_receiver.changed() => {
                     if info.is_ok() {
-                        let batch_info = latest_batch_receiver.borrow();
-                        self.latest_batch_info = Some(batch_info.clone());
+                        let batch_info = latest_cursor_receiver.borrow();
+                        self.latest_batch_cursor = Some(batch_info.clone());
                     }
                 },
                 // New hotshot transactions from the poller: parse and add to the queue,

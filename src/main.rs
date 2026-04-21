@@ -38,9 +38,18 @@ async fn main() -> Result<()> {
 
 async fn run<R: Rollup>(config: ServiceConfig<R::StackConfig>) -> Result<()> {
     let l1_monitor = R::create_l1_monitor(&config.rollup.stack).await?;
-    let latest_batch_info = l1_monitor.fetch_latest_batch_info_on_startup().await?;
 
-    let config = R::resolve_config_with_latest_batch_info(config, latest_batch_info);
+    let (batch_cursor, hotshot_height) = if !config.is_fresh_deployment {
+        let checkpoint = l1_monitor.fetch_latest_checkpoint_on_startup().await?;
+        (checkpoint.batch_cursor, Some(checkpoint.hotshot_height))
+    } else {
+        let batch_cursor = l1_monitor
+            .fetch_latest_batch_cursor_on_fresh_deployment()
+            .await?;
+        (batch_cursor, None)
+    };
+
+    let config = R::resolve_config_with_checkpoint(config, batch_cursor, hotshot_height);
 
     let client = EspressoClient::from_config(config.espresso_client.clone());
     let (submitter_sender, submitter_receiver) = mpsc::channel::<R::FeedMessage>(100);
@@ -84,14 +93,13 @@ async fn run<R: Rollup>(config: ServiceConfig<R::StackConfig>) -> Result<()> {
     let client = EspressoClient::from_config(config.espresso_client);
     let (verification_sender, verification_receiver) =
         mpsc::channel(config.advanced.verification_channel_capacity);
-    let (latest_batch_sender, latest_batch_receiver) =
-        watch::channel(R::LatestBatchInfo::default());
+    let (batch_cursor_sender, batch_cursor_receiver) = watch::channel(R::BatchCursor::default());
     let mut streamer: Streamer<R> =
         Streamer::new(client, config.streamer, config.rollup, config.advanced);
 
     let streamer_task = streamer.run(
         l1_finalized_msg_idx_receiver,
-        latest_batch_receiver,
+        batch_cursor_receiver,
         verification_receiver,
         espresso_finalization_sender,
     );
@@ -102,7 +110,7 @@ async fn run<R: Rollup>(config: ServiceConfig<R::StackConfig>) -> Result<()> {
         verification_sender,
     );
 
-    let l1_monitor_task = l1_monitor.start(l1_finalized_msg_idx_sender, latest_batch_sender);
+    let l1_monitor_task = l1_monitor.start(l1_finalized_msg_idx_sender, batch_cursor_sender);
 
     tokio::try_join!(
         async { submitter_task.await.map_err(anyhow::Error::from) },

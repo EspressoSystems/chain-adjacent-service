@@ -4,7 +4,7 @@ use tokio::sync::watch;
 use crate::{
     VerificationResult,
     espresso_client::types::NamespaceTransactionsInRange,
-    rollups::rollup::{L1Monitor, Rollup, RollupQueueEntry},
+    rollups::rollup::{CasCheckpoint, L1Monitor, Rollup, RollupQueueEntry},
 };
 
 #[derive(Clone, Debug)]
@@ -25,7 +25,7 @@ impl RollupQueueEntry for MockEntry {
 
 pub struct MockRollup;
 #[derive(Default, Clone)]
-pub struct MockLatestBatchInfo;
+pub struct MockBatchCursor;
 pub struct MockBatchMessage;
 
 fn mock_parse_batch(_: alloy::primitives::Bytes) -> anyhow::Result<Vec<MockBatchMessage>> {
@@ -42,7 +42,7 @@ impl Rollup for MockRollup {
     type StackConfig = ();
     type BatchMessage = MockBatchMessage;
     type FeedMessage = MockEntry;
-    type LatestBatchInfo = MockLatestBatchInfo;
+    type BatchCursor = MockBatchCursor;
     type L1Monitor = MockL1Monitor;
 
     fn parse_hotshot_transactions(
@@ -75,7 +75,7 @@ impl Rollup for MockRollup {
     fn verify_batch_messages(
         _batch_messages: &[Self::BatchMessage],
         _streamer_queue: &[Self::Entry],
-        _context: &Self::LatestBatchInfo,
+        _context: &Self::BatchCursor,
     ) -> VerificationResult {
         todo!()
     }
@@ -115,11 +115,12 @@ impl Rollup for MockRollup {
         Ok(MockL1Monitor)
     }
 
-    fn resolve_config_with_latest_batch_info(
-        _config: crate::config::ServiceConfig<Self::StackConfig>,
-        _latest_batch_info: Option<Self::LatestBatchInfo>,
+    fn resolve_config_with_checkpoint(
+        config: crate::config::ServiceConfig<Self::StackConfig>,
+        _cursor: Self::BatchCursor,
+        _hotshot_height: Option<u64>,
     ) -> crate::config::ServiceConfig<Self::StackConfig> {
-        todo!()
+        config
     }
 }
 
@@ -137,17 +138,23 @@ pub fn make_mock_espresso_transaction(seq: u64) -> Transaction {
 
 pub struct MockL1Monitor;
 
-impl L1Monitor<MockLatestBatchInfo, std::convert::Infallible> for MockL1Monitor {
-    async fn fetch_latest_batch_info_on_startup(
+impl L1Monitor<MockBatchCursor, std::convert::Infallible> for MockL1Monitor {
+    async fn fetch_latest_checkpoint_on_startup(
         &self,
-    ) -> anyhow::Result<Option<MockLatestBatchInfo>, std::convert::Infallible> {
-        Ok(Some(MockLatestBatchInfo))
+    ) -> anyhow::Result<CasCheckpoint<MockBatchCursor>, std::convert::Infallible> {
+        Ok(CasCheckpoint::new(MockBatchCursor, 0))
     }
 
     async fn start(
         &self,
         _l1_finalized_msg_idx_sender: watch::Sender<u64>,
-        _latest_batch_info_sender: watch::Sender<MockLatestBatchInfo>,
+        _latest_batch_info_sender: watch::Sender<MockBatchCursor>,
     ) {
+    }
+
+    async fn fetch_latest_batch_cursor_on_fresh_deployment(
+        &self,
+    ) -> anyhow::Result<MockBatchCursor, std::convert::Infallible> {
+        todo!()
     }
 }
