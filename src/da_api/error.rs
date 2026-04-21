@@ -8,9 +8,6 @@ use crate::da_api::nitro::types::JsonRpcError;
 
 #[derive(Debug, Error)]
 pub enum DaApiError {
-    #[error("no DA providers configured")]
-    NoDaProvidersConfigured,
-
     #[error("certificate serialization failed: {0}")]
     CertificateSerializationFailed(String),
 
