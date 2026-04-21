@@ -278,7 +278,7 @@ async fn handle_recover_inner(
         "id": body["id"],
     });
 
-    forward_json(&state, &endpoint, forwarded_body).await
+    forward_json(&state, endpoint, forwarded_body).await
 }
 
 /// Inner function for the daprovider_generate*Proof RPC methods
@@ -317,7 +317,7 @@ async fn handle_validator_inner(
         "id": body["id"],
     });
 
-    forward_json(&state, &endpoint, forwarded_body).await
+    forward_json(&state, endpoint, forwarded_body).await
 }
 
 /// Helper function to forward RPC calls with a JSON body

@@ -74,8 +74,8 @@ async fn test_nitro_reference_da() {
     println!("running test_nitro_reference_da_store_and_recover");
     test_nitro_reference_da_store_and_recover(my_addr.to_string()).await;
 
-    println!("running test_nitro_reference_da_generate_read_preimage_proof");
-    test_nitro_reference_da_generate_read_preimage_proof(my_addr.to_string()).await;
+    println!("running test_nitro_reference_da_validator_methods");
+    test_nitro_reference_da_validator_methods(my_addr.to_string()).await;
 }
 
 #[allow(clippy::unwrap_used)]
@@ -260,7 +260,7 @@ async fn test_nitro_reference_da_store_and_recover(my_addr: String) {
 }
 
 #[allow(clippy::unwrap_used)]
-async fn test_nitro_reference_da_generate_read_preimage_proof(my_addr: String) {
+async fn test_nitro_reference_da_validator_methods(my_addr: String) {
     let client = reqwest::Client::new();
 
     let store_response: Value = client
@@ -288,6 +288,8 @@ async fn test_nitro_reference_da_generate_read_preimage_proof(my_addr: String) {
     )
     .unwrap();
     let cert_hash = keccak256(&raw_da_cert);
+
+    // TEST daprovider_generateReadPreimageProof
 
     let response: Value = client
         .post(format!("http://{my_addr}/cas/arb/referenceda"))
@@ -323,6 +325,8 @@ async fn test_nitro_reference_da_generate_read_preimage_proof(my_addr: String) {
         proof_bytes.ends_with(&store_data_bytes),
         "proof should contain the originally stored data"
     );
+
+    // TEST: daprovider_generateCertificateValidityProof
 
     let response1: Value = client
         .post(format!("http://{my_addr}/cas/arb/referenceda"))
