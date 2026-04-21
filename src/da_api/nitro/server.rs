@@ -95,12 +95,7 @@ async fn handle_rpc(State(state): State<ServerState>, body: Bytes) -> Result<Res
             handle_validator_inner(state, parsed, GENERATE_READ_PREIMAGE_PROOF).await
         }
         GENERATE_CERTIFICATE_VALIDITY_PROOF => {
-            handle_certificate_validity_proof_inner(
-                state,
-                parsed,
-                GENERATE_CERTIFICATE_VALIDITY_PROOF,
-            )
-            .await
+            handle_validator_inner(state, parsed, GENERATE_CERTIFICATE_VALIDITY_PROOF).await
         }
         _ => forward_raw(state, body).await,
     }
@@ -293,28 +288,12 @@ async fn handle_recover_inner(
         "id": body["id"],
     });
 
-    let downstream = state
-        .client
-        .post(&endpoint)
-        .json(&forwarded_body)
-        .send()
-        .await
-        .map_err(|e| DaApiError::DownstreamDa(e.to_string()))?;
-
-    let status = downstream.status();
-    let bytes = downstream
-        .bytes()
-        .await
-        .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
-
-    Response::builder()
-        .status(status)
-        .header(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)
-        .body(axum::body::Body::from(bytes))
-        .map_err(|e| DaApiError::ParsingError(e.to_string()))
+    forward_json(&state, &endpoint, forwarded_body).await
 }
 
-// validator method handler
+/// Inner function for the daprovider_generate*Proof RPC methods
+/// Strips the espresso wrapper from `certificate`, then forwards the request with the
+/// extracted DA certificate to the downstream provider.
 async fn handle_validator_inner(
     state: ServerState,
     body: Value,
@@ -322,96 +301,48 @@ async fn handle_validator_inner(
 ) -> Result<Response, DaApiError> {
     let params = body["params"]
         .as_array()
-        .filter(|p| p.len() == 3)
-        .ok_or_else(|| DaApiError::InvalidParams("expected 3 params".to_string()))?;
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| DaApiError::InvalidParams("expected at least 1 param".to_string()))?;
 
-    let cert_hash: alloy::primitives::FixedBytes<32> = serde_json::from_value(params[0].clone())
-        .map_err(|e| DaApiError::InvalidParams(format!("bad cert_hash: {e}")))?;
+    let certificate: alloy::primitives::Bytes =
+        serde_json::from_value(params.last().expect("params should not be empty").clone())
+            .map_err(|e| DaApiError::InvalidParams(format!("bad certificate: {e}")))?;
 
-    let offset: alloy::primitives::U64 = serde_json::from_value(params[1].clone())
-        .map_err(|e| DaApiError::InvalidParams(format!("bad offset: {e}")))?;
+    info!(method = downstream_method, "received DA validator request");
 
-    let certificate: alloy::primitives::Bytes = serde_json::from_value(params[2].clone())
-        .map_err(|e| DaApiError::InvalidParams(format!("bad certificate: {e}")))?;
+    let raw_da_cert = extract_raw_da_cert_from_espresso_da_certificate(&certificate)
+        .map_err(|e| DaApiError::InvalidParams(format!("invalid certificate: {e}")))?;
 
-    info!(
-        cert_hash = %cert_hash,
-        offset = %offset,
-        method = downstream_method,
-        "received DA validator certificate request"
+    let endpoint = state
+        .current_endpoint()
+        .ok_or(DaApiError::NoDaProvidersConfigured)?;
+
+    let mut forwarded_params: Vec<Value> = params[..params.len() - 1].to_vec();
+    forwarded_params.push(
+        serde_json::to_value(&raw_da_cert).map_err(|e| DaApiError::ParsingError(e.to_string()))?,
     );
 
-    // extxract the raw downstream DA certificate by removing the espresso metadata wrapper
-    let raw_da_cert = extract_raw_da_cert_from_espresso_da_certificate(&certificate)
-        .map_err(|e| DaApiError::InvalidParams(format!("invalid certificate: {e}")))?;
-
-    let endpoint = state
-        .current_endpoint()
-        .ok_or(DaApiError::NoDaProvidersConfigured)?;
-
     let forwarded_body = serde_json::json!({
         "jsonrpc": "2.0",
         "method": downstream_method,
-        "params": [cert_hash, offset, raw_da_cert],
+        "params": forwarded_params,
         "id": body["id"],
     });
 
-    let downstream = state
-        .client
-        .post(&endpoint)
-        .json(&forwarded_body)
-        .send()
-        .await
-        .map_err(|e| DaApiError::DownstreamDa(e.to_string()))?;
-
-    let status = downstream.status();
-    let bytes = downstream
-        .bytes()
-        .await
-        .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
-
-    Response::builder()
-        .status(status)
-        .header(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)
-        .body(axum::body::Body::from(bytes))
-        .map_err(|e| DaApiError::ParsingError(e.to_string()))
+    forward_json(&state, &endpoint, forwarded_body).await
 }
 
-// validator method handler
-async fn handle_certificate_validity_proof_inner(
-    state: ServerState,
+/// Helper function to forward RPC calls with a JSON body
+/// and return the response from the downstream provider.
+async fn forward_json(
+    state: &ServerState,
+    endpoint: &str,
     body: Value,
-    downstream_method: &str,
 ) -> Result<Response, DaApiError> {
-    let params = body["params"]
-        .as_array()
-        .filter(|p| p.len() == 1)
-        .ok_or_else(|| DaApiError::InvalidParams("expected 1 param".to_string()))?;
-
-    let certificate: alloy::primitives::Bytes = serde_json::from_value(params[0].clone())
-        .map_err(|e| DaApiError::InvalidParams(format!("bad certificate: {e}")))?;
-
-    info!(method = downstream_method, "received DA request");
-
-    // extxract the raw downstream DA certificate by removing the espresso metadata wrapper
-    let raw_da_cert = extract_raw_da_cert_from_espresso_da_certificate(&certificate)
-        .map_err(|e| DaApiError::InvalidParams(format!("invalid certificate: {e}")))?;
-
-    let endpoint = state
-        .current_endpoint()
-        .ok_or(DaApiError::NoDaProvidersConfigured)?;
-
-    let forwarded_body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": downstream_method,
-        "params": [raw_da_cert],
-        "id": body["id"],
-    });
-
     let downstream = state
         .client
-        .post(&endpoint)
-        .json(&forwarded_body)
+        .post(endpoint)
+        .json(&body)
         .send()
         .await
         .map_err(|e| DaApiError::DownstreamDa(e.to_string()))?;
@@ -420,7 +351,7 @@ async fn handle_certificate_validity_proof_inner(
     let bytes = downstream
         .bytes()
         .await
-        .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
+        .map_err(|e| DaApiError::ParsingError(e.to_string()))?;
 
     Response::builder()
         .status(status)
@@ -878,6 +809,225 @@ mod tests {
         assert!(
             err.contains("storage backend unavailable"),
             "unexpected error: {err}"
+        );
+    }
+
+    fn mock_espresso_cert() -> Bytes {
+        let downstream_cert = Bytes::from_str(mock_downstream_cert_hex()).unwrap();
+        let cas_cert =
+            CasCertificate::build_espresso_certificate(0, 0, 0, 0, &[], &downstream_cert)
+                .expect("should build espresso cert");
+        Bytes::from(cas_cert.to_bytes().expect("should serialize cert"))
+    }
+
+    #[tokio::test]
+    async fn test_generate_read_preimage_proof_strips_espresso_wrapper() {
+        let mock_da_provider = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                json!({"method": "daprovider_generateReadPreimageProof"}),
+            ))
+            .respond_with(|req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                let id = body.get("id").cloned().unwrap_or(json!(1));
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "proof": "0xdeadbeef" }
+                }))
+            })
+            .mount(&mock_da_provider)
+            .await;
+
+        let addr: SocketAddr = "127.0.0.1:9972".parse().unwrap();
+        let _server = spawn_server(addr, mock_da_provider.uri(), None);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .unwrap();
+
+        let cert_hash = FixedBytes::<32>::from([0xaau8; 32]);
+        let offset = 0u64;
+        let espresso_cert = mock_espresso_cert();
+        let raw_cert = Bytes::from_str(mock_downstream_cert_hex()).unwrap();
+
+        let response: Result<serde_json::Value, _> = client
+            .request(
+                "daprovider_generateReadPreimageProof",
+                rpc_params![cert_hash, offset, espresso_cert],
+            )
+            .await;
+
+        assert!(
+            response.is_ok(),
+            "expected success, got: {:?}",
+            response.err()
+        );
+        assert_eq!(response.unwrap()["proof"], "0xdeadbeef");
+
+        let reqs = mock_da_provider.received_requests().await.unwrap();
+        assert_eq!(reqs.len(), 1);
+        let forwarded: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+
+        // cert_hash and offset must pass through unchanged
+        let forwarded_params = forwarded["params"].as_array().unwrap();
+        assert_eq!(forwarded_params.len(), 3);
+
+        // third param must be the unwrapped raw cert, not the full espresso cert
+        let forwarded_cert = forwarded_params[2].as_str().unwrap();
+        assert_eq!(
+            forwarded_cert,
+            raw_cert.to_string(),
+            "downstream should receive the raw cert, not the espresso-wrapped cert"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generate_certificate_validity_proof_strips_espresso_wrapper() {
+        let mock_da_provider = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                json!({"method": "daprovider_generateCertificateValidityProof"}),
+            ))
+            .respond_with(|req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                let id = body.get("id").cloned().unwrap_or(json!(1));
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "proof": "0x0101" }
+                }))
+            })
+            .mount(&mock_da_provider)
+            .await;
+
+        let addr: SocketAddr = "127.0.0.1:9973".parse().unwrap();
+        let _server = spawn_server(addr, mock_da_provider.uri(), None);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .unwrap();
+
+        let espresso_cert = mock_espresso_cert();
+        let raw_cert = Bytes::from_str(mock_downstream_cert_hex()).unwrap();
+
+        let response: Result<serde_json::Value, _> = client
+            .request(
+                "daprovider_generateCertificateValidityProof",
+                rpc_params![espresso_cert],
+            )
+            .await;
+
+        assert!(
+            response.is_ok(),
+            "expected success, got: {:?}",
+            response.err()
+        );
+        assert_eq!(response.unwrap()["proof"], "0x0101");
+
+        let reqs = mock_da_provider.received_requests().await.unwrap();
+        assert_eq!(reqs.len(), 1);
+        let forwarded: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+
+        // downstream should receive exactly 1 param: the raw cert
+        let forwarded_params = forwarded["params"].as_array().unwrap();
+        assert_eq!(
+            forwarded_params.len(),
+            1,
+            "downstream should receive exactly 1 param"
+        );
+        let forwarded_cert = forwarded_params[0].as_str().unwrap();
+        assert_eq!(
+            forwarded_cert,
+            raw_cert.to_string(),
+            "downstream should receive the raw cert, not the espresso-wrapped cert"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generate_read_preimage_proof_rejects_invalid_cert() {
+        let mock_da_provider = MockServer::start().await;
+
+        let addr: SocketAddr = "127.0.0.1:9974".parse().unwrap();
+        let _server = spawn_server(addr, mock_da_provider.uri(), None);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .unwrap();
+
+        // starts with 0xFF — not a valid CAS certificate version byte
+        let invalid_cert = Bytes::from(vec![0xFFu8; 20]);
+
+        let response: Result<serde_json::Value, _> = client
+            .request(
+                "daprovider_generateReadPreimageProof",
+                rpc_params![FixedBytes::<32>::from([0xaau8; 32]), 0u64, invalid_cert],
+            )
+            .await;
+
+        assert!(response.is_err(), "expected error for invalid certificate");
+        assert_eq!(
+            mock_da_provider.received_requests().await.unwrap().len(),
+            0,
+            "downstream should not be contacted on invalid cert"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generate_certificate_validity_proof_rejects_invalid_cert() {
+        let mock_da_provider = MockServer::start().await;
+
+        let addr: SocketAddr = "127.0.0.1:9975".parse().unwrap();
+        let _server = spawn_server(addr, mock_da_provider.uri(), None);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .unwrap();
+
+        let invalid_cert = Bytes::from(vec![0xFFu8; 20]);
+
+        let response: Result<serde_json::Value, _> = client
+            .request(
+                "daprovider_generateCertificateValidityProof",
+                rpc_params![invalid_cert],
+            )
+            .await;
+
+        assert!(response.is_err(), "expected error for invalid certificate");
+        assert_eq!(
+            mock_da_provider.received_requests().await.unwrap().len(),
+            0,
+            "downstream should not be contacted on invalid cert"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generate_read_preimage_proof_rejects_empty_params() {
+        let mock_da_provider = MockServer::start().await;
+
+        let addr: SocketAddr = "127.0.0.1:9976".parse().unwrap();
+        let _server = spawn_server(addr, mock_da_provider.uri(), None);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .unwrap();
+
+        let response: Result<serde_json::Value, _> = client
+            .request("daprovider_generateReadPreimageProof", rpc_params![])
+            .await;
+
+        assert!(response.is_err(), "expected error for empty params");
+        assert_eq!(
+            mock_da_provider.received_requests().await.unwrap().len(),
+            0,
+            "downstream should not be contacted when params are missing"
         );
     }
 }
