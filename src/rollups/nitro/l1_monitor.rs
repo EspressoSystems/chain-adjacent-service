@@ -72,6 +72,10 @@ pub struct L1MonitorConfig {
     /// event. The monitor walks backwards from the current block in chunks of
     /// this size until it finds an event.
     pub log_scan_step: u64,
+    /// Maximum number of L1 blocks to scan when looking for the latest checkpoint on startup.
+    /// If no checkpoint is found within this range, the service will return an error.
+    /// A value of 0 means no limit (scan the entire chain).
+    pub max_l1_blocks_to_scan_on_startup: u64,
 }
 
 pub struct NitroL1Monitor {
@@ -79,6 +83,7 @@ pub struct NitroL1Monitor {
     sequencer_inbox_address: Address,
     bridge_address: Address,
     log_scan_step: u64,
+    max_l1_blocks_to_scan_on_startup: u64,
 }
 
 impl NitroL1Monitor {
@@ -96,6 +101,7 @@ impl NitroL1Monitor {
             sequencer_inbox_address: config.sequencer_inbox_address,
             bridge_address: bridge_addr,
             log_scan_step: config.log_scan_step,
+            max_l1_blocks_to_scan_on_startup: config.max_l1_blocks_to_scan_on_startup,
         })
     }
 
@@ -234,10 +240,18 @@ impl L1Monitor<BatchCursor, nitro::Error> for NitroL1Monitor {
 
         let mut to_block = latest_block;
 
+        let earliest_allowed = if self.max_l1_blocks_to_scan_on_startup > 0 {
+            latest_block.saturating_sub(self.max_l1_blocks_to_scan_on_startup - 1)
+        } else {
+            0
+        };
+
         // Walk backwards in chunks of `log_scan_step` until we find a
         // BatchVerified event.
         loop {
-            let from_block = to_block.saturating_sub(self.log_scan_step);
+            let from_block = to_block
+                .saturating_sub(self.log_scan_step)
+                .max(earliest_allowed);
 
             let filter = Filter::new()
                 .address(self.sequencer_inbox_address)
@@ -276,7 +290,13 @@ impl L1Monitor<BatchCursor, nitro::Error> for NitroL1Monitor {
                 ));
             }
 
-            if from_block == 0 {
+            if from_block == earliest_allowed {
+                if self.max_l1_blocks_to_scan_on_startup > 0 {
+                    return Err(L1MonitorError::CheckpointNotFound(
+                        self.max_l1_blocks_to_scan_on_startup,
+                    )
+                    .into());
+                }
                 // Scanned the entire chain — no event found.
                 tracing::warn!("no BatchVerified event found on-chain");
                 return Ok(CasCheckpoint::new(BatchCursor::default(), 0));
@@ -395,6 +415,7 @@ mod tests {
             ws_url,
             sequencer_inbox_address: SEQUENCER_INBOX,
             log_scan_step: 10_000,
+            max_l1_blocks_to_scan_on_startup: 0,
         };
         NitroL1Monitor::new(&config)
             .await

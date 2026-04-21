@@ -221,6 +221,7 @@ impl Rollup for Nitro {
             ws_url: config.l1_ws_url.clone(),
             sequencer_inbox_address: config.sequencer_inbox_address,
             log_scan_step: config.log_scan_step,
+            max_l1_blocks_to_scan_on_startup: config.max_l1_blocks_to_scan_on_startup,
         };
 
         NitroL1Monitor::new(&l1_config).await.map_err(Into::into)

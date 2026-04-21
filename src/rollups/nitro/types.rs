@@ -37,6 +37,9 @@ pub enum L1MonitorError {
 
     #[error("block not found")]
     BlockNotFound,
+
+    #[error("no checkpoint found within the last {0} L1 blocks")]
+    CheckpointNotFound(u64),
 }
 
 impl Decodable for MessageWithMetadata {

@@ -17,6 +17,11 @@ pub struct NitroConfig {
     /// `BatchVerified` event on startup. Defaults to 10 000 if not specified.
     #[serde(default = "default_log_scan_step")]
     pub log_scan_step: u64,
+    /// Maximum number of L1 blocks to scan when looking for the latest checkpoint on startup.
+    /// If no checkpoint is found within this range, the service will return an error.
+    /// A value of 0 means no limit (scan the entire chain).
+    #[serde(default)]
+    pub max_l1_blocks_to_scan_on_startup: u64,
 }
 
 fn default_log_scan_step() -> u64 {

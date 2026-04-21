@@ -90,10 +90,14 @@ pub trait Rollup {
 }
 
 pub trait L1Monitor<T, E> {
+    /// A checkpoint is an event emitted by the rollup contract that
+    /// includes all the necessary information to start the CAS from that point.
     fn fetch_latest_checkpoint_on_startup(
         &self,
     ) -> impl Future<Output = Result<CasCheckpoint<T>, E>>;
 
+    /// Fetches the latest batch cursor on a fresh deployment,
+    /// where we don't have the checkpoint information.
     fn fetch_latest_batch_cursor_on_fresh_deployment(&self) -> impl Future<Output = Result<T, E>>;
 
     fn start(

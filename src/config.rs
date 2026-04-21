@@ -14,6 +14,11 @@ pub struct ServiceConfig<C> {
     pub submitter_config: SubmitterConfig,
     #[serde(default)]
     pub advanced: AdvancedConfig,
+    /// Indicates whether this is a fresh deployment without any existing state.
+    /// Should be set to `false` when restarting the service with existing state,
+    /// so that the service can properly initialize from the latest checkpoint.
+    /// This should never cause irreversible issues, it should just cause the service
+    /// to start from the wrong point and fail to make progress until restarted with the correct value.
     #[serde(default)]
     pub is_fresh_deployment: bool,
 }
