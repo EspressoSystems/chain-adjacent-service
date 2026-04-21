@@ -291,8 +291,22 @@ async fn handle_validator_inner(
 ) -> Result<Response, DaApiError> {
     let params = body["params"]
         .as_array()
-        .filter(|p| !p.is_empty())
-        .ok_or_else(|| DaApiError::InvalidParams("expected at least 1 param".to_string()))?;
+        .ok_or_else(|| DaApiError::InvalidParams("expected params array".to_string()))?;
+    let expected_params = match downstream_method {
+        GENERATE_READ_PREIMAGE_PROOF => 3,
+        GENERATE_CERTIFICATE_VALIDITY_PROOF => 1,
+        _ => {
+            return Err(DaApiError::InvalidRequest(format!(
+                "unsupported validator method: {downstream_method}"
+            )));
+        }
+    };
+    if params.len() != expected_params {
+        return Err(DaApiError::InvalidParams(format!(
+            "expected {expected_params} params for {downstream_method}, got {}",
+            params.len()
+        )));
+    }
 
     let certificate: alloy::primitives::Bytes =
         serde_json::from_value(params.last().expect("params should not be empty").clone())

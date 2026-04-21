@@ -45,15 +45,8 @@ pub fn extract_da_sequencer_msg_from_espresso_da_certificate(
 pub fn extract_raw_da_cert_from_espresso_da_certificate(
     espresso_and_da_cert: &Bytes,
 ) -> Result<Bytes, DaApiError> {
-    let cas_version = CASCertificateVersion::try_from(espresso_and_da_cert[0])?;
-    let header_size = match cas_version {
-        CASCertificateVersion::V0 => CERT_HEADER_SIZE_V0,
-    };
-
-    let da_cert_position = CasCertificate::da_header_start_position(header_size);
-
-    let da_cert = espresso_and_da_cert.slice(da_cert_position + 2..);
-    Ok(da_cert)
+    let cert = CasCertificate::from_bytes(espresso_and_da_cert)?;
+    Ok(Bytes::from(cert.downstream_certificate))
 }
 
 #[cfg(test)]
