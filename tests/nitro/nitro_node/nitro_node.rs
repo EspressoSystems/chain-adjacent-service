@@ -1,4 +1,5 @@
 use reqwest::Url;
+use serde::de;
 use serde_json::json;
 use std::result::Result::Ok;
 use std::{
@@ -12,39 +13,52 @@ use tokio::time::{Instant, sleep};
 const REFERENCE_DA_ENDPOINT: i32 = 9880;
 const TESTNODE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/nitro-testnode");
 
+#[derive(Debug, Clone, Default)]
 pub struct NitroNodeConfig {
-    pub reference_da_url: Url,
+    pub reference_da_url: Option<Url>,
+    // If true, the node will be started with `--simple`,
+    // and all components will run in a single container.
+    pub simple: bool,
+    // if true, will set up a validator
+    pub validator: bool,
+    pub cas_feed_url: Option<Url>,
 }
 
 impl NitroNodeConfig {
-    pub async fn fetch_da_provider_byte(&self) -> anyhow::Result<()> {
-        let request_body = json!({
-            "jsonrpc": "2.0",
-            "method": "daprovider_getSupportedHeaderBytes",
-            "params": [],
-            "id": 1
-        });
-        let client = reqwest::Client::new();
+    pub fn with_reference_da(mut self, url: Url) -> Self {
+        self.reference_da_url = Some(url);
+        self
+    }
 
-        let response = client
-            .post(self.reference_da_url.clone())
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|err| anyhow::anyhow!("Connection failed: {err}"))?;
+    pub fn with_cas_feed(mut self, url: Url) -> Self {
+        self.cas_feed_url = Some(url);
+        self
+    }
 
-        if !response.status().is_success() {
-            return Err(anyhow::anyhow!(
-                "Service returned status: {}",
-                response.status()
-            ));
+    pub fn with_simple(mut self, simple: bool) -> Self {
+        self.simple = simple;
+        self
+    }
+
+    pub fn with_validator(mut self, validator: bool) -> Self {
+        self.validator = validator;
+        self
+    }
+
+    pub fn default_reference_da() -> Self {
+        let url = format!("http://localhost:{REFERENCE_DA_ENDPOINT}")
+            .parse()
+            .expect("valid URL");
+        Self {
+            reference_da_url: Some(url),
+            ..Default::default()
         }
+    }
 
-        let body: serde_json::Value = response.json().await?;
-        if body.get("error").is_some() {
-            return Err(anyhow::anyhow!("DA Provider returned a JSON-RPC error"));
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.simple && self.cas_feed_url.is_some() {
+            anyhow::bail!("CAS feed is not supported in simple mode");
         }
-
         Ok(())
     }
 }
@@ -52,7 +66,7 @@ impl NitroNodeConfig {
 /// NitroNode runs a local Arbitrum Nitro node
 /// for testing purposes.
 pub struct NitroNode {
-    pub client: NitroNodeConfig,
+    pub config: NitroNodeConfig,
     // Wrapped in Mutex because Child requires &mut to kill,
     // but stop() only has &self
     process: Mutex<Child>,
@@ -65,7 +79,7 @@ fn compose_lifecycle_semaphore() -> &'static std::sync::Arc<Semaphore> {
 }
 
 impl NitroNode {
-    pub async fn start() -> Self {
+    pub async fn start(config: NitroNodeConfig) -> Self {
         let lifecycle_permit = compose_lifecycle_semaphore()
             .clone()
             .acquire_owned()
@@ -79,9 +93,27 @@ impl NitroNode {
             "nitro-testnode submodule not initialized. Run: git submodule update --init --recursive"
         );
 
+        let mut args = vec!["--init-force", "--no-tokenbridge"];
+
+        if config.simple {
+            args.push("--simple");
+        }
+
+        if config.reference_da_url.is_some() {
+            args.push("--l2-referenceda");
+        }
+
+        if config.validator {
+            args.push("--validate");
+        }
+
+        if let Some(feed_url) = &config.cas_feed_url {
+            // override the sequencer and batcher's config here
+        }
+
         let child = Command::new("bash")
             .arg("./test-node.bash")
-            .args(["--init-force", "--l2-referenceda", "--simple"])
+            .args(&args)
             // critical: script resolves all its relative paths from its own repo root
             .current_dir(TESTNODE_DIR)
             .stdout(Stdio::inherit())
@@ -93,10 +125,7 @@ impl NitroNode {
             );
 
         let node = Self {
-            client: NitroNodeConfig {
-                reference_da_url: Url::parse(&format!("http://localhost:{REFERENCE_DA_ENDPOINT}"))
-                    .expect("failed to parse reference da url"),
-            },
+            config,
             process: Mutex::new(child),
             _lifecycle_permit: Some(lifecycle_permit),
         };
@@ -109,15 +138,38 @@ impl NitroNode {
     async fn wait_until_ready(&self) {
         let deadline = Instant::now() + Duration::from_secs(600);
         println!("Waiting for node to be ready...");
+
+        let mut da_ready = self.config.reference_da_url.is_none();
+        let mut sequencer_ready = false;
         loop {
             if Instant::now() >= deadline {
                 self.stop();
                 panic!("timed out waiting for node to be ready");
             }
-            match self.client.fetch_da_provider_byte().await {
-                Ok(_) => break,
-                _ => sleep(Duration::from_millis(100)).await,
+
+            if let Some(da_url) = &self.config.reference_da_url {
+                if !da_ready {
+                    match fetch_da_provider_byte(da_url).await {
+                        Ok(_) => {
+                            da_ready = true;
+                            println!("DA provider is ready");
+                        }
+                        Err(err) => {
+                            println!("DA provider not ready: {err}");
+                        }
+                    }
+                }
+            } else {
+                da_ready = true;
             }
+            // check if sequencer is ready
+
+            if da_ready && sequencer_ready {
+                println!("Node is ready!");
+                break;
+            }
+
+            sleep(Duration::from_millis(100)).await;
         }
     }
 
@@ -165,4 +217,35 @@ impl Drop for NitroNode {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+pub async fn fetch_da_provider_byte(url: &Url) -> anyhow::Result<()> {
+    let request_body = json!({
+        "jsonrpc": "2.0",
+        "method": "daprovider_getSupportedHeaderBytes",
+        "params": [],
+        "id": 1
+    });
+    let client = reqwest::Client::new();
+
+    let response = client
+        .post(url.clone())
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|err| anyhow::anyhow!("Connection failed: {err}"))?;
+
+    if !response.status().is_success() {
+        return Err(anyhow::anyhow!(
+            "Service returned status: {}",
+            response.status()
+        ));
+    }
+
+    let body: serde_json::Value = response.json().await?;
+    if body.get("error").is_some() {
+        return Err(anyhow::anyhow!("DA Provider returned a JSON-RPC error"));
+    }
+
+    Ok(())
 }

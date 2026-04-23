@@ -17,10 +17,12 @@ use chain_agnostic_service::{
         },
         run,
     },
+    rollups::nitro::types::Nitro,
 };
 
 use crate::{
-    EXPECTED_RECOVER_PAYLOAD_RESPONSE, STORE_REQUEST_DATA, nitro_node::nitro_node::NitroNode,
+    EXPECTED_RECOVER_PAYLOAD_RESPONSE, STORE_REQUEST_DATA,
+    nitro_node::nitro_node::{NitroNode, NitroNodeConfig},
 };
 
 #[allow(clippy::unwrap_used)]
@@ -65,12 +67,21 @@ fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
 
 #[tokio::test]
 async fn test_nitro_reference_da() {
-    let nitro_node = NitroNode::start().await;
+    let config = NitroNodeConfig::default_reference_da();
+    let nitro_node = NitroNode::start(config).await;
     println!("Nitro node started");
 
     let my_addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
 
-    let _server = spawn_server(my_addr, nitro_node.client.reference_da_url.to_string());
+    let _server = spawn_server(
+        my_addr,
+        nitro_node
+            .config
+            .reference_da_url
+            .as_ref()
+            .unwrap()
+            .to_string(),
+    );
     sleep(Duration::from_millis(100)).await;
 
     println!("running test_nitro_reference_da_supported_header_bytes");

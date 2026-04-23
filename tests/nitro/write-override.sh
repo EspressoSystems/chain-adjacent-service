@@ -5,19 +5,25 @@
 #              Dockerfile and deploys contracts normally. Used by setup.sh on
 #              the first run to generate the saved state.
 #
-#   reuse      Anvil loads state from $STATE_DIR/anvil-state.json. Rollupcreator
+#   reuse      Anvil loads state from l1_node/state/anvil-state.json. Rollupcreator
 #              still builds from our Dockerfile, but its entrypoint is replaced
 #              with rollupcreator-wrapper.sh, which short-circuits
-#              `create-rollup-testnode` by copying saved deployed_chain_info.json.
+#              `create-rollup-testnode` by copying saved deployment artifacts.
 #              Used by setup.sh after bootstrap, and by the integration test
 #              harness before spawning test-node.bash.
+#
+# Env vars (optional):
+#   CAS_FEED_URL  If set, the poster service is overridden to subscribe to this
+#                 URL via --node.feed.input.url, so batches posted by nitro come
+#                 from our CAS instead of the in-testnode sequencer feed.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+L1_NODE_DIR="$SCRIPT_DIR/l1_node"
+STATE_DIR="$L1_NODE_DIR/state"
+WRAPPER_SCRIPT="$L1_NODE_DIR/rollupcreator-wrapper.sh"
 NITRO_TESTNODE_DIR="$PROJECT_ROOT/nitro-testnode"
-STATE_DIR="$SCRIPT_DIR/state"
-WRAPPER_SCRIPT="$SCRIPT_DIR/rollupcreator-wrapper.sh"
 OVERRIDE_FILE="$NITRO_TESTNODE_DIR/docker-compose.override.yml"
 
 MODE="${1:-}"
@@ -29,7 +35,7 @@ services:
   geth:
     image: nitro-l1-anvil
     build:
-      context: $SCRIPT_DIR
+      context: $L1_NODE_DIR
       dockerfile: anvil-l1.Dockerfile
     user: root
     command: []
@@ -40,7 +46,7 @@ services:
       - "$STATE_DIR:/app/state"
   rollupcreator:
     build:
-      context: $SCRIPT_DIR
+      context: $L1_NODE_DIR
       dockerfile: rollupcreator.Dockerfile
 EOF
         ;;
@@ -50,7 +56,7 @@ services:
   geth:
     image: nitro-l1-anvil
     build:
-      context: $SCRIPT_DIR
+      context: $L1_NODE_DIR
       dockerfile: anvil-l1.Dockerfile
     user: root
     command: []
@@ -59,7 +65,7 @@ services:
       - "$STATE_DIR:/app/state"
   rollupcreator:
     build:
-      context: $SCRIPT_DIR
+      context: $L1_NODE_DIR
       dockerfile: rollupcreator.Dockerfile
     entrypoint: ["/app/rollupcreator-wrapper.sh"]
     volumes:
@@ -73,4 +79,14 @@ EOF
         ;;
 esac
 
-echo "Wrote docker-compose override ($MODE mode) to $OVERRIDE_FILE"
+if [ -n "${CAS_FEED_URL:-}" ]; then
+    cat >> "$OVERRIDE_FILE" << EOF
+  poster:
+    command:
+      - --conf.file
+      - /config/poster_config.json
+      - '--node.feed.input.url=[\"$CAS_FEED_URL\"]'
+EOF
+fi
+
+echo "Wrote docker-compose override ($MODE mode${CAS_FEED_URL:+, poster→$CAS_FEED_URL}) to $OVERRIDE_FILE"

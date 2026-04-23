@@ -9,7 +9,7 @@ STATE_DIR="$SCRIPT_DIR"
 STATE_FILE="$STATE_DIR/anvil-state.json"
 CHAIN_INFO_FILE="$STATE_DIR/deployed_chain_info.json"
 DEPLOYMENT_FILE="$STATE_DIR/deployment.json"
-WRITE_OVERRIDE="$L1_NODE_DIR/write-override.sh"
+WRITE_OVERRIDE="$L1_NODE_DIR/../write-override.sh"
 OVERRIDE_FILE="$NITRO_TESTNODE_DIR/docker-compose.override.yml"
 
 FORCE_REBOOTSTRAP=false
