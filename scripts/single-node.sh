@@ -107,7 +107,7 @@ startCelestiaApp() {
     --grpc.enable \
     --grpc-web.enable \
     --force-no-bbr \
-    --delayed-precommit-timeout 1s
+    --timeout-commit 1s
 }
 
 if [ -f $GENESIS_FILE ]; then

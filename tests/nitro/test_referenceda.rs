@@ -1,6 +1,6 @@
 use alloy::primitives::{Bytes, keccak256};
 use serde_json::{Value, json};
-use std::{collections::HashMap, net::SocketAddr, str::FromStr, time::Duration};
+use std::{net::SocketAddr, str::FromStr, time::Duration};
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
@@ -27,18 +27,12 @@ use crate::{
 
 #[allow(clippy::unwrap_used)]
 fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
-    let mut da_providers = HashMap::new();
-    da_providers.insert(
-        0,
-        DaProviderConfig {
-            da_type_byte: Bytes::from_str("0x01").unwrap(),
-            endpoint_url: da_provider_url,
-        },
-    );
-
     let config = DaApiConfig {
         listen_addr: addr.to_string(),
-        da_providers,
+        da_providers: vec![DaProviderConfig {
+            name: "referenceda".to_string(),
+            endpoint_url: da_provider_url,
+        }],
         ..Default::default()
     };
 
@@ -96,7 +90,7 @@ async fn test_nitro_reference_da_supported_header_bytes(my_addr: String) {
     let client = reqwest::Client::new();
 
     let response: Value = client
-        .post(format!("http://{my_addr}"))
+        .post(format!("http://{my_addr}/cas/arb/referenceda"))
         .json(&json!({
             "jsonrpc": "2.0",
             "method": "daprovider_getSupportedHeaderBytes",
@@ -128,7 +122,7 @@ async fn test_nitro_reference_da_store_and_recover(my_addr: String) {
     let client = reqwest::Client::new();
 
     let response: Result<Value, _> = client
-        .post(format!("http://{my_addr}"))
+        .post(format!("http://{my_addr}/cas/arb/referenceda"))
         .json(&json!({
             "jsonrpc": "2.0",
             "method": "daprovider_store",
@@ -160,7 +154,7 @@ async fn test_nitro_reference_da_store_and_recover(my_addr: String) {
 
     // daprovider_recoverPayload
     let recover_payload: Result<Value, _> = client
-        .post(format!("http://{my_addr}"))
+        .post(format!("http://{my_addr}/cas/arb/referenceda"))
         .json(&json!({
             "jsonrpc": "2.0",
             "method": "daprovider_recoverPayload",
@@ -204,7 +198,7 @@ async fn test_nitro_reference_da_store_and_recover(my_addr: String) {
 
     // daprovider_collectPreimages
     let collect_preimages: Result<Value, _> = client
-        .post(format!("http://{my_addr}"))
+        .post(format!("http://{my_addr}/cas/arb/referenceda"))
         .json(&json!({
             "jsonrpc": "2.0",
             "method": "daprovider_collectPreimages",
@@ -238,7 +232,7 @@ async fn test_nitro_reference_da_store_and_recover(my_addr: String) {
 
     // daprovider_recoverPayloadAndPreimages
     // let recover_and_collect_preimages: Result<Value, _> = client
-    //     .post(format!("http://{my_addr}"))
+    //     .post(format!("http://{my_addr}/cas/arb/referenceda"))
     //     .json(&json!({
     //         "jsonrpc": "2.0",
     //         "method": "daprovider_recoverPayloadAndPreimages",
