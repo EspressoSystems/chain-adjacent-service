@@ -14,6 +14,7 @@ pub enum BroadcasterError {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct BroadcasterConfig {
     pub broadcast_channel_capacity: usize,
     pub ws_server: WsBroadcastServerConfig,

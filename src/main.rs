@@ -72,7 +72,7 @@ async fn run<R: Rollup>(config: ServiceConfig<R::StackConfig>) -> Result<()> {
     let mut submitter = Submitter::new(
         client,
         submitter_receiver,
-        config.submitter_config,
+        config.submitter,
         namespace_id,
         build_tx_fn,
     );
@@ -105,7 +105,7 @@ async fn run<R: Rollup>(config: ServiceConfig<R::StackConfig>) -> Result<()> {
     );
 
     let da_task = da_api::run(
-        config.da_server_config,
+        config.da_server,
         R::rollup_type(),
         verification_sender,
     );

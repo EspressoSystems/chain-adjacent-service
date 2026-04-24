@@ -16,6 +16,10 @@
 #   CAS_FEED_URL  If set, the poster service is overridden to subscribe to this
 #                 URL via --node.feed.input.url, so batches posted by nitro come
 #                 from our CAS instead of the in-testnode sequencer feed.
+#   CAS_CALLDATA_RPC_URL  If set, the poster's DA provider is configured to use
+#                 this URL as its DA RPC endpoint. Required if CAS_FEED_URL is set
+#                 and the poster is enabled, since the poster needs to fetch batch
+#                 data from the DA provider in order to post batches.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -85,6 +89,9 @@ if [ -n "${CAS_FEED_URL:-}" ]; then
     command:
       - --conf.file
       - /config/poster_config.json
+      - --node.da.external-provider.enable=true
+      - --node.da.external-provider.with-writer=true
+      - '--node.da-external-provider.rpc.url="$CAS_CALLDATA_RPC_URL"'
       - '--node.feed.input.url=[\"$CAS_FEED_URL\"]'
 EOF
 fi

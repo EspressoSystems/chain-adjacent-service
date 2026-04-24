@@ -192,7 +192,7 @@ impl Rollup for Nitro {
         l1_finalized_msg_idx_receiver: tokio::sync::watch::Receiver<u64>,
     ) -> Result<(), Self::Error> {
         let chain_id = config.chain_id;
-        let config = config.feed_config.clone();
+        let config = config.feed.clone();
 
         let feed_relay = FeedRelay::new(
             chain_id,
@@ -236,7 +236,7 @@ impl Rollup for Nitro {
         if let Some(hotshot_height) = starting_hotshot_height {
             new_config.streamer.starting_hotshot_height = hotshot_height;
         }
-        new_config.rollup.stack.feed_config.current_message_count =
+        new_config.rollup.stack.feed.current_message_count =
             batch_cursor.next_batch_start_pos;
         new_config.streamer.starting_pos = batch_cursor.next_batch_start_pos;
         new_config
@@ -373,7 +373,7 @@ impl Nitro {
                 .map_err(|e| anyhow::anyhow!("failed to parse nitro hotshot message: {e}"))?;
             match verify_broadcast_feed_message_signature(
                 config.chain_id,
-                &config.sequencer_addresses,
+                &config.feed.client.trusted_sequencer_addresses,
                 &message,
             ) {
                 Ok(()) => messages.push(message),
@@ -926,8 +926,8 @@ pub mod testing {
         let initial_streamer_config = StreamerConfig::default();
 
         let initial_feed_config = FeedConfig {
-            client_config: BroadcasterClientConfig::default(),
-            server_config: BroadcasterConfig::default(),
+            client: BroadcasterClientConfig::default(),
+            server: BroadcasterConfig::default(),
             web_socket_url: "wss://example.com".to_string(),
             current_message_count: 0,
         };
@@ -935,7 +935,7 @@ pub mod testing {
         let initial_nitro_config = NitroConfig {
             legacy_signer_addresses: vec![Address::ZERO],
             chain_id: 1,
-            feed_config: initial_feed_config.clone(),
+            feed: initial_feed_config.clone(),
             l1_ws_url: "wss://example.com".to_string(),
             sequencer_inbox_address: Address::ZERO,
             ..Default::default()
@@ -953,8 +953,8 @@ pub mod testing {
                 base_url: Url::parse("http://localhost:8000").unwrap(),
                 client_timeout_secs: 30,
             },
-            submitter_config: SubmitterConfig::default(),
-            da_server_config: DaApiConfig::default(),
+            submitter: SubmitterConfig::default(),
+            da_server: DaApiConfig::default(),
             advanced: crate::config::AdvancedConfig::default(),
             is_fresh_deployment: false,
         };
@@ -969,7 +969,7 @@ pub mod testing {
 
         // Verify that the config was updated
         assert_eq!(result.streamer.starting_pos, 200);
-        assert_eq!(result.rollup.stack.feed_config.current_message_count, 200);
+        assert_eq!(result.rollup.stack.feed.current_message_count, 200);
 
         // Verify other parts are unchanged
         assert_eq!(result.rollup.stack.chain_id, 1);
@@ -984,7 +984,7 @@ pub mod testing {
         NitroConfig {
             legacy_signer_addresses: vec![],
             chain_id: 1,
-            feed_config: Default::default(),
+            feed: Default::default(),
             l1_ws_url: "wss://localhost".to_string(),
             sequencer_inbox_address: Address::ZERO,
             ..Default::default()

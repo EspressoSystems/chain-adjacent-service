@@ -517,8 +517,6 @@ mod tests {
         let cas_cert =
             CasCertificate::try_from(response2.unwrap()).expect("should convert to CasCertificate");
         assert_eq!(cas_cert.min_hotshot_block_still_in_streamer_queue, 0);
-        assert_eq!(cas_cert.da_api_header_flag, 0x01);
-        assert_eq!(cas_cert.da_provider_flag, 0x05);
         assert!(!cas_cert.downstream_certificate.is_empty());
 
         // 2. daprovider_recoverPayload
@@ -710,8 +708,6 @@ mod tests {
         let cas_cert =
             CasCertificate::try_from(response.unwrap()).expect("should convert to CasCertificate");
         assert_eq!(cas_cert.min_hotshot_block_still_in_streamer_queue, 0);
-        assert_eq!(cas_cert.da_api_header_flag, 0x01);
-        assert_eq!(cas_cert.da_provider_flag, 0x05);
         assert!(!cas_cert.downstream_certificate.is_empty());
     }
 

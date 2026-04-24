@@ -23,9 +23,10 @@ pub enum FeedRelayError {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
 pub struct FeedConfig {
-    pub client_config: BroadcasterClientConfig,
-    pub server_config: BroadcasterConfig,
+    pub client: BroadcasterClientConfig,
+    pub server: BroadcasterConfig,
 
     pub web_socket_url: String,
     pub current_message_count: u64,
@@ -55,10 +56,10 @@ impl FeedRelay {
         espresso_rx: mpsc::Receiver<BroadcastFeedMessage>,
         l1_finalized_msg_idx: watch::Receiver<u64>,
     ) -> Self {
-        let broadcaster = broadcaster::Broadcaster::new(config.server_config, chain_id);
+        let broadcaster = broadcaster::Broadcaster::new(config.server, chain_id);
 
         let client = client::BroadcasterClient::new(
-            config.client_config,
+            config.client,
             config.web_socket_url,
             chain_id,
             config.current_message_count,
@@ -165,8 +166,8 @@ mod tests {
         let relay_port = pick_free_port();
         let relay_addr: std::net::SocketAddr = format!("127.0.0.1:{relay_port}").parse().unwrap();
         let config = FeedConfig {
-            client_config: BroadcasterClientConfig::default(),
-            server_config: BroadcasterConfig {
+            client: BroadcasterClientConfig::default(),
+            server: BroadcasterConfig {
                 ws_server: WsBroadcastServerConfig {
                     addr: "127.0.0.1".to_string(),
                     port: relay_port,

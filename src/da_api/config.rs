@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Default, Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
 pub struct DaApiConfig {
     /// Server bind address
     pub listen_addr: String,
@@ -10,6 +11,7 @@ pub struct DaApiConfig {
 }
 
 #[derive(Default, Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
 pub struct DaProviderConfig {
     pub name: String,
     /// Downstream DA API endpoint

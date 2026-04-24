@@ -4,9 +4,7 @@
 // [32..35]    : min_hotshot_block_still_in_streamer_queue
 // [36..100]   : CAS ECDSA signature (65 bytes)
 //
-// [101]       : 0x01  (DA API header)
-// [102]       : 0x05  (Celestia indicator)
-// [103-...]   : downstream DA certificate
+// [101-...]   : downstream DA certificate
 
 use crate::da_api::{
     error::{DaApiError, DaApiResult},
@@ -62,8 +60,6 @@ pub struct CasCertificate {
     pub min_hotshot_block_still_in_streamer_queue: u32,
     #[serde(with = "serde_bytes")]
     pub cas_signature: [u8; 65],
-    pub da_api_header_flag: u8,
-    pub da_provider_flag: u8,
     pub downstream_certificate: Vec<u8>,
 }
 
@@ -84,13 +80,11 @@ impl CasCertificate {
         self.header.is_empty()
             && self.min_hotshot_block_still_in_streamer_queue == 0
             && self.cas_signature == [0; 65]
-            && self.da_api_header_flag == 0
-            && self.da_provider_flag == 0
             && self.downstream_certificate.is_empty()
     }
 
     pub fn certificate_minimum_size(header_size: usize) -> usize {
-        header_size + HOTSHOT_BLOCK_SIZE + CAS_SIG_SIZE + 2
+        header_size + HOTSHOT_BLOCK_SIZE + CAS_SIG_SIZE
     }
 
     // position where espresso metadata ends and da certificate starts
@@ -131,15 +125,6 @@ impl CasCertificate {
 
         enc.push_bytes(&self.cas_signature);
 
-        if self.da_api_header_flag != DA_CERTIFICATE_MESSAGE_HEADER_FLAG {
-            return Err(DaApiError::CertificateSerializationFailed(format!(
-                "invalid da_api_header_flag, expected: {DA_CERTIFICATE_MESSAGE_HEADER_FLAG}, got: {}",
-                self.da_api_header_flag
-            )));
-        }
-        enc.push_u8(self.da_api_header_flag);
-        enc.push_u8(self.da_provider_flag);
-
         enc.push_bytes(&self.downstream_certificate);
 
         Ok(enc.finish())
@@ -175,21 +160,12 @@ impl CasCertificate {
 
         let cas_signature = dec.read_fixed::<CAS_SIG_SIZE>()?;
 
-        let da_api_header_flag = dec.read_u8()?;
-        let da_provider_flag = dec.read_u8()?;
-
-        if da_api_header_flag != DA_CERTIFICATE_MESSAGE_HEADER_FLAG {
-            return Err(DaApiError::InvalidHeaderByte(da_api_header_flag));
-        }
-
         let downstream_certificate = dec.read_rest().to_vec();
 
         Ok(Self {
             header,
             min_hotshot_block_still_in_streamer_queue,
             cas_signature,
-            da_api_header_flag,
-            da_provider_flag,
             downstream_certificate,
         })
     }
@@ -224,8 +200,6 @@ impl CasCertificate {
             min_hotshot_block_still_in_streamer_queue,
             cas_signature,
 
-            da_api_header_flag: downstream_cert[0],
-            da_provider_flag: downstream_cert[1],
             downstream_certificate: downstream_cert.to_vec(),
         })
     }
@@ -263,8 +237,6 @@ mod tests {
             header,
             min_hotshot_block_still_in_streamer_queue: 5,
             cas_signature: [0xCC; 65],
-            da_api_header_flag: 0x01,
-            da_provider_flag: 0x05,
             downstream_certificate: vec![0xDD; 10],
         }
     }
@@ -283,8 +255,6 @@ mod tests {
             recovered.min_hotshot_block_still_in_streamer_queue
         );
         assert_eq!(original.cas_signature, recovered.cas_signature);
-        assert_eq!(original.da_api_header_flag, recovered.da_api_header_flag);
-        assert_eq!(original.da_provider_flag, recovered.da_provider_flag);
         assert_eq!(
             original.downstream_certificate,
             recovered.downstream_certificate

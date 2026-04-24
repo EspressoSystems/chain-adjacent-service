@@ -42,6 +42,7 @@ pub enum WsBroadcastServerError {
 
 /// Mirrors Go `wsbroadcastserver.BroadcasterConfig`.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct WsBroadcastServerConfig {
     pub addr: String,
     pub port: u16,

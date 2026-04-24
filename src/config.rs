@@ -8,10 +8,13 @@ use crate::{
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServiceConfig<C> {
     pub espresso_client: EspressoClientConfig,
+    #[serde(default)]
     pub streamer: StreamerConfig,
     pub rollup: RollupConfig<C>,
-    pub da_server_config: DaApiConfig,
-    pub submitter_config: SubmitterConfig,
+    #[serde(default)]
+    pub da_server: DaApiConfig,
+    #[serde(default)]
+    pub submitter: SubmitterConfig,
     #[serde(default)]
     pub advanced: AdvancedConfig,
     /// Indicates whether this is a fresh deployment without any existing state.
@@ -24,6 +27,7 @@ pub struct ServiceConfig<C> {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct StreamerConfig {
     pub max_sequencer_number_drift: u64,
     pub initial_backoff_ms: u64,
@@ -57,6 +61,7 @@ pub struct RollupConfig<C> {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct AdvancedConfig {
     pub espresso_finalized_message_channel_capacity: usize,
     pub verification_channel_capacity: usize,
