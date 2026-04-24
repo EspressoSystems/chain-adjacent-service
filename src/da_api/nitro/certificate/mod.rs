@@ -140,9 +140,7 @@ impl CasCertificate {
         enc.push_u8(self.da_api_header_flag);
         enc.push_u8(self.da_provider_flag);
 
-        if !self.downstream_certificate.is_empty() {
-            enc.push_bytes(&self.downstream_certificate);
-        }
+        enc.push_bytes(&self.downstream_certificate);
 
         Ok(enc.finish())
     }
@@ -204,7 +202,6 @@ impl CasCertificate {
         end_message_pos: u32,
         start_hotshot_block: u32,
         min_hotshot_block_still_in_streamer_queue: u32,
-        batch_data: &[u8],
         downstream_cert: &[u8],
     ) -> DaApiResult<Self> {
         if downstream_cert.len() < 2 {
@@ -219,7 +216,6 @@ impl CasCertificate {
             end_message_pos,
             start_hotshot_block,
             min_hotshot_block_still_in_streamer_queue,
-            batch_data,
             downstream_cert,
         );
 
@@ -245,7 +241,6 @@ impl CasCertificate {
         _end_message_pos: u32,
         _start_hotshot_block: u32,
         _min_hotshot_block_still_in_streamer_queue: u32,
-        _batch_data: &[u8],
         _downstream_cert: &[u8],
     ) -> [u8; 65] {
         [0u8; 65] // TODO: implement signing logic
@@ -314,7 +309,7 @@ mod tests {
         assert_eq!(da_cert.len(), 99);
 
         let espresso_da_cert =
-            CasCertificate::build_espresso_certificate(0, 0, 0, 0, &da_cert, &da_cert).unwrap();
+            CasCertificate::build_espresso_certificate(0, 0, 0, 0, &da_cert).unwrap();
         // cas certificate created: "0x010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1cb94dcff2136dfab4d1d4506cc5160a3b58c9481a87513c71882526ae8ac6e30e3f4a9d56da07893bf5245fd0ff0c50e2a66b52067d8e8b23beb3c8e4f8230743"
 
         let mut sequencer_msg = vec![0u8; 41];

@@ -54,11 +54,12 @@ impl ServerState {
 /// Build the top-level Axum router. Each DA provider is mounted at `/{rollup_prefix}/{name}`,
 /// e.g. `/arb/celestia`, `/arb/anytrust`. All paths expose identical RPC handler logic.
 pub fn build_app(
-    providers: Vec<DaProviderConfig>,
+    mut providers: Vec<DaProviderConfig>,
     verification_channel: VerificationSender,
     rollup_prefix: &str,
 ) -> Router {
     let mut app = Router::new();
+    providers.push(DaProviderConfig::calldata());
     for provider in providers {
         let name = provider.name.clone();
         let state = ServerState::new(provider, verification_channel.clone());
@@ -158,58 +159,64 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
 
     let endpoint = state.current_endpoint();
 
-    let forwarded_body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "daprovider_store",
-        "params": [data, timeout],
-        "id": body["id"]
-    });
+    let mut downstream_cert = data;
 
-    let downstream = state
-        .client
-        .post(endpoint)
-        .json(&forwarded_body)
-        .send()
-        .await
-        .map_err(|err| DaApiError::DownstreamDa(err.to_string()))?;
+    if !endpoint.is_empty() {
+        let forwarded_body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "daprovider_store",
+            "params": [downstream_cert, timeout],
+            "id": body["id"]
+        });
 
-    let status = downstream.status();
-    let bytes = downstream
-        .bytes()
-        .await
-        .map_err(|e| DaApiError::ParsingError(e.to_string()))?;
+        let downstream = state
+            .client
+            .post(endpoint)
+            .json(&forwarded_body)
+            .send()
+            .await
+            .map_err(|err| DaApiError::DownstreamDa(err.to_string()))?;
 
-    if !status.is_success() {
-        return Ok((
-            status,
-            [(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)],
-            bytes,
-        )
-            .into_response());
+        let status = downstream.status();
+        let bytes = downstream
+            .bytes()
+            .await
+            .map_err(|e| DaApiError::ParsingError(e.to_string()))?;
+
+        if !status.is_success() {
+            return Ok((
+                status,
+                [(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)],
+                bytes,
+            )
+                .into_response());
+        }
+
+        let downstream_json: Value =
+            serde_json::from_slice(&bytes).map_err(|e| DaApiError::ParsingError(e.to_string()))?;
+
+        if downstream_json.get("error").is_some() {
+            return Ok((
+                status,
+                [(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)],
+                bytes,
+            )
+                .into_response());
+        }
+
+        let raw_cert: DAStoreResponse = serde_json::from_value(downstream_json["result"].clone())
+            .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
+
+        downstream_cert = raw_cert.serialized_da_certificate;
     }
 
-    let downstream_json: Value =
-        serde_json::from_slice(&bytes).map_err(|e| DaApiError::ParsingError(e.to_string()))?;
-
-    if downstream_json.get("error").is_some() {
-        return Ok((
-            status,
-            [(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)],
-            bytes,
-        )
-            .into_response());
-    }
-
-    let raw_cert: DAStoreResponse = serde_json::from_value(downstream_json["result"].clone())
-        .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
 
     let final_cert = CasCertificate::build_espresso_certificate(
         start_message_position,
         end_message_position,
         start_espresso_block,
         min_espresso_block_still_in_queue,
-        &data,
-        &raw_cert.serialized_da_certificate,
+        &downstream_cert,
     )?;
 
     let resp = DAStoreResponse::try_from(final_cert)?;

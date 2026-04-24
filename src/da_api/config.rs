@@ -7,9 +7,6 @@ pub struct DaApiConfig {
 
     /// DA provider name <-> DA provider config
     pub da_providers: Vec<DaProviderConfig>,
-
-    /// Espresso/HotShot configuration
-    pub hotshot: HotShotConfig,
 }
 
 #[derive(Default, Debug, Clone, Deserialize, Serialize)]
@@ -19,7 +16,11 @@ pub struct DaProviderConfig {
     pub endpoint_url: String,
 }
 
-#[derive(Default, Debug, Clone, Deserialize, Serialize)]
-pub struct HotShotConfig {
-    pub query_url: String,
+impl DaProviderConfig {
+    pub fn calldata()-> Self {
+        Self {
+            name: "calldata".to_string(),
+            endpoint_url: "".to_string(),
+        }
+    }
 }
