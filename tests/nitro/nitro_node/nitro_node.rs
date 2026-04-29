@@ -142,8 +142,6 @@ impl NitroNode {
         node
     }
 
-    pub async fn start_nodes_after_l1(&self) {}
-
     /// Polls `getSupportedBytes` until the node sends a 200 Ok response
     async fn wait_until_ready(&self) {
         let deadline = Instant::now() + Duration::from_secs(600);

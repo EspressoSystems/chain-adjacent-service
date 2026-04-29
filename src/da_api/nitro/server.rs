@@ -17,7 +17,7 @@ use crate::{
         config::DaProviderConfig,
         error::DaApiError,
         nitro::{
-            certificate::CasCertificate,
+            certificate::{CASCertificateVersion, CasCertificate, ESPRESSO_CERT_SIZE},
             types::DAStoreResponse,
             utils::{SEQUENCER_HEADER_LEN, extract_da_sequencer_msg_from_espresso_da_certificate},
         },
@@ -87,6 +87,7 @@ async fn handle_rpc(State(state): State<ServerState>, body: Bytes) -> Result<Res
             handle_recover_inner(state, parsed, RECOVER_PAYLOAD_AND_PREIMAGES).await
         }
         GET_SUPPORTED_HEADER_BYTES if state.da_config.name == "calldata" => {
+            // let header_byte = format!("{}", CASCertificateVersion::V0);
             let result = serde_json::json!({
                 "id": parsed["id"],
                 "jsonrpc": "2.0",
@@ -273,10 +274,10 @@ async fn handle_recover_inner(
     );
 
     if state.da_config.name == "calldata" {
-        let offset = if sequencer_msg[40] == 0x70 {
-            101
+        let header_byte = sequencer_msg[SEQUENCER_HEADER_LEN];
+        let offset = if CASCertificateVersion::is_header_byte(header_byte) {
+            ESPRESSO_CERT_SIZE
         } else {
-            println!("first byte {:0x}", sequencer_msg[40]);
             0
         };
         info!(

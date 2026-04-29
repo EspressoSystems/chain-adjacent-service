@@ -216,7 +216,7 @@ impl<R: Rollup> Streamer<R> {
     /// It also filters out messages that are significantly out of order.
     fn filter_messages(&mut self, parsed_rollup_entries: Vec<<R as Rollup>::Entry>) {
         for parsed_entry in parsed_rollup_entries {
-            if let Some(first) = self.queue.first() {
+            if let Some(f) = self.queue.first() {
                 // if seq number is less than the lowest sequencer number which is the first
                 // element in the array then skip that entry
                 if parsed_entry.sequence_number() < self.config.starting_pos {
@@ -228,16 +228,17 @@ impl<R: Rollup> Streamer<R> {
                     continue;
                 }
 
-                // if parsed_entry.sequence_number() - first.sequence_number()
-                //     > self.config.max_sequencer_number_drift
-                // {
-                //     tracing::warn!(
-                //         "{} is outside the max sequencer number drift, current first sequence number: {}",
-                //         parsed_entry.sequence_number(),
-                //         first.sequence_number()
-                //     );
-                //     continue;
-                // }
+                let current = parsed_entry.sequence_number();
+                let first = f.sequence_number();
+
+                if current > first && current - first > self.config.max_sequencer_number_drift {
+                    tracing::warn!(
+                        "{} is outside the max sequencer number drift, current first sequence number: {}",
+                        current,
+                        first
+                    );
+                    continue;
+                }
             }
             let seq = parsed_entry.sequence_number();
 

@@ -32,12 +32,20 @@ pub const CAS_SIG_SIZE: usize = 65; // ECDSA (r,s,v)
 /// Expected header size for CAS V0 (32 bytes as per certificate layout)
 pub const CERT_HEADER_SIZE_V0: usize = 32;
 
+pub const ESPRESSO_CERT_SIZE: usize = CERT_HEADER_SIZE_V0 + HOTSHOT_BLOCK_SIZE + CAS_SIG_SIZE; // 101
+
 /// CAS certificate version
 /// This versioning will also allow us to parse future versions even if CAS header size changes
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CASCertificateVersion {
     V0 = 0x70,
+}
+
+impl CASCertificateVersion {
+    pub fn is_header_byte(b: u8) -> bool {
+        Self::try_from(b).is_ok()
+    }
 }
 
 impl TryFrom<u8> for CASCertificateVersion {
