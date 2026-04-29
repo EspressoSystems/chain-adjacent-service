@@ -108,9 +108,14 @@ impl Rollup for Nitro {
         let pos = streamer_queue
             .binary_search_by_key(&context.next_batch_start_pos, |e| e.sequence_number());
         let Ok(pos) = pos else {
+            let current_queue = streamer_queue
+                .iter()
+                .map(|e| e.sequence_number())
+                .collect::<Vec<_>>();
             tracing::warn!(
-                "streamer queue does not contain an entry with pos: {}",
-                context.next_batch_start_pos
+                "streamer queue does not contain an entry with pos: {}, queue: {:?}",
+                context.next_batch_start_pos,
+                current_queue
             );
             return VerificationResult::failure();
         };
@@ -956,7 +961,6 @@ pub mod testing {
             rollup: crate::config::RollupConfig {
                 ty: RollupType::Nitro,
                 namespace_id: 0,
-                start_block: 0,
                 stack: initial_nitro_config.clone(),
             },
             streamer: initial_streamer_config.clone(),

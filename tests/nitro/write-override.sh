@@ -105,6 +105,7 @@ if [ -n "${CAS_FEED_URL:-}" ]; then
       - --node.da-provider.with-writer=true
       - --node.da-provider.rpc.url=$CAS_CALLDATA_RPC_URL
       - --node.feed.input.url=$CAS_FEED_URL
+      - --node.dangerous.no-sequencer-coordinator=true
     extra_hosts:
       - "host.docker.internal:host-gateway"
   sequencer:

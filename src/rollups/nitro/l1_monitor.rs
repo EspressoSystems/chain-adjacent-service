@@ -88,8 +88,11 @@ pub struct NitroL1Monitor {
 
 impl NitroL1Monitor {
     pub async fn new(config: &L1MonitorConfig) -> Result<Self, L1MonitorError> {
+        println!("??????????");
         let provider = RootProvider::connect(&config.ws_url).await?;
+        println!("12111212121");
         let seq_inbox = ISequencerInbox::new(config.sequencer_inbox_address, &provider);
+        println!("!!!!!!!!!");
         let bridge_addr = seq_inbox
             .bridge()
             .call()
@@ -162,7 +165,9 @@ impl NitroL1Monitor {
                     finalized_msg_count = count,
                     "updated finalized message count"
                 );
-                let _ = l1_finalized_msg_idx_sender.send(count);
+                // tracing::info!("processing event, finalized count={}", count)
+                // In nitro, message 0 can not be reorged
+                let _ = l1_finalized_msg_idx_sender.send(count.saturating_sub(1));
                 *last_finalized_block = finalized_block;
             }
         } else {
@@ -217,14 +222,14 @@ impl L1Monitor<BatchCursor, nitro::Error> for NitroL1Monitor {
     async fn fetch_latest_batch_cursor_on_fresh_deployment(
         &self,
     ) -> Result<BatchCursor, nitro::Error> {
-        let (mut message_count, delayed_read) = tokio::try_join!(
+        let (message_count, delayed_read) = tokio::try_join!(
             self.fetch_message_count(BlockNumberOrTag::Latest),
             self.fetch_delayed_messages_read(BlockNumberOrTag::Latest),
         )
         .map_err(nitro::Error::from)?;
 
         Ok(BatchCursor {
-            next_batch_start_pos: message_count + 1,
+            next_batch_start_pos: message_count,
             last_batch_delayed_messages_read: delayed_read,
         })
     }

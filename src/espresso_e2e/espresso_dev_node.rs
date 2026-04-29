@@ -25,8 +25,8 @@ impl Drop for EspressoDevNode {
     fn drop(&mut self) {
         // Stop the container first, then release the permit.
         // This ensures the old instance is fully stopped before another one is allowed to start.
-        // self.stop();
-        // self._lifecycle_permit.take();
+        self.stop();
+        self._lifecycle_permit.take();
     }
 }
 

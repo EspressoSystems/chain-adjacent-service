@@ -17,7 +17,6 @@ use chain_agnostic_service::{
         },
         run,
     },
-    rollups::nitro::types::Nitro,
 };
 
 use crate::{

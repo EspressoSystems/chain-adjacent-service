@@ -1,14 +1,9 @@
 use reqwest::Url;
-use serde::de;
-use serde_json::json;
-use std::result::Result::Ok;
 use std::{
-    process::{Child, Command, Stdio},
-    sync::{Mutex, OnceLock},
-    time::Duration,
+    process::{Command, Stdio},
+    sync::OnceLock,
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use tokio::time::{Instant, sleep};
 
 const REFERENCE_DA_ENDPOINT: i32 = 9880;
 const TESTNODE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/nitro-testnode");
@@ -21,19 +16,15 @@ pub struct NitroNodeConfig {
     pub simple: bool,
     // if true, will set up a validator
     pub validator: bool,
-    pub cas_feed_url: Option<Url>,
     // Used to check if the sequencer is ready
     pub sequencer_url: Option<Url>,
+
+    pub no_l2_traffic: bool,
 }
 
 impl NitroNodeConfig {
     pub fn with_reference_da(mut self, url: Url) -> Self {
         self.reference_da_url = Some(url);
-        self
-    }
-
-    pub fn with_cas_feed(mut self, url: Url) -> Self {
-        self.cas_feed_url = Some(url);
         self
     }
 
@@ -58,9 +49,6 @@ impl NitroNodeConfig {
     }
 
     pub fn validate(&self) -> anyhow::Result<()> {
-        if self.simple && self.cas_feed_url.is_some() {
-            anyhow::bail!("CAS feed is not supported in simple mode");
-        }
         Ok(())
     }
 }
@@ -69,9 +57,6 @@ impl NitroNodeConfig {
 /// for testing purposes.
 pub struct NitroNode {
     pub config: NitroNodeConfig,
-    // Wrapped in Mutex because Child requires &mut to kill,
-    // but stop() only has &self
-    process: Mutex<Child>,
     _lifecycle_permit: Option<OwnedSemaphorePermit>,
 }
 
@@ -81,6 +66,9 @@ fn compose_lifecycle_semaphore() -> &'static std::sync::Arc<Semaphore> {
 }
 
 impl NitroNode {
+    /// Brings up L1 + sequencer (+ ref DA if configured). The poster is
+    /// **not** started here — call [`Self::start_poster`] once the
+    /// dependencies it needs (e.g. CAS) are reachable.
     pub async fn start(config: NitroNodeConfig) -> Self {
         let lifecycle_permit = compose_lifecycle_semaphore()
             .clone()
@@ -95,13 +83,11 @@ impl NitroNode {
             "nitro-testnode submodule not initialized. Run: git submodule update --init --recursive"
         );
 
-        let mut args = vec![
-            "--init-force",
-            "--no-tokenbridge",
-            "--no-run",
-            "--no-l2-traffic",
-            "--detach",
-        ];
+        // `--no-run` skips the final `docker compose up $NODES` in
+        // test-node.bash, but the init steps still bring up geth (L1),
+        // the sequencer, and referenceda-provider when `--l2-referenceda`
+        // is set. Poster is left for `start_poster()`.
+        let mut args = vec!["--init-force", "--no-tokenbridge", "--no-run", "--detach"];
 
         if !config.simple {
             args.push("--no-simple");
@@ -115,11 +101,11 @@ impl NitroNode {
             args.push("--validate");
         }
 
-        // if config.l1_only {
-        //     args.push("--no-run");
-        // }
+        if config.no_l2_traffic {
+            args.push("--no-l2-traffic");
+        }
 
-        let child = Command::new("bash")
+        let mut child = Command::new("bash")
             .arg("./test-node.bash")
             .args(&args)
             // critical: script resolves all its relative paths from its own repo root
@@ -132,72 +118,62 @@ impl NitroNode {
                  Run: git submodule update --init --recursive",
             );
 
-        let node = Self {
-            config,
-            process: Mutex::new(child),
-            _lifecycle_permit: Some(lifecycle_permit),
-        };
+        // `--no-run` makes the script return as soon as init is finished
+        // (geth + sequencer + ref DA up, deploy steps complete, l2 traffic
+        // generator backgrounded). Block on it instead of polling HTTP —
+        // by the time it exits, every dependency we care about is live.
+        // spawn_blocking is required because std::process::Child::wait
+        // would otherwise block the tokio runtime.
+        println!("Waiting for test-node.bash to finish init...");
+        let status = tokio::task::spawn_blocking(move || child.wait())
+            .await
+            .expect("test-node.bash wait task panicked")
+            .expect("failed to wait on test-node.bash");
+        assert!(
+            status.success(),
+            "test-node.bash exited with non-zero status: {status}"
+        );
+        println!("test-node.bash finished init");
 
-        node.wait_until_ready().await;
-        node
+        Self {
+            config,
+            _lifecycle_permit: Some(lifecycle_permit),
+        }
     }
 
-    /// Polls `getSupportedBytes` until the node sends a 200 Ok response
-    async fn wait_until_ready(&self) {
-        let deadline = Instant::now() + Duration::from_secs(600);
-        println!("Waiting for node to be ready...");
+    /// Brings up the `poster` service via `docker compose up --wait poster`.
+    ///
+    /// `start()` runs `test-node.bash --no-run`, which initialises L1 +
+    /// sequencer (+ ref DA if configured) but skips the poster. Call this
+    /// after CAS is up so the poster's overridden command (subscribing to
+    /// CAS's feed and DA RPC) has a live endpoint to talk to.
+    pub fn start_poster(&self) {
+        assert!(
+            !self.config.simple,
+            "start_poster is not supported in simple mode (poster runs inside the unified node)"
+        );
 
-        let mut da_ready = self.config.reference_da_url.is_none();
-        let mut sequencer_ready = false;
-        loop {
-            if Instant::now() >= deadline {
-                self.stop();
-                panic!("timed out waiting for node to be ready");
-            }
+        // Best-effort cleanup of any prior poster state — stale containers
+        // or volumes from an interrupted run will otherwise be reused and
+        // can leak inconsistent state into the new run.
+        let _ = Command::new("docker")
+            .args(["compose", "down", "--volumes", "poster"])
+            .current_dir(TESTNODE_DIR)
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status();
 
-            if let Some(da_url) = &self.config.reference_da_url {
-                if !da_ready {
-                    match fetch_da_provider_byte(da_url).await {
-                        Ok(_) => {
-                            da_ready = true;
-                            println!("DA provider is ready");
-                        }
-                        Err(err) => {
-                            println!("DA provider not ready: {err}");
-                        }
-                    }
-                }
-            } else {
-                da_ready = true;
-            }
-            // check if sequencer is ready
-            if !sequencer_ready && self.config.sequencer_url.is_some() {
-                let sequencer_url = self.config.sequencer_url.as_ref().unwrap();
-                match fetch_block_height(sequencer_url).await {
-                    Ok(_) => sequencer_ready = true,
-                    Err(_) => {
-                        println!("waiting for sequencer to be ready")
-                    }
-                }
-            }
-
-            if da_ready && sequencer_ready {
-                println!("Node is ready!");
-                break;
-            }
-
-            println!("sequencer: {sequencer_ready}, da: {da_ready}");
-            sleep(Duration::from_millis(100)).await;
-        }
+        let status = Command::new("docker")
+            .args(["compose", "up", "--wait", "poster"])
+            .current_dir(TESTNODE_DIR)
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .expect("failed to run `docker compose up --wait poster`");
+        assert!(status.success(), "`docker compose up --wait poster` failed");
     }
 
     pub fn stop(&self) {
-        // Kill and reap the bash process first
-        if let Ok(mut child) = self.process.lock() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-
         // docker compose down -v: remove containers and volumes
         let status = Command::new("docker")
             .args(["compose", "down", "-v"])
@@ -237,72 +213,3 @@ impl Drop for NitroNode {
     }
 }
 
-pub async fn fetch_da_provider_byte(url: &Url) -> anyhow::Result<()> {
-    let request_body = json!({
-        "jsonrpc": "2.0",
-        "method": "daprovider_getSupportedHeaderBytes",
-        "params": [],
-        "id": 1
-    });
-    let client = reqwest::Client::new();
-
-    let response = client
-        .post(url.clone())
-        .json(&request_body)
-        .send()
-        .await
-        .map_err(|err| anyhow::anyhow!("Connection failed: {err}"))?;
-
-    if !response.status().is_success() {
-        return Err(anyhow::anyhow!(
-            "Service returned status: {}",
-            response.status()
-        ));
-    }
-
-    let body: serde_json::Value = response.json().await?;
-    if body.get("error").is_some() {
-        return Err(anyhow::anyhow!("DA Provider returned a JSON-RPC error"));
-    }
-
-    Ok(())
-}
-
-pub async fn fetch_block_height(url: &Url) -> anyhow::Result<u64> {
-    let request_body = json!({
-        "jsonrpc": "2.0",
-        "method": "eth_blockNumber",
-        "params": [],
-        "id": 1
-    });
-    let client = reqwest::Client::new();
-
-    let response = client
-        .post(url.clone())
-        .json(&request_body)
-        .send()
-        .await
-        .map_err(|err| anyhow::anyhow!("Connection failed: {err}"))?;
-
-    if !response.status().is_success() {
-        return Err(anyhow::anyhow!(
-            "Service returned status: {}",
-            response.status()
-        ));
-    }
-
-    let body: serde_json::Value = response.json().await?;
-    if let Some(error) = body.get("error") {
-        return Err(anyhow::anyhow!("JSON-RPC error: {error}"));
-    }
-
-    let block_number_hex = body
-        .get("result")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing or invalid result field"))?;
-
-    let block_number = u64::from_str_radix(&block_number_hex.trim_start_matches("0x"), 16)
-        .map_err(|err| anyhow::anyhow!("Failed to parse block number: {err}"))?;
-
-    Ok(block_number)
-}

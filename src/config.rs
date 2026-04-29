@@ -56,7 +56,6 @@ pub struct RollupConfig<C> {
     #[serde(rename = "type")]
     pub ty: RollupType,
     pub namespace_id: u64,
-    pub start_block: u64,
     pub stack: C,
 }
 

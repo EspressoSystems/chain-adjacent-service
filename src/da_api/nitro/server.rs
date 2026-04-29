@@ -280,11 +280,6 @@ async fn handle_recover_inner(
         } else {
             0
         };
-        info!(
-            "hit the calldata offset: {}, {:?}",
-            offset,
-            &sequencer_msg[41..]
-        );
         let sequencer_msg = &sequencer_msg[SEQUENCER_HEADER_LEN + offset..];
         let result = serde_json::json!({
             "jsonrpc": "2.0",

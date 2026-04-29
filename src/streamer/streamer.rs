@@ -357,7 +357,6 @@ pub mod testing {
             },
             RollupConfig {
                 namespace_id: 1918988905u64,
-                start_block: 0,
                 stack: (),
                 ty: Nitro,
             },
@@ -453,7 +452,6 @@ pub mod testing {
             },
             RollupConfig {
                 namespace_id: 1918988905u64,
-                start_block: 0,
                 stack: (),
                 ty: Nitro,
             },

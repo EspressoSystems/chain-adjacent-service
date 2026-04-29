@@ -5,7 +5,6 @@
     "rollup": {
         "type": "nitro",
         "namespace_id": 412346,
-        "start_block": 0,
         "stack": {
             "chain_id": 412346,
             "feed": {
