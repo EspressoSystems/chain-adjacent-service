@@ -209,7 +209,7 @@ impl NitroNode {
 
 impl Drop for NitroNode {
     fn drop(&mut self) {
-        // self.stop();
+        self.stop();
     }
 }
 

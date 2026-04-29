@@ -121,13 +121,6 @@ impl Rollup for Nitro {
         };
 
         let queue = &streamer_queue[pos..];
-        println!(
-            "{:?}",
-            queue
-                .iter()
-                .map(|e| e.feed_message.sequence_number)
-                .collect::<Vec<_>>()
-        );
         if batch_messages.len() > queue.len() {
             // the streamer has not enough messages to match the batch messages
             tracing::warn!(

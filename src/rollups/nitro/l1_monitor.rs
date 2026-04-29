@@ -88,11 +88,8 @@ pub struct NitroL1Monitor {
 
 impl NitroL1Monitor {
     pub async fn new(config: &L1MonitorConfig) -> Result<Self, L1MonitorError> {
-        println!("??????????");
         let provider = RootProvider::connect(&config.ws_url).await?;
-        println!("12111212121");
         let seq_inbox = ISequencerInbox::new(config.sequencer_inbox_address, &provider);
-        println!("!!!!!!!!!");
         let bridge_addr = seq_inbox
             .bridge()
             .call()
