@@ -22,6 +22,8 @@ pub struct NitroNodeConfig {
     // if true, will set up a validator
     pub validator: bool,
     pub cas_feed_url: Option<Url>,
+    // Used to check if the sequencer is ready
+    pub sequencer_url: Option<Url>,
 }
 
 impl NitroNodeConfig {
@@ -75,7 +77,7 @@ pub struct NitroNode {
 
 fn compose_lifecycle_semaphore() -> &'static std::sync::Arc<Semaphore> {
     static SEMAPHORE: OnceLock<std::sync::Arc<Semaphore>> = OnceLock::new();
-    SEMAPHORE.get_or_init(|| std::sync::Arc::new(Semaphore::new(1)))
+    SEMAPHORE.get_or_init(|| std::sync::Arc::new(Semaphore::new(2)))
 }
 
 impl NitroNode {
@@ -93,10 +95,16 @@ impl NitroNode {
             "nitro-testnode submodule not initialized. Run: git submodule update --init --recursive"
         );
 
-        let mut args = vec!["--init-force", "--no-tokenbridge"];
+        let mut args = vec![
+            "--init-force",
+            "--no-tokenbridge",
+            "--no-run",
+            "--no-l2-traffic",
+            "--detach",
+        ];
 
-        if config.simple {
-            args.push("--simple");
+        if !config.simple {
+            args.push("--no-simple");
         }
 
         if config.reference_da_url.is_some() {
@@ -107,9 +115,9 @@ impl NitroNode {
             args.push("--validate");
         }
 
-        if let Some(feed_url) = &config.cas_feed_url {
-            // override the sequencer and batcher's config here
-        }
+        // if config.l1_only {
+        //     args.push("--no-run");
+        // }
 
         let child = Command::new("bash")
             .arg("./test-node.bash")
@@ -133,6 +141,8 @@ impl NitroNode {
         node.wait_until_ready().await;
         node
     }
+
+    pub async fn start_nodes_after_l1(&self) {}
 
     /// Polls `getSupportedBytes` until the node sends a 200 Ok response
     async fn wait_until_ready(&self) {
@@ -163,12 +173,22 @@ impl NitroNode {
                 da_ready = true;
             }
             // check if sequencer is ready
+            if !sequencer_ready && self.config.sequencer_url.is_some() {
+                let sequencer_url = self.config.sequencer_url.as_ref().unwrap();
+                match fetch_block_height(sequencer_url).await {
+                    Ok(_) => sequencer_ready = true,
+                    Err(_) => {
+                        println!("waiting for sequencer to be ready")
+                    }
+                }
+            }
 
             if da_ready && sequencer_ready {
                 println!("Node is ready!");
                 break;
             }
 
+            println!("sequencer: {sequencer_ready}, da: {da_ready}");
             sleep(Duration::from_millis(100)).await;
         }
     }
@@ -215,7 +235,7 @@ impl NitroNode {
 
 impl Drop for NitroNode {
     fn drop(&mut self) {
-        self.stop();
+        // self.stop();
     }
 }
 
@@ -248,4 +268,43 @@ pub async fn fetch_da_provider_byte(url: &Url) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+pub async fn fetch_block_height(url: &Url) -> anyhow::Result<u64> {
+    let request_body = json!({
+        "jsonrpc": "2.0",
+        "method": "eth_blockNumber",
+        "params": [],
+        "id": 1
+    });
+    let client = reqwest::Client::new();
+
+    let response = client
+        .post(url.clone())
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|err| anyhow::anyhow!("Connection failed: {err}"))?;
+
+    if !response.status().is_success() {
+        return Err(anyhow::anyhow!(
+            "Service returned status: {}",
+            response.status()
+        ));
+    }
+
+    let body: serde_json::Value = response.json().await?;
+    if let Some(error) = body.get("error") {
+        return Err(anyhow::anyhow!("JSON-RPC error: {error}"));
+    }
+
+    let block_number_hex = body
+        .get("result")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing or invalid result field"))?;
+
+    let block_number = u64::from_str_radix(&block_number_hex.trim_start_matches("0x"), 16)
+        .map_err(|err| anyhow::anyhow!("Failed to parse block number: {err}"))?;
+
+    Ok(block_number)
 }

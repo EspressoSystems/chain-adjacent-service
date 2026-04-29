@@ -12,6 +12,7 @@ use crate::da_api::{
 };
 use serde::{Deserialize, Serialize};
 mod utils;
+use tracing::info;
 use utils::{Decoder, Encoder};
 
 // ── DA type bytes ──────────────────────────────────────────────────────────────
@@ -36,7 +37,7 @@ pub const CERT_HEADER_SIZE_V0: usize = 32;
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CASCertificateVersion {
-    V0 = 0x00,
+    V0 = 0x70,
 }
 
 impl TryFrom<u8> for CASCertificateVersion {
@@ -44,7 +45,7 @@ impl TryFrom<u8> for CASCertificateVersion {
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            0x00 => Ok(Self::V0),
+            0x70 => Ok(Self::V0),
             _ => Err(DaApiError::Serialization(format!(
                 "unknown version: {value}"
             ))),
@@ -127,7 +128,16 @@ impl CasCertificate {
 
         enc.push_bytes(&self.downstream_certificate);
 
-        Ok(enc.finish())
+        let result = enc.finish();
+
+        info!(
+            "downstream_len={}, total_len={}, result={:?}",
+            self.downstream_certificate.len(),
+            result.len(),
+            result
+        );
+
+        Ok(result)
     }
 
     /// Deserialise the certificate into its wire format.
@@ -185,7 +195,8 @@ impl CasCertificate {
         }
 
         //TODO: hardcoded size here
-        let header = vec![0u8; 32];
+        let mut header = vec![0u8; 32];
+        header[0] = CASCertificateVersion::V0 as u8;
 
         let cas_signature = Self::build_and_sign_payload(
             start_message_pos,

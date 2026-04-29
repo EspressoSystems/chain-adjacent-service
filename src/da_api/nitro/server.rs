@@ -17,8 +17,9 @@ use crate::{
         config::DaProviderConfig,
         error::DaApiError,
         nitro::{
-            certificate::CasCertificate, types::DAStoreResponse,
-            utils::extract_da_sequencer_msg_from_espresso_da_certificate,
+            certificate::CasCertificate,
+            types::DAStoreResponse,
+            utils::{SEQUENCER_HEADER_LEN, extract_da_sequencer_msg_from_espresso_da_certificate},
         },
     },
 };
@@ -29,6 +30,7 @@ const STORE: &str = "daprovider_store";
 const RECOVER_PAYLOAD: &str = "daprovider_recoverPayload";
 const COLLECT_PREIMAGES: &str = "daprovider_collectPreimages";
 const RECOVER_PAYLOAD_AND_PREIMAGES: &str = "daprovider_recoverPayloadAndPreimages";
+const GET_SUPPORTED_HEADER_BYTES: &str = "daprovider_getSupportedHeaderBytes";
 
 #[derive(Clone)]
 pub struct ServerState {
@@ -83,6 +85,16 @@ async fn handle_rpc(State(state): State<ServerState>, body: Bytes) -> Result<Res
         COLLECT_PREIMAGES => handle_recover_inner(state, parsed, COLLECT_PREIMAGES).await,
         RECOVER_PAYLOAD_AND_PREIMAGES => {
             handle_recover_inner(state, parsed, RECOVER_PAYLOAD_AND_PREIMAGES).await
+        }
+        GET_SUPPORTED_HEADER_BYTES if state.da_config.name == "calldata" => {
+            let result = serde_json::json!({
+                "id": parsed["id"],
+                "jsonrpc": "2.0",
+                "result": {"headerBytes": "0x70"}
+            });
+            let bytes = serde_json::to_vec(&result)
+                .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
+            Ok((StatusCode::OK, bytes).into_response())
         }
         _ => forward_raw(state, body).await,
     }
@@ -210,7 +222,6 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
         downstream_cert = raw_cert.serialized_da_certificate;
     }
 
-
     let final_cert = CasCertificate::build_espresso_certificate(
         start_message_position,
         end_message_position,
@@ -260,6 +271,31 @@ async fn handle_recover_inner(
         method = downstream_method,
         "received DA certificate request"
     );
+
+    if state.da_config.name == "calldata" {
+        let offset = if sequencer_msg[40] == 0x70 {
+            101
+        } else {
+            println!("first byte {:0x}", sequencer_msg[40]);
+            0
+        };
+        info!(
+            "hit the calldata offset: {}, {:?}",
+            offset,
+            &sequencer_msg[41..]
+        );
+        let sequencer_msg = &sequencer_msg[SEQUENCER_HEADER_LEN + offset..];
+        let result = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": body["id"],
+            "result": {"Payload": sequencer_msg},
+        });
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)
+            .body(axum::body::Body::from(serde_json::to_vec(&result).unwrap()))
+            .map_err(|e| DaApiError::ParsingError(e.to_string()));
+    }
 
     let da_certificate = extract_da_sequencer_msg_from_espresso_da_certificate(&sequencer_msg)
         .map_err(|e| DaApiError::InvalidParams(format!("invalid sequencer_msg: {e}")))?;

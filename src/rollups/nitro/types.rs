@@ -21,10 +21,19 @@ pub enum BatchMessage {
     DelayedMsg,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct BatchCursor {
     pub last_batch_delayed_messages_read: u64,
     pub next_batch_start_pos: u64,
+}
+
+impl Default for BatchCursor {
+    fn default() -> Self {
+        Self {
+            last_batch_delayed_messages_read: 1,
+            next_batch_start_pos: 1,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

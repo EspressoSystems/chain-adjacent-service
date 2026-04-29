@@ -49,7 +49,7 @@ async fn run<R: Rollup>(config: ServiceConfig<R::StackConfig>) -> Result<()> {
         (batch_cursor, None)
     };
 
-    let config = R::resolve_config_with_checkpoint(config, batch_cursor, hotshot_height);
+    let config = R::resolve_config_with_checkpoint(config, batch_cursor.clone(), hotshot_height);
 
     let client = EspressoClient::from_config(config.espresso_client.clone());
     let (submitter_sender, submitter_receiver) = mpsc::channel::<R::FeedMessage>(100);
@@ -93,7 +93,7 @@ async fn run<R: Rollup>(config: ServiceConfig<R::StackConfig>) -> Result<()> {
     let client = EspressoClient::from_config(config.espresso_client);
     let (verification_sender, verification_receiver) =
         mpsc::channel(config.advanced.verification_channel_capacity);
-    let (batch_cursor_sender, batch_cursor_receiver) = watch::channel(R::BatchCursor::default());
+    let (batch_cursor_sender, batch_cursor_receiver) = watch::channel(batch_cursor.clone());
     let mut streamer: Streamer<R> =
         Streamer::new(client, config.streamer, config.rollup, config.advanced);
 
@@ -104,11 +104,7 @@ async fn run<R: Rollup>(config: ServiceConfig<R::StackConfig>) -> Result<()> {
         espresso_finalization_sender,
     );
 
-    let da_task = da_api::run(
-        config.da_server,
-        R::rollup_type(),
-        verification_sender,
-    );
+    let da_task = da_api::run(config.da_server, R::rollup_type(), verification_sender);
 
     let l1_monitor_task = l1_monitor.start(l1_finalized_msg_idx_sender, batch_cursor_sender);
 

@@ -11,8 +11,8 @@ const CAS_CONFIG_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/nitro/
 const WRITE_OVERRIDE_SCRIPT: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/tests/nitro/write-override.sh");
 
-const CAS_FEED_URL: &str = "http://localhost:9643";
-const CAS_CALLDATA_RPC_URL: &str = "http://localhost:8000/arb/calldata";
+const CAS_FEED_URL: &str = "ws://host.docker.internal:9643";
+const CAS_CALLDATA_RPC_URL: &str = "http://host.docker.internal:8000/cas/arb/calldata";
 
 /// RAII wrapper that kills the CAS subprocess on drop so the test never
 /// leaks a background process if it panics.
@@ -57,24 +57,38 @@ fn spawn_cas() -> CasProcess {
 #[tokio::test]
 async fn test_e2e() {
     let espresso = EspressoDevNode::start().await;
-    println!("Espresso dev node started at {}", espresso.client.config.base_url);
+    println!(
+        "Espresso dev node started at {}",
+        espresso.client.config.base_url
+    );
 
     setup_l1_reuse_mode();
 
-    let nitro_node = NitroNode::start(NitroNodeConfig::default()).await;
-    println!("Nitro node + L1 (reuse mode) started");
+    let mut config = NitroNodeConfig {
+        reference_da_url: None,
+        simple: false,
+        validator: false,
+        cas_feed_url: Some("ws://localhost:9642".parse().unwrap()),
+        sequencer_url: Some("http://localhost:8547".parse().unwrap()),
+        // l1_only: true,
+    };
 
-    let _cas = spawn_cas();
-    println!("CAS spawned with config {CAS_CONFIG_PATH}");
+    let nitro_node = NitroNode::start(config.clone()).await;
+    // println!("Nitro node + L1 (reuse mode) started");
 
-    sleep(Duration::from_secs(5)).await;
+    // let _cas = spawn_cas();
+    // println!("CAS spawned with config {CAS_CONFIG_PATH}");
+
+    // let nitro_l2_node = NitroNode::start(config).await;
+
+    sleep(Duration::from_secs(5 * 60)).await;
 
     // TODO: real e2e assertions (e.g. submit a tx on L2, confirm a batch
     // flows through CAS, verify the espresso-wrapped DA cert on L1).
 
     // Explicit drop order: nitro first, then CAS, then espresso — so the
     // downstream consumers tear down before the things they depend on.
-    drop(nitro_node);
-    drop(_cas);
-    drop(espresso);
+    // drop(nitro_node);
+    // // drop(_cas);
+    // drop(espresso);
 }

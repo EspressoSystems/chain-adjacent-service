@@ -217,14 +217,14 @@ impl L1Monitor<BatchCursor, nitro::Error> for NitroL1Monitor {
     async fn fetch_latest_batch_cursor_on_fresh_deployment(
         &self,
     ) -> Result<BatchCursor, nitro::Error> {
-        let (message_count, delayed_read) = tokio::try_join!(
+        let (mut message_count, delayed_read) = tokio::try_join!(
             self.fetch_message_count(BlockNumberOrTag::Latest),
             self.fetch_delayed_messages_read(BlockNumberOrTag::Latest),
         )
         .map_err(nitro::Error::from)?;
 
         Ok(BatchCursor {
-            next_batch_start_pos: message_count,
+            next_batch_start_pos: message_count + 1,
             last_batch_delayed_messages_read: delayed_read,
         })
     }

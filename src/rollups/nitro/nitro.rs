@@ -116,6 +116,13 @@ impl Rollup for Nitro {
         };
 
         let queue = &streamer_queue[pos..];
+        println!(
+            "{:?}",
+            queue
+                .iter()
+                .map(|e| e.feed_message.sequence_number)
+                .collect::<Vec<_>>()
+        );
         if batch_messages.len() > queue.len() {
             // the streamer has not enough messages to match the batch messages
             tracing::warn!(
@@ -136,7 +143,12 @@ impl Rollup for Nitro {
                         return VerificationResult::failure();
                     };
                     if *content != *msg_bytes.l2msg {
-                        tracing::warn!("message content does not match streamer queue entry");
+                        tracing::warn!(
+                            "message content does not match streamer queue entry, index={}, exepcted={:?}, got={:?}",
+                            index,
+                            msg_bytes.l2msg,
+                            content.to_vec(),
+                        );
                         return VerificationResult::failure();
                     }
                 }
@@ -236,8 +248,7 @@ impl Rollup for Nitro {
         if let Some(hotshot_height) = starting_hotshot_height {
             new_config.streamer.starting_hotshot_height = hotshot_height;
         }
-        new_config.rollup.stack.feed.current_message_count =
-            batch_cursor.next_batch_start_pos;
+        new_config.rollup.stack.feed.current_message_count = batch_cursor.next_batch_start_pos;
         new_config.streamer.starting_pos = batch_cursor.next_batch_start_pos;
         new_config
     }
