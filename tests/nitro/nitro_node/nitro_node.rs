@@ -16,28 +16,11 @@ pub struct NitroNodeConfig {
     pub simple: bool,
     // if true, will set up a validator
     pub validator: bool,
-    // Used to check if the sequencer is ready
-    pub sequencer_url: Option<Url>,
 
     pub no_l2_traffic: bool,
 }
 
 impl NitroNodeConfig {
-    pub fn with_reference_da(mut self, url: Url) -> Self {
-        self.reference_da_url = Some(url);
-        self
-    }
-
-    pub fn with_simple(mut self, simple: bool) -> Self {
-        self.simple = simple;
-        self
-    }
-
-    pub fn with_validator(mut self, validator: bool) -> Self {
-        self.validator = validator;
-        self
-    }
-
     pub fn default_reference_da() -> Self {
         let url = format!("http://localhost:{REFERENCE_DA_ENDPOINT}")
             .parse()
@@ -46,10 +29,6 @@ impl NitroNodeConfig {
             reference_da_url: Some(url),
             ..Default::default()
         }
-    }
-
-    pub fn validate(&self) -> anyhow::Result<()> {
-        Ok(())
     }
 }
 

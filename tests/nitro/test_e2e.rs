@@ -275,7 +275,6 @@ async fn test_e2e() {
     setup_l1_reuse_mode();
 
     let config = NitroNodeConfig {
-        sequencer_url: Some("http://localhost:8547".parse().unwrap()),
         // L2 traffic generator is required: it produces the L2 txs that
         // the sequencer batches and the poster eventually posts on L1 —
         // without it there'd be nothing to observe.

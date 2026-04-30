@@ -30,7 +30,6 @@ fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
             name: "celestia".to_string(),
             endpoint_url: da_provider_url,
         }],
-        ..Default::default()
     };
 
     let (verification_channel, mut verify_receiver) =
