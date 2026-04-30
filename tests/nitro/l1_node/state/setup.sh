@@ -72,7 +72,7 @@ fi
 
 echo "== Running nitro testnode with anvil L1 (this may take a few minutes)"
 cd "$NITRO_TESTNODE_DIR"
-./test-node.bash --simple --detach --init-force
+./test-node.bash --no-simple --detach --init-force
 
 export https_proxy=""
 export http_proxy=""

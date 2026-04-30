@@ -21,6 +21,7 @@ use chain_agnostic_service::{
 
 use crate::{
     EXPECTED_RECOVER_PAYLOAD_RESPONSE, STORE_REQUEST_DATA,
+    cas_harness::setup_l1_reuse_mode,
     nitro_node::nitro_node::{NitroNode, NitroNodeConfig},
 };
 
@@ -59,6 +60,8 @@ fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
 
 #[tokio::test]
 async fn test_nitro_reference_da() {
+    setup_l1_reuse_mode();
+
     let config = NitroNodeConfig::default_reference_da();
     let nitro_node = NitroNode::start(config).await;
     println!("Nitro node started");

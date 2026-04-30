@@ -11,11 +11,10 @@ use tokio::time::{Instant, sleep};
 use chain_agnostic_service::espresso_e2e::espresso_dev_node::EspressoDevNode;
 use chain_agnostic_service::rollups::nitro::l1_monitor::ISequencerInbox;
 
+use crate::cas_harness::setup_l1_reuse_mode_with_cas_poster;
 use crate::nitro_node::nitro_node::{NitroNode, NitroNodeConfig};
 
 const CAS_BIN: &str = env!("CARGO_BIN_EXE_chain-agnostic-service");
-const WRITE_OVERRIDE_SCRIPT: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/tests/nitro/write-override.sh");
 
 const CAS_FEED_URL: &str = "ws://host.docker.internal:9643";
 const CAS_CALLDATA_RPC_URL: &str = "http://host.docker.internal:8000/cas/arb/calldata";
@@ -36,24 +35,6 @@ impl Drop for CasProcess {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
-}
-
-/// Writes `nitro-testnode/docker-compose.override.yml` so that:
-///   - geth is replaced by our anvil L1 image, which loads the persisted
-///     state from `tests/nitro/l1_node/state/anvil-state.json` on startup.
-///   - rollupcreator short-circuits deployment by copying the saved
-///     artifacts from the same directory.
-fn setup_l1_reuse_mode() {
-    let status = Command::new("bash")
-        .arg(WRITE_OVERRIDE_SCRIPT)
-        .arg("reuse")
-        .env("CAS_CALLDATA_RPC_URL", CAS_CALLDATA_RPC_URL)
-        .env("CAS_FEED_URL", CAS_FEED_URL)
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .expect("failed to run write-override.sh");
-    assert!(status.success(), "write-override.sh reuse failed");
 }
 
 fn spawn_cas(config_path: &Path) -> CasProcess {
@@ -272,7 +253,7 @@ async fn test_e2e() {
         espresso.client.config.base_url
     );
 
-    setup_l1_reuse_mode();
+    setup_l1_reuse_mode_with_cas_poster(CAS_FEED_URL, CAS_CALLDATA_RPC_URL);
 
     let config = NitroNodeConfig {
         // L2 traffic generator is required: it produces the L2 txs that
