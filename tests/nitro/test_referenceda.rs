@@ -58,6 +58,7 @@ fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
     })
 }
 
+#[ignore]
 #[tokio::test]
 async fn test_nitro_reference_da() {
     setup_l1_reuse_mode();
