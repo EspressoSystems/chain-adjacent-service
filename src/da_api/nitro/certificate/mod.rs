@@ -12,13 +12,9 @@ use crate::da_api::{
 };
 use serde::{Deserialize, Serialize};
 mod utils;
-use tracing::info;
 use utils::{Decoder, Encoder};
 
 // ── DA type bytes ──────────────────────────────────────────────────────────────
-/// DA API header flag (same as DACertificateMessageHeaderFlag in Nitro)
-pub const DA_CERTIFICATE_MESSAGE_HEADER_FLAG: u8 = 0x01;
-
 // pub const MESSAGE_POS_SIZE: usize = 4; // u32
 pub const HOTSHOT_BLOCK_SIZE: usize = 4; // u32
 
@@ -136,16 +132,7 @@ impl CasCertificate {
 
         enc.push_bytes(&self.downstream_certificate);
 
-        let result = enc.finish();
-
-        info!(
-            "downstream_len={}, total_len={}, result={:?}",
-            self.downstream_certificate.len(),
-            result.len(),
-            result
-        );
-
-        Ok(result)
+        Ok(enc.finish())
     }
 
     /// Deserialise the certificate into its wire format.
@@ -161,13 +148,6 @@ impl CasCertificate {
 
         if data.len() < Self::certificate_minimum_size(header_size) {
             return Err(DaApiError::InvalidCertificateLength(data.len()));
-        }
-
-        let da_header_start_position = Self::da_header_start_position(header_size);
-        if data[da_header_start_position] != DA_CERTIFICATE_MESSAGE_HEADER_FLAG {
-            return Err(DaApiError::InvalidHeaderByte(
-                data[da_header_start_position],
-            ));
         }
 
         let mut dec = Decoder::new(data);
@@ -244,9 +224,10 @@ impl CasCertificate {
 mod tests {
     use std::str::FromStr;
 
+    use crate::da_api::nitro::utils::SEQUENCER_HEADER_LEN;
+
     use super::*;
     use alloy::primitives::Bytes;
-    const CERT_DA_HEADER_FLAG_POS: usize = 101;
 
     // Helper to create a dummy certificate
     fn create_mock_cert() -> CasCertificate {
@@ -281,18 +262,6 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_header_flag() {
-        let mut bytes = create_mock_cert().to_bytes().unwrap();
-
-        // Corrupt the DA API header flag
-        bytes[CERT_DA_HEADER_FLAG_POS] = 0xFE;
-
-        let result = CasCertificate::from_bytes(&bytes);
-
-        assert!(result.is_err(), "Should fail when the flag is incorrect");
-    }
-
-    #[test]
     fn test_reference_da_cert() {
         let da_cert=Bytes::from_str("0x01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1cb94dcff2136dfab4d1d4506cc5160a3b58c9481a87513c71882526ae8ac6e30e3f4a9d56da07893bf5245fd0ff0c50e2a66b52067d8e8b23beb3c8e4f8230743").unwrap();
         assert_eq!(da_cert.len(), 99);
@@ -301,8 +270,7 @@ mod tests {
             CasCertificate::build_espresso_certificate(0, 0, 0, 0, &da_cert).unwrap();
         // cas certificate created: "0x010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1cb94dcff2136dfab4d1d4506cc5160a3b58c9481a87513c71882526ae8ac6e30e3f4a9d56da07893bf5245fd0ff0c50e2a66b52067d8e8b23beb3c8e4f8230743"
 
-        let mut sequencer_msg = vec![0u8; 41];
-        sequencer_msg[40] = 0x63;
+        let mut sequencer_msg = vec![0u8; SEQUENCER_HEADER_LEN];
 
         // append certificate
         sequencer_msg.extend_from_slice(&espresso_da_cert.to_bytes().unwrap());
@@ -312,8 +280,11 @@ mod tests {
 
         assert_eq!(
             sequencer_msg.len(),
-            41 + espresso_da_cert.to_bytes().unwrap().len()
+            SEQUENCER_HEADER_LEN + espresso_da_cert.to_bytes().unwrap().len()
         );
-        assert_eq!(sequencer_msg.len(), 243);
+        assert_eq!(
+            sequencer_msg.len(),
+            ESPRESSO_CERT_SIZE + da_cert.len() + SEQUENCER_HEADER_LEN
+        );
     }
 }

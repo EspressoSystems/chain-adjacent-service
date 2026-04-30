@@ -286,11 +286,16 @@ async fn handle_recover_inner(
             "id": body["id"],
             "result": {"Payload": sequencer_msg},
         });
-        return Response::builder()
-            .status(StatusCode::OK)
-            .header(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)
-            .body(axum::body::Body::from(serde_json::to_vec(&result).unwrap()))
-            .map_err(|e| DaApiError::ParsingError(e.to_string()));
+
+        if let Ok(r) = serde_json::to_vec(&result) {
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)
+                .body(axum::body::Body::from(r))
+                .map_err(|e| DaApiError::ParsingError(e.to_string()));
+        } else {
+            return Err(DaApiError::InvalidParams("failed to to_vec".to_string()));
+        }
     }
 
     let da_certificate = extract_da_sequencer_msg_from_espresso_da_certificate(&sequencer_msg)
@@ -572,7 +577,7 @@ mod tests {
         .await;
 
         // Full sequencer_msg containing espresso wrapper + inner DA certificate
-        let sequencer_msg = Bytes::from_str("0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d6f4495acb1e8e0c5583a2357178fffd13f0cec5b216542b40027999633d72f000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1bc5981b980a01a85bb7c5299545170e1126a6a84b1c9e83719562fbe022d24ae126266b22c4717b69f9b4771a8b0c1d28681ddd0582a55b9fd76286be70cf54dc").unwrap();
+        let sequencer_msg = Bytes::from_str("0x000000000000000000000000000000000000000000000000000000000000000000000000000000007000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d6f4495acb1e8e0c5583a2357178fffd13f0cec5b216542b40027999633d72f000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1bc5981b980a01a85bb7c5299545170e1126a6a84b1c9e83719562fbe022d24ae126266b22c4717b69f9b4771a8b0c1d28681ddd0582a55b9fd76286be70cf54dc").unwrap();
 
         let response3: Result<RecoverPayloadResult, _> = client
             .request(

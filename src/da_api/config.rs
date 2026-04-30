@@ -19,7 +19,7 @@ pub struct DaProviderConfig {
 }
 
 impl DaProviderConfig {
-    pub fn calldata()-> Self {
+    pub fn calldata() -> Self {
         Self {
             name: "calldata".to_string(),
             endpoint_url: "".to_string(),
