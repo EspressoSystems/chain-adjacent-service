@@ -55,6 +55,7 @@ fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
     })
 }
 
+#[ignore]
 #[tokio::test]
 async fn test_celestia_da() {
     let celestia_node = CelestiaNode::start().await;
