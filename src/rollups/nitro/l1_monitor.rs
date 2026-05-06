@@ -162,7 +162,6 @@ impl NitroL1Monitor {
                     finalized_msg_count = count,
                     "updated finalized message count"
                 );
-                // tracing::info!("processing event, finalized count={}", count)
                 // In nitro, message 0 can not be reorged
                 let _ = l1_finalized_msg_idx_sender.send(count.saturating_sub(1));
                 *last_finalized_block = finalized_block;

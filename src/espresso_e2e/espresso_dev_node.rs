@@ -63,9 +63,17 @@ impl EspressoDevNode {
             output.status.success() && !String::from_utf8_lossy(&output.stdout).trim().is_empty();
 
         if !already_running {
-            // Remove any stale containers from previous runs to avoid name conflicts.
+            // Remove any stale containers and volumes from previous runs to avoid
+            // name conflicts and inherited state.
             let _ = Command::new("docker")
-                .args(["compose", "-f", COMPOSE_FILE, "down", "--remove-orphans"])
+                .args([
+                    "compose",
+                    "-f",
+                    COMPOSE_FILE,
+                    "down",
+                    "-v",
+                    "--remove-orphans",
+                ])
                 .status();
 
             let status = Command::new("docker")
@@ -106,7 +114,7 @@ impl EspressoDevNode {
 
     pub fn stop(&self) {
         let _ = Command::new("docker")
-            .args(["compose", "-f", COMPOSE_FILE, "down"])
+            .args(["compose", "-f", COMPOSE_FILE, "down", "-v"])
             .status()
             .expect("failed to run docker compose - is docker running?");
     }

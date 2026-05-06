@@ -87,7 +87,6 @@ async fn handle_rpc(State(state): State<ServerState>, body: Bytes) -> Result<Res
             handle_recover_inner(state, parsed, RECOVER_PAYLOAD_AND_PREIMAGES).await
         }
         GET_SUPPORTED_HEADER_BYTES if state.da_config.name == "calldata" => {
-            // let header_byte = format!("{}", CASCertificateVersion::V0);
             let result = serde_json::json!({
                 "id": parsed["id"],
                 "jsonrpc": "2.0",
@@ -274,6 +273,20 @@ async fn handle_recover_inner(
     );
 
     if state.da_config.name == "calldata" {
+        // Calldata recover is invoked twice for the same logical batch:
+        //   1. checkBatchCorrectness, where the batcher passes
+        //      `[seq header | espresso cert | batch data]`.
+        //   2. the L1 reader after posting, which only sees
+        //      `[seq header | batch data]` (the espresso cert is stripped
+        //      before the batch hits L1).
+        //
+        // We distinguish the two by the byte immediately after the 40-byte
+        // sequencer header. The CAS cert version byte (`0x70`) was chosen
+        // so it can't collide with the brotli marker (`0x00`) that prefixes
+        // every Nitro batch payload today. If a future Nitro batch encoding
+        // ever produces `0x70` at offset `SEQUENCER_HEADER_LEN` of raw batch
+        // data, this heuristic will incorrectly strip the leading
+        // ESPRESSO_CERT_SIZE bytes — revisit if that assumption changes.
         let header_byte = sequencer_msg[SEQUENCER_HEADER_LEN];
         let offset = if CASCertificateVersion::is_header_byte(header_byte) {
             ESPRESSO_CERT_SIZE

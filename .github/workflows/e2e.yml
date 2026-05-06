@@ -1,6 +1,10 @@
 name: E2E Tests
 
 on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 env:
@@ -36,7 +40,7 @@ jobs:
           curl -L https://raw.githubusercontent.com/celestiaorg/docs/main/public/celestia-node.sh | bash
           sudo mv /home/runner/celestia-node-temp/celestia /usr/local/bin/
 
+      - uses: extractions/setup-just@v3
+
       - name: Run E2E tests
-        run: cargo test --test nitro --features e2e -- --test-threads=1
-        env:
-          RUST_BACKTRACE: 1
+        run: just test-e2e
