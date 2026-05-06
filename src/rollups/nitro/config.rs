@@ -4,12 +4,12 @@ use serde::Deserialize;
 use crate::rollups::nitro::feed::relay::FeedConfig;
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
 pub struct NitroConfig {
     pub legacy_signer_addresses: Vec<Address>,
-    pub sequencer_addresses: Vec<Address>,
     pub chain_id: u64,
 
-    pub feed_config: FeedConfig,
+    pub feed: FeedConfig,
 
     pub l1_ws_url: String,
     pub sequencer_inbox_address: Address,

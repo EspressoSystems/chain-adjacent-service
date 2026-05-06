@@ -22,7 +22,7 @@ pub struct Streamer<R: Rollup> {
     rollup_config: RollupConfig<R::StackConfig>,
     advanced_config: AdvancedConfig,
 
-    latest_batch_cursor: Option<R::BatchCursor>,
+    latest_batch_cursor: R::BatchCursor,
     finalized_idx: u64,
     last_broadcast_position: u64,
 
@@ -44,7 +44,7 @@ impl<R: Rollup> Streamer<R> {
             config,
             rollup_config,
             advanced_config,
-            latest_batch_cursor: None,
+            latest_batch_cursor: R::BatchCursor::default(),
             finalized_idx: 0,
             last_broadcast_position: 0,
 
@@ -73,6 +73,8 @@ impl<R: Rollup> Streamer<R> {
         let config = self.config.clone();
         let client = self.client.clone();
         let namespace_id = NamespaceId::from(self.rollup_config.namespace_id);
+        self.latest_batch_cursor = latest_cursor_receiver.borrow().clone();
+
         tokio::spawn(async move {
             poll_hotshot_blocks(
                 &config,
@@ -123,20 +125,15 @@ impl<R: Rollup> Streamer<R> {
                             continue;
                         }
                     };
-                    if let Some(context) = &self.latest_batch_cursor {
-                        let verification_result = R::verify_batch_messages(&entries, &self.queue, context);
-                        let _ = sender.send(verification_result);
-                    } else {
-                        tracing::warn!("no latest batch info available for verification");
-                        let _ = sender.send(crate::VerificationResult::failure());
-                        continue
-                    }
+                    let context = &self.latest_batch_cursor;
+                    let verification_result = R::verify_batch_messages(&entries, &self.queue, context);
+                    let _ = sender.send(verification_result);
 
                 },
                 info = latest_cursor_receiver.changed() => {
                     if info.is_ok() {
                         let batch_info = latest_cursor_receiver.borrow();
-                        self.latest_batch_cursor = Some(batch_info.clone());
+                        self.latest_batch_cursor = batch_info.clone();
                     }
                 },
                 // New hotshot transactions from the poller: parse and add to the queue,
@@ -219,7 +216,7 @@ impl<R: Rollup> Streamer<R> {
     /// It also filters out messages that are significantly out of order.
     fn filter_messages(&mut self, parsed_rollup_entries: Vec<<R as Rollup>::Entry>) {
         for parsed_entry in parsed_rollup_entries {
-            if let Some(first) = self.queue.first() {
+            if let Some(f) = self.queue.first() {
                 // if seq number is less than the lowest sequencer number which is the first
                 // element in the array then skip that entry
                 if parsed_entry.sequence_number() < self.config.starting_pos {
@@ -231,13 +228,14 @@ impl<R: Rollup> Streamer<R> {
                     continue;
                 }
 
-                if parsed_entry.sequence_number() - first.sequence_number()
-                    > self.config.max_sequencer_number_drift
-                {
+                let current = parsed_entry.sequence_number();
+                let first = f.sequence_number();
+
+                if current > first && current - first > self.config.max_sequencer_number_drift {
                     tracing::warn!(
                         "{} is outside the max sequencer number drift, current first sequence number: {}",
-                        parsed_entry.sequence_number(),
-                        first.sequence_number()
+                        current,
+                        first
                     );
                     continue;
                 }
@@ -359,7 +357,6 @@ pub mod testing {
             },
             RollupConfig {
                 namespace_id: 1918988905u64,
-                start_block: 0,
                 stack: (),
                 ty: Nitro,
             },
@@ -455,7 +452,6 @@ pub mod testing {
             },
             RollupConfig {
                 namespace_id: 1918988905u64,
-                start_block: 0,
                 stack: (),
                 ty: Nitro,
             },

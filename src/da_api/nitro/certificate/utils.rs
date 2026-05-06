@@ -11,10 +11,6 @@ impl Encoder {
         }
     }
 
-    pub fn push_u8(&mut self, value: u8) {
-        self.buf.push(value);
-    }
-
     pub fn push_bytes(&mut self, bytes: &[u8]) {
         self.buf.extend_from_slice(bytes);
     }
@@ -36,15 +32,6 @@ impl<'a> Decoder<'a> {
 
     pub fn remaining(&self) -> usize {
         self.data.len() - self.position
-    }
-
-    pub fn read_u8(&mut self) -> DaApiResult<u8> {
-        if self.remaining() < 1 {
-            return Err(DaApiError::InvalidCertificateLength(self.data.len()));
-        }
-        let val = self.data[self.position];
-        self.position += 1;
-        Ok(val)
     }
 
     pub fn read_bytes(&mut self, len: usize) -> DaApiResult<&'a [u8]> {

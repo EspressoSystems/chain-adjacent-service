@@ -17,8 +17,9 @@ use crate::{
         config::DaProviderConfig,
         error::DaApiError,
         nitro::{
-            certificate::CasCertificate, types::DAStoreResponse,
-            utils::extract_da_sequencer_msg_from_espresso_da_certificate,
+            certificate::{CASCertificateVersion, CasCertificate, ESPRESSO_CERT_SIZE},
+            types::DAStoreResponse,
+            utils::{SEQUENCER_HEADER_LEN, extract_da_sequencer_msg_from_espresso_da_certificate},
         },
     },
 };
@@ -29,6 +30,7 @@ const STORE: &str = "daprovider_store";
 const RECOVER_PAYLOAD: &str = "daprovider_recoverPayload";
 const COLLECT_PREIMAGES: &str = "daprovider_collectPreimages";
 const RECOVER_PAYLOAD_AND_PREIMAGES: &str = "daprovider_recoverPayloadAndPreimages";
+const GET_SUPPORTED_HEADER_BYTES: &str = "daprovider_getSupportedHeaderBytes";
 
 #[derive(Clone)]
 pub struct ServerState {
@@ -54,11 +56,12 @@ impl ServerState {
 /// Build the top-level Axum router. Each DA provider is mounted at `/{rollup_prefix}/{name}`,
 /// e.g. `/arb/celestia`, `/arb/anytrust`. All paths expose identical RPC handler logic.
 pub fn build_app(
-    providers: Vec<DaProviderConfig>,
+    mut providers: Vec<DaProviderConfig>,
     verification_channel: VerificationSender,
     rollup_prefix: &str,
 ) -> Router {
     let mut app = Router::new();
+    providers.push(DaProviderConfig::calldata());
     for provider in providers {
         let name = provider.name.clone();
         let state = ServerState::new(provider, verification_channel.clone());
@@ -82,6 +85,16 @@ async fn handle_rpc(State(state): State<ServerState>, body: Bytes) -> Result<Res
         COLLECT_PREIMAGES => handle_recover_inner(state, parsed, COLLECT_PREIMAGES).await,
         RECOVER_PAYLOAD_AND_PREIMAGES => {
             handle_recover_inner(state, parsed, RECOVER_PAYLOAD_AND_PREIMAGES).await
+        }
+        GET_SUPPORTED_HEADER_BYTES if state.da_config.name == "calldata" => {
+            let result = serde_json::json!({
+                "id": parsed["id"],
+                "jsonrpc": "2.0",
+                "result": {"headerBytes": "0x70"}
+            });
+            let bytes = serde_json::to_vec(&result)
+                .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
+            Ok((StatusCode::OK, bytes).into_response())
         }
         _ => forward_raw(state, body).await,
     }
@@ -158,58 +171,63 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
 
     let endpoint = state.current_endpoint();
 
-    let forwarded_body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "daprovider_store",
-        "params": [data, timeout],
-        "id": body["id"]
-    });
+    let mut downstream_cert = data;
 
-    let downstream = state
-        .client
-        .post(endpoint)
-        .json(&forwarded_body)
-        .send()
-        .await
-        .map_err(|err| DaApiError::DownstreamDa(err.to_string()))?;
+    if !endpoint.is_empty() {
+        let forwarded_body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "daprovider_store",
+            "params": [downstream_cert, timeout],
+            "id": body["id"]
+        });
 
-    let status = downstream.status();
-    let bytes = downstream
-        .bytes()
-        .await
-        .map_err(|e| DaApiError::ParsingError(e.to_string()))?;
+        let downstream = state
+            .client
+            .post(endpoint)
+            .json(&forwarded_body)
+            .send()
+            .await
+            .map_err(|err| DaApiError::DownstreamDa(err.to_string()))?;
 
-    if !status.is_success() {
-        return Ok((
-            status,
-            [(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)],
-            bytes,
-        )
-            .into_response());
+        let status = downstream.status();
+        let bytes = downstream
+            .bytes()
+            .await
+            .map_err(|e| DaApiError::ParsingError(e.to_string()))?;
+
+        if !status.is_success() {
+            return Ok((
+                status,
+                [(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)],
+                bytes,
+            )
+                .into_response());
+        }
+
+        let downstream_json: Value =
+            serde_json::from_slice(&bytes).map_err(|e| DaApiError::ParsingError(e.to_string()))?;
+
+        if downstream_json.get("error").is_some() {
+            return Ok((
+                status,
+                [(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)],
+                bytes,
+            )
+                .into_response());
+        }
+
+        let raw_cert: DAStoreResponse = serde_json::from_value(downstream_json["result"].clone())
+            .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
+
+        downstream_cert = raw_cert.serialized_da_certificate;
     }
-
-    let downstream_json: Value =
-        serde_json::from_slice(&bytes).map_err(|e| DaApiError::ParsingError(e.to_string()))?;
-
-    if downstream_json.get("error").is_some() {
-        return Ok((
-            status,
-            [(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)],
-            bytes,
-        )
-            .into_response());
-    }
-
-    let raw_cert: DAStoreResponse = serde_json::from_value(downstream_json["result"].clone())
-        .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
 
     let final_cert = CasCertificate::build_espresso_certificate(
         start_message_position,
         end_message_position,
         start_espresso_block,
         min_espresso_block_still_in_queue,
-        &data,
-        &raw_cert.serialized_da_certificate,
+        &downstream_cert,
     )?;
 
     let resp = DAStoreResponse::try_from(final_cert)?;
@@ -253,6 +271,45 @@ async fn handle_recover_inner(
         method = downstream_method,
         "received DA certificate request"
     );
+
+    if state.da_config.name == "calldata" {
+        // Calldata recover is invoked twice for the same logical batch:
+        //   1. checkBatchCorrectness, where the batcher passes
+        //      `[seq header | espresso cert | batch data]`.
+        //   2. the L1 reader after posting, which only sees
+        //      `[seq header | batch data]` (the espresso cert is stripped
+        //      before the batch hits L1).
+        //
+        // We distinguish the two by the byte immediately after the 40-byte
+        // sequencer header. The CAS cert version byte (`0x70`) was chosen
+        // so it can't collide with the brotli marker (`0x00`) that prefixes
+        // every Nitro batch payload today. If a future Nitro batch encoding
+        // ever produces `0x70` at offset `SEQUENCER_HEADER_LEN` of raw batch
+        // data, this heuristic will incorrectly strip the leading
+        // ESPRESSO_CERT_SIZE bytes — revisit if that assumption changes.
+        let header_byte = sequencer_msg[SEQUENCER_HEADER_LEN];
+        let offset = if CASCertificateVersion::is_header_byte(header_byte) {
+            ESPRESSO_CERT_SIZE
+        } else {
+            0
+        };
+        let sequencer_msg = &sequencer_msg[SEQUENCER_HEADER_LEN + offset..];
+        let result = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": body["id"],
+            "result": {"Payload": sequencer_msg},
+        });
+
+        if let Ok(r) = serde_json::to_vec(&result) {
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)
+                .body(axum::body::Body::from(r))
+                .map_err(|e| DaApiError::ParsingError(e.to_string()));
+        } else {
+            return Err(DaApiError::InvalidParams("failed to to_vec".to_string()));
+        }
+    }
 
     let da_certificate = extract_da_sequencer_msg_from_espresso_da_certificate(&sequencer_msg)
         .map_err(|e| DaApiError::InvalidParams(format!("invalid sequencer_msg: {e}")))?;
@@ -510,8 +567,6 @@ mod tests {
         let cas_cert =
             CasCertificate::try_from(response2.unwrap()).expect("should convert to CasCertificate");
         assert_eq!(cas_cert.min_hotshot_block_still_in_streamer_queue, 0);
-        assert_eq!(cas_cert.da_api_header_flag, 0x01);
-        assert_eq!(cas_cert.da_provider_flag, 0x05);
         assert!(!cas_cert.downstream_certificate.is_empty());
 
         // 2. daprovider_recoverPayload
@@ -535,7 +590,7 @@ mod tests {
         .await;
 
         // Full sequencer_msg containing espresso wrapper + inner DA certificate
-        let sequencer_msg = Bytes::from_str("0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d6f4495acb1e8e0c5583a2357178fffd13f0cec5b216542b40027999633d72f000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1bc5981b980a01a85bb7c5299545170e1126a6a84b1c9e83719562fbe022d24ae126266b22c4717b69f9b4771a8b0c1d28681ddd0582a55b9fd76286be70cf54dc").unwrap();
+        let sequencer_msg = Bytes::from_str("0x000000000000000000000000000000000000000000000000000000000000000000000000000000007000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d6f4495acb1e8e0c5583a2357178fffd13f0cec5b216542b40027999633d72f000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1bc5981b980a01a85bb7c5299545170e1126a6a84b1c9e83719562fbe022d24ae126266b22c4717b69f9b4771a8b0c1d28681ddd0582a55b9fd76286be70cf54dc").unwrap();
 
         let response3: Result<RecoverPayloadResult, _> = client
             .request(
@@ -703,8 +758,6 @@ mod tests {
         let cas_cert =
             CasCertificate::try_from(response.unwrap()).expect("should convert to CasCertificate");
         assert_eq!(cas_cert.min_hotshot_block_still_in_streamer_queue, 0);
-        assert_eq!(cas_cert.da_api_header_flag, 0x01);
-        assert_eq!(cas_cert.da_provider_flag, 0x05);
         assert!(!cas_cert.downstream_certificate.is_empty());
     }
 

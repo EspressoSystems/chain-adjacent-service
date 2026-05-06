@@ -26,6 +26,7 @@ pub const HEADER_CHAIN_ID: &str = "Arbitrum-Chain-Id";
 pub const MESSAGE_VERSION: i32 = 1;
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct BroadcasterClientConfig {
     pub reconnect_initial_backoff: Duration,
     pub reconnect_maximum_backoff: Duration,

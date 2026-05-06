@@ -4,9 +4,7 @@
 // [32..35]    : min_hotshot_block_still_in_streamer_queue
 // [36..100]   : CAS ECDSA signature (65 bytes)
 //
-// [101]       : 0x01  (DA API header)
-// [102]       : 0x05  (Celestia indicator)
-// [103-...]   : downstream DA certificate
+// [101-...]   : downstream DA certificate
 
 use crate::da_api::{
     error::{DaApiError, DaApiResult},
@@ -17,9 +15,6 @@ mod utils;
 use utils::{Decoder, Encoder};
 
 // ── DA type bytes ──────────────────────────────────────────────────────────────
-/// DA API header flag (same as DACertificateMessageHeaderFlag in Nitro)
-pub const DA_CERTIFICATE_MESSAGE_HEADER_FLAG: u8 = 0x01;
-
 // pub const MESSAGE_POS_SIZE: usize = 4; // u32
 pub const HOTSHOT_BLOCK_SIZE: usize = 4; // u32
 
@@ -33,12 +28,20 @@ pub const CAS_SIG_SIZE: usize = 65; // ECDSA (r,s,v)
 /// Expected header size for CAS V0 (32 bytes as per certificate layout)
 pub const CERT_HEADER_SIZE_V0: usize = 32;
 
+pub const ESPRESSO_CERT_SIZE: usize = CERT_HEADER_SIZE_V0 + HOTSHOT_BLOCK_SIZE + CAS_SIG_SIZE; // 101
+
 /// CAS certificate version
 /// This versioning will also allow us to parse future versions even if CAS header size changes
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CASCertificateVersion {
-    V0 = 0x00,
+    V0 = 0x70,
+}
+
+impl CASCertificateVersion {
+    pub fn is_header_byte(b: u8) -> bool {
+        Self::try_from(b).is_ok()
+    }
 }
 
 impl TryFrom<u8> for CASCertificateVersion {
@@ -46,7 +49,7 @@ impl TryFrom<u8> for CASCertificateVersion {
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            0x00 => Ok(Self::V0),
+            0x70 => Ok(Self::V0),
             _ => Err(DaApiError::Serialization(format!(
                 "unknown version: {value}"
             ))),
@@ -62,8 +65,6 @@ pub struct CasCertificate {
     pub min_hotshot_block_still_in_streamer_queue: u32,
     #[serde(with = "serde_bytes")]
     pub cas_signature: [u8; 65],
-    pub da_api_header_flag: u8,
-    pub da_provider_flag: u8,
     pub downstream_certificate: Vec<u8>,
 }
 
@@ -84,13 +85,11 @@ impl CasCertificate {
         self.header.is_empty()
             && self.min_hotshot_block_still_in_streamer_queue == 0
             && self.cas_signature == [0; 65]
-            && self.da_api_header_flag == 0
-            && self.da_provider_flag == 0
             && self.downstream_certificate.is_empty()
     }
 
     pub fn certificate_minimum_size(header_size: usize) -> usize {
-        header_size + HOTSHOT_BLOCK_SIZE + CAS_SIG_SIZE + 2
+        header_size + HOTSHOT_BLOCK_SIZE + CAS_SIG_SIZE
     }
 
     // position where espresso metadata ends and da certificate starts
@@ -131,18 +130,7 @@ impl CasCertificate {
 
         enc.push_bytes(&self.cas_signature);
 
-        if self.da_api_header_flag != DA_CERTIFICATE_MESSAGE_HEADER_FLAG {
-            return Err(DaApiError::CertificateSerializationFailed(format!(
-                "invalid da_api_header_flag, expected: {DA_CERTIFICATE_MESSAGE_HEADER_FLAG}, got: {}",
-                self.da_api_header_flag
-            )));
-        }
-        enc.push_u8(self.da_api_header_flag);
-        enc.push_u8(self.da_provider_flag);
-
-        if !self.downstream_certificate.is_empty() {
-            enc.push_bytes(&self.downstream_certificate);
-        }
+        enc.push_bytes(&self.downstream_certificate);
 
         Ok(enc.finish())
     }
@@ -162,13 +150,6 @@ impl CasCertificate {
             return Err(DaApiError::InvalidCertificateLength(data.len()));
         }
 
-        let da_header_start_position = Self::da_header_start_position(header_size);
-        if data[da_header_start_position] != DA_CERTIFICATE_MESSAGE_HEADER_FLAG {
-            return Err(DaApiError::InvalidHeaderByte(
-                data[da_header_start_position],
-            ));
-        }
-
         let mut dec = Decoder::new(data);
 
         let header = dec.read_bytes(header_size)?.to_vec();
@@ -177,21 +158,12 @@ impl CasCertificate {
 
         let cas_signature = dec.read_fixed::<CAS_SIG_SIZE>()?;
 
-        let da_api_header_flag = dec.read_u8()?;
-        let da_provider_flag = dec.read_u8()?;
-
-        if da_api_header_flag != DA_CERTIFICATE_MESSAGE_HEADER_FLAG {
-            return Err(DaApiError::InvalidHeaderByte(da_api_header_flag));
-        }
-
         let downstream_certificate = dec.read_rest().to_vec();
 
         Ok(Self {
             header,
             min_hotshot_block_still_in_streamer_queue,
             cas_signature,
-            da_api_header_flag,
-            da_provider_flag,
             downstream_certificate,
         })
     }
@@ -204,7 +176,6 @@ impl CasCertificate {
         end_message_pos: u32,
         start_hotshot_block: u32,
         min_hotshot_block_still_in_streamer_queue: u32,
-        batch_data: &[u8],
         downstream_cert: &[u8],
     ) -> DaApiResult<Self> {
         if downstream_cert.len() < 2 {
@@ -212,14 +183,14 @@ impl CasCertificate {
         }
 
         //TODO: hardcoded size here
-        let header = vec![0u8; 32];
+        let mut header = vec![0u8; 32];
+        header[0] = CASCertificateVersion::V0 as u8;
 
         let cas_signature = Self::build_and_sign_payload(
             start_message_pos,
             end_message_pos,
             start_hotshot_block,
             min_hotshot_block_still_in_streamer_queue,
-            batch_data,
             downstream_cert,
         );
 
@@ -228,8 +199,6 @@ impl CasCertificate {
             min_hotshot_block_still_in_streamer_queue,
             cas_signature,
 
-            da_api_header_flag: downstream_cert[0],
-            da_provider_flag: downstream_cert[1],
             downstream_certificate: downstream_cert.to_vec(),
         })
     }
@@ -245,7 +214,6 @@ impl CasCertificate {
         _end_message_pos: u32,
         _start_hotshot_block: u32,
         _min_hotshot_block_still_in_streamer_queue: u32,
-        _batch_data: &[u8],
         _downstream_cert: &[u8],
     ) -> [u8; 65] {
         [0u8; 65] // TODO: implement signing logic
@@ -256,9 +224,10 @@ impl CasCertificate {
 mod tests {
     use std::str::FromStr;
 
+    use crate::da_api::nitro::utils::SEQUENCER_HEADER_LEN;
+
     use super::*;
     use alloy::primitives::Bytes;
-    const CERT_DA_HEADER_FLAG_POS: usize = 101;
 
     // Helper to create a dummy certificate
     fn create_mock_cert() -> CasCertificate {
@@ -268,8 +237,6 @@ mod tests {
             header,
             min_hotshot_block_still_in_streamer_queue: 5,
             cas_signature: [0xCC; 65],
-            da_api_header_flag: 0x01,
-            da_provider_flag: 0x05,
             downstream_certificate: vec![0xDD; 10],
         }
     }
@@ -288,24 +255,10 @@ mod tests {
             recovered.min_hotshot_block_still_in_streamer_queue
         );
         assert_eq!(original.cas_signature, recovered.cas_signature);
-        assert_eq!(original.da_api_header_flag, recovered.da_api_header_flag);
-        assert_eq!(original.da_provider_flag, recovered.da_provider_flag);
         assert_eq!(
             original.downstream_certificate,
             recovered.downstream_certificate
         );
-    }
-
-    #[test]
-    fn test_invalid_header_flag() {
-        let mut bytes = create_mock_cert().to_bytes().unwrap();
-
-        // Corrupt the DA API header flag
-        bytes[CERT_DA_HEADER_FLAG_POS] = 0xFE;
-
-        let result = CasCertificate::from_bytes(&bytes);
-
-        assert!(result.is_err(), "Should fail when the flag is incorrect");
     }
 
     #[test]
@@ -314,11 +267,10 @@ mod tests {
         assert_eq!(da_cert.len(), 99);
 
         let espresso_da_cert =
-            CasCertificate::build_espresso_certificate(0, 0, 0, 0, &da_cert, &da_cert).unwrap();
+            CasCertificate::build_espresso_certificate(0, 0, 0, 0, &da_cert).unwrap();
         // cas certificate created: "0x010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1cb94dcff2136dfab4d1d4506cc5160a3b58c9481a87513c71882526ae8ac6e30e3f4a9d56da07893bf5245fd0ff0c50e2a66b52067d8e8b23beb3c8e4f8230743"
 
-        let mut sequencer_msg = vec![0u8; 41];
-        sequencer_msg[40] = 0x63;
+        let mut sequencer_msg = vec![0u8; SEQUENCER_HEADER_LEN];
 
         // append certificate
         sequencer_msg.extend_from_slice(&espresso_da_cert.to_bytes().unwrap());
@@ -328,8 +280,11 @@ mod tests {
 
         assert_eq!(
             sequencer_msg.len(),
-            41 + espresso_da_cert.to_bytes().unwrap().len()
+            SEQUENCER_HEADER_LEN + espresso_da_cert.to_bytes().unwrap().len()
         );
-        assert_eq!(sequencer_msg.len(), 243);
+        assert_eq!(
+            sequencer_msg.len(),
+            ESPRESSO_CERT_SIZE + da_cert.len() + SEQUENCER_HEADER_LEN
+        );
     }
 }

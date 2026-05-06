@@ -11,6 +11,7 @@ use crate::utils::exponential_backoff;
 use thiserror::Error;
 
 #[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
 pub struct SubmitterConfig {
     pub max_in_flight: usize,
     pub finalization_wait_ms: u64,
