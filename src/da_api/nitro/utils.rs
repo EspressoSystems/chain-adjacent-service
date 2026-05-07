@@ -1,16 +1,14 @@
 use alloy::primitives::Bytes;
 
-use crate::da_api::{
-    error::DaApiError,
-    nitro::certificate::{CASCertificateVersion, CERT_HEADER_SIZE_V0, CasCertificate},
-};
+use crate::da_api::{error::DaApiError, nitro::certificate::CasCertificate};
 
 pub const SEQUENCER_HEADER_LEN: usize = 40;
 
 /// Sequencer message format is: [SequencerHeader(40 bytes), EspressoCert(101 bytes), DACert]
-/// this function removes the espresso metadata to obtain the da certificate
+/// this function parses and validates the CAS certificate that follows the sequencer header,
+/// then strips the espresso metadata to obtain the downstream da certificate.
 /// Returns: [SequencerHeader(40 bytes), DACert]
-pub fn extract_da_sequencer_msg_from_espresso_da_certificate(
+pub fn try_extract_da_sequencer_msg_from_espresso_da_cert(
     sequencer_msg: &Bytes,
 ) -> Result<Bytes, DaApiError> {
     if sequencer_msg.len() <= SEQUENCER_HEADER_LEN {
@@ -20,17 +18,15 @@ pub fn extract_da_sequencer_msg_from_espresso_da_certificate(
         ));
     }
 
-    let cas_version = CASCertificateVersion::try_from(sequencer_msg[SEQUENCER_HEADER_LEN])?;
-    let header_size = match cas_version {
-        CASCertificateVersion::V0 => CERT_HEADER_SIZE_V0,
-    };
+    let cas_cert = CasCertificate::from_bytes(&sequencer_msg[SEQUENCER_HEADER_LEN..])?;
+    cas_cert.validate()?;
 
-    let seq_msg = sequencer_msg.slice(0..SEQUENCER_HEADER_LEN);
-
-    let da_cert_position = CasCertificate::da_header_start_position(header_size);
-    let da_cert = sequencer_msg.slice(SEQUENCER_HEADER_LEN + da_cert_position..);
-
-    let res = [seq_msg, da_cert].concat();
+    let seq_header = sequencer_msg.slice(0..SEQUENCER_HEADER_LEN);
+    let res = [
+        seq_header.as_ref(),
+        cas_cert.downstream_certificate.as_ref(),
+    ]
+    .concat();
     Ok(res.into())
 }
 
@@ -39,6 +35,7 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
+    use crate::da_api::nitro::certificate::CASCertificateVersion;
 
     #[test]
     fn test_remove_espresso_metadata() {
@@ -58,8 +55,7 @@ mod tests {
 
         let sequencer_msg = Bytes::from(data);
 
-        let extracted =
-            extract_da_sequencer_msg_from_espresso_da_certificate(&sequencer_msg).unwrap();
+        let extracted = try_extract_da_sequencer_msg_from_espresso_da_cert(&sequencer_msg).unwrap();
 
         // check length
         assert_eq!(extracted.len(), (SEQUENCER_HEADER_LEN + 20));
@@ -75,7 +71,7 @@ mod tests {
         let sequencer_message=Bytes::from_str("0x00000000000000000000000000000000000000000000000000000000000000000000000000000000700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1bc93d7c92fd65dbd4809a2dcfd0f31c201f52aedbb700e3462d6cc1058ec2ac194723c2f1d41d7a65c1d2cf9a0683fe6a458ac269aaeb00c1b0cf8854afc05166").unwrap();
 
         let extracted =
-            extract_da_sequencer_msg_from_espresso_da_certificate(&sequencer_message).unwrap();
+            try_extract_da_sequencer_msg_from_espresso_da_cert(&sequencer_message).unwrap();
 
         assert_eq!(extracted.len(), 139);
     }

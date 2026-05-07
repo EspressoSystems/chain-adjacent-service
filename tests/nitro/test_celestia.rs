@@ -9,7 +9,7 @@ use tokio::{
 
 use crate::{EXPECTED_RECOVER_PAYLOAD_RESPONSE, STORE_REQUEST_DATA, celestia_node::CelestiaNode};
 use chain_agnostic_service::da_api::nitro::utils::SEQUENCER_HEADER_LEN;
-use chain_agnostic_service::da_api::nitro::utils::extract_da_sequencer_msg_from_espresso_da_certificate;
+use chain_agnostic_service::da_api::nitro::utils::try_extract_da_sequencer_msg_from_espresso_da_cert;
 use chain_agnostic_service::{
     VerificationResult,
     config::RollupType,
@@ -204,7 +204,7 @@ async fn test_celestia_da_store_and_recover(my_addr: String) {
     assert_eq!(recover_payload, expected);
 
     let da_cert =
-        extract_da_sequencer_msg_from_espresso_da_certificate(&Bytes::from(sequencer_msg.clone()))
+        try_extract_da_sequencer_msg_from_espresso_da_cert(&Bytes::from(sequencer_msg.clone()))
             .unwrap()
             .slice(SEQUENCER_HEADER_LEN..);
     let keccak_hash_da_cert = keccak256(&da_cert).to_string();

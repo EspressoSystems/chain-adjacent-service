@@ -17,9 +17,9 @@ use crate::{
         config::DaProviderConfig,
         error::DaApiError,
         nitro::{
-            certificate::{CASCertificateVersion, CasCertificate, ESPRESSO_CERT_SIZE},
+            certificate::CasCertificate,
             types::DAStoreResponse,
-            utils::{SEQUENCER_HEADER_LEN, extract_da_sequencer_msg_from_espresso_da_certificate},
+            utils::{SEQUENCER_HEADER_LEN, try_extract_da_sequencer_msg_from_espresso_da_cert},
         },
     },
 };
@@ -265,6 +265,13 @@ async fn handle_recover_inner(
     let sequencer_msg: alloy::primitives::Bytes = serde_json::from_value(params[2].clone())
         .map_err(|e| DaApiError::InvalidParams(format!("bad sequencer_msg: {e}")))?;
 
+    if sequencer_msg.len() <= SEQUENCER_HEADER_LEN {
+        return Err(DaApiError::InvalidSequencerMessageLength(
+            SEQUENCER_HEADER_LEN,
+            sequencer_msg.len(),
+        ));
+    }
+
     info!(
         batch_num = %batch_num,
         sequencer_msg_len = sequencer_msg.len(),
@@ -272,32 +279,25 @@ async fn handle_recover_inner(
         "received DA certificate request"
     );
 
+    // Batch data recover is invoked twice for the same logical batch:
+    //   1. checkBatchCorrectness, where the batcher passes
+    //      `[seq header | espresso cert | batch data]`.
+    //   2. the L1 reader after posting, which only sees
+    //      `[seq header | batch data]` (the espresso cert is stripped
+    //      before the batch hits L1).
+    //
+    // try_extract parses+validates the CAS cert in case #1; case #2 errors
+    // out and we fall back to forwarding the raw msg.
+    let da_certificate =
+        try_extract_da_sequencer_msg_from_espresso_da_cert(&sequencer_msg).unwrap_or(sequencer_msg);
+
     if state.da_config.name == "calldata" {
-        // Calldata recover is invoked twice for the same logical batch:
-        //   1. checkBatchCorrectness, where the batcher passes
-        //      `[seq header | espresso cert | batch data]`.
-        //   2. the L1 reader after posting, which only sees
-        //      `[seq header | batch data]` (the espresso cert is stripped
-        //      before the batch hits L1).
-        //
-        // We distinguish the two by the byte immediately after the 40-byte
-        // sequencer header. The CAS cert version byte (`0x70`) was chosen
-        // so it can't collide with the brotli marker (`0x00`) that prefixes
-        // every Nitro batch payload today. If a future Nitro batch encoding
-        // ever produces `0x70` at offset `SEQUENCER_HEADER_LEN` of raw batch
-        // data, this heuristic will incorrectly strip the leading
-        // ESPRESSO_CERT_SIZE bytes — revisit if that assumption changes.
-        let header_byte = sequencer_msg[SEQUENCER_HEADER_LEN];
-        let offset = if CASCertificateVersion::is_header_byte(header_byte) {
-            ESPRESSO_CERT_SIZE
-        } else {
-            0
-        };
-        let sequencer_msg = &sequencer_msg[SEQUENCER_HEADER_LEN + offset..];
+        // Calldata returns the inner batch payload with the seq header stripped.
+        let payload = &da_certificate[SEQUENCER_HEADER_LEN..];
         let result = serde_json::json!({
             "jsonrpc": "2.0",
             "id": body["id"],
-            "result": {"Payload": sequencer_msg},
+            "result": {"Payload": payload},
         });
 
         if let Ok(r) = serde_json::to_vec(&result) {
@@ -310,9 +310,6 @@ async fn handle_recover_inner(
             return Err(DaApiError::InvalidParams("failed to to_vec".to_string()));
         }
     }
-
-    let da_certificate = extract_da_sequencer_msg_from_espresso_da_certificate(&sequencer_msg)
-        .map_err(|e| DaApiError::InvalidParams(format!("invalid sequencer_msg: {e}")))?;
 
     let endpoint = state.current_endpoint();
 
@@ -682,6 +679,72 @@ mod tests {
         assert_eq!(body3["method"], "daprovider_recoverPayload");
         let body3: serde_json::Value = serde_json::from_slice(&reqs[4].body).unwrap();
         assert_eq!(body3["method"], "daprovider_collectPreimages");
+    }
+
+    #[tokio::test]
+    async fn test_recover_payload_forwards_raw_msg_when_cas_cert_invalid() {
+        let mock_da_provider = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                json!({"method": "daprovider_recoverPayload"}),
+            ))
+            .respond_with(|req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                let id = body.get("id").cloned().unwrap_or(json!(1));
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "Payload": "0xdeadbeef" }
+                }))
+            })
+            .mount(&mock_da_provider)
+            .await;
+
+        let addr: SocketAddr = "127.0.0.1:9947".parse().unwrap();
+        let _server = spawn_server(
+            addr,
+            vec![DaProviderConfig {
+                name: "celestia".to_string(),
+                endpoint_url: mock_da_provider.uri(),
+            }],
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}/arb/celestia"))
+            .unwrap();
+
+        // 50 bytes: > SEQUENCER_HEADER_LEN (40) so the length precheck passes,
+        // but the byte at position 40 is 0x00 (not 0x70), so CasCertificate::from_bytes errors.
+        let raw_msg = Bytes::from(vec![0u8; 50]);
+
+        let response: Result<RecoverPayloadResult, _> = client
+            .request(
+                "daprovider_recoverPayload",
+                rpc_params![
+                    1u64,
+                    b256!("0x0000000000000000000000000000000000000000000000000000000000000000"),
+                    raw_msg.clone()
+                ],
+            )
+            .await;
+
+        assert!(response.is_ok(), "expected fallback forwarding to succeed");
+
+        let reqs = mock_da_provider.received_requests().await.unwrap();
+        assert_eq!(
+            reqs.len(),
+            1,
+            "downstream should receive exactly one request"
+        );
+        let forwarded: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        assert_eq!(forwarded["method"], "daprovider_recoverPayload");
+        // params = [batch_num, batch_block_hash, da_certificate]; the third element
+        // must be the raw sequencer_msg, NOT a stripped version.
+        let forwarded_da_cert: Bytes =
+            serde_json::from_value(forwarded["params"][2].clone()).unwrap();
+        assert_eq!(forwarded_da_cert, raw_msg);
     }
 
     #[tokio::test]
