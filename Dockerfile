@@ -15,7 +15,7 @@ COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && \
     echo "pub fn _dummy() {}" > src/lib.rs && \
     echo "fn main() {}" > src/main.rs && \
-    cargo build --release 2>/dev/null || true && \
+    cargo build --release && \
     rm -rf src
 
 COPY src/ src/
