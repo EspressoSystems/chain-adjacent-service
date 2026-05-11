@@ -8,9 +8,9 @@ use tokio::{
 };
 
 use crate::{EXPECTED_RECOVER_PAYLOAD_RESPONSE, STORE_REQUEST_DATA, celestia_node::CelestiaNode};
-use chain_agnostic_service::da_api::nitro::utils::SEQUENCER_HEADER_LEN;
-use chain_agnostic_service::da_api::nitro::utils::extract_da_sequencer_msg_from_espresso_da_certificate;
-use chain_agnostic_service::{
+use chain_adjacent_service::da_api::nitro::utils::SEQUENCER_HEADER_LEN;
+use chain_adjacent_service::da_api::nitro::utils::extract_da_sequencer_msg_from_espresso_da_certificate;
+use chain_adjacent_service::{
     VerificationResult,
     config::RollupType,
     da_api::{
