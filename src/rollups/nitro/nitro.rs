@@ -964,6 +964,7 @@ pub mod testing {
             submitter: SubmitterConfig::default(),
             da_server: DaApiConfig::default(),
             advanced: crate::config::AdvancedConfig::default(),
+            key_manager: None,
             is_fresh_deployment: false,
         };
 

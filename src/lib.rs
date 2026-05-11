@@ -2,6 +2,7 @@ pub mod config;
 pub mod da_api;
 pub mod espresso_client;
 pub mod espresso_e2e;
+pub mod key_manager;
 pub mod rollups;
 pub mod streamer;
 pub mod submitter;
