@@ -90,7 +90,6 @@ pub enum RollupType {
 pub struct KeyManagerConfig {
     pub rpc_url: Url,
     pub tee_verifier_address: Address,
-    pub operator_private_key: String,
     pub attestation_verifier_url: Url,
     #[serde(default = "default_max_register_attempts")]
     pub max_register_attempts: u8,

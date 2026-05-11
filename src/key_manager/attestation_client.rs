@@ -28,12 +28,11 @@ pub struct HttpAttestationVerifierClient {
 }
 
 impl HttpAttestationVerifierClient {
-    pub fn new(base_url: String, timeout_secs: u64) -> Self {
+    pub fn new(base_url: String, timeout_secs: u64) -> Result<Self> {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(timeout_secs))
-            .build()
-            .expect("Failed to build HTTP client");
-        Self { base_url, client }
+            .build()?;
+        Ok(Self { base_url, client })
     }
 }
 

@@ -37,7 +37,12 @@ async fn main() -> Result<()> {
                 serde_json::from_str(&config_contents)?;
 
             if let Some(km_config) = &config.key_manager {
-                let operator_signer: PrivateKeySigner = km_config.operator_private_key.parse()?;
+                let operator_private_key = std::env::var("OPERATOR_PRIVATE_KEY").map_err(|_| {
+                    anyhow::anyhow!(
+                        "OPERATOR_PRIVATE_KEY env var must be set when key_manager is configured"
+                    )
+                })?;
+                let operator_signer: PrivateKeySigner = operator_private_key.parse()?;
                 let tee_verifier = TEEVerifier::new(
                     km_config.rpc_url.clone(),
                     km_config.tee_verifier_address,
@@ -46,13 +51,13 @@ async fn main() -> Result<()> {
                 let attestation_client = HttpAttestationVerifierClient::new(
                     km_config.attestation_verifier_url.to_string(),
                     km_config.attestation_client_timeout_secs,
-                );
+                )?;
                 let mut key_manager = EspressoKeyManager::new(
                     Box::new(tee_verifier),
                     Box::new(attestation_client),
                     km_config.max_register_attempts,
                     TeeType::Nitro,
-                );
+                )?;
                 key_manager.register_service().await?;
                 tracing::info!(
                     "TEE key registered, signer address: {:?}",
