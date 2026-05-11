@@ -203,6 +203,33 @@ impl CasCertificate {
         })
     }
 
+    /// Validate the certificate.
+    ///
+    /// TODO: verify the CAS signature over the canonical payload.
+    pub fn validate(&self) -> DaApiResult<()> {
+        let version_byte = *self
+            .header
+            .first()
+            .ok_or_else(|| DaApiError::CertificateValidation("empty header".into()))?;
+        let version = CASCertificateVersion::try_from(version_byte)
+            .map_err(|_| DaApiError::InvalidHeaderByte(version_byte))?;
+        let expected_header_size = match version {
+            CASCertificateVersion::V0 => CERT_HEADER_SIZE_V0,
+        };
+        if self.header.len() != expected_header_size {
+            return Err(DaApiError::CertificateValidation(format!(
+                "invalid header length, expected: {expected_header_size}, got: {}",
+                self.header.len()
+            )));
+        }
+        if self.downstream_certificate.len() < 2 {
+            return Err(DaApiError::InvalidCertificateLength(
+                self.downstream_certificate.len(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Inner logic to build and sign the payload
     ///
     /// Build and sign the payload using CAS signer
