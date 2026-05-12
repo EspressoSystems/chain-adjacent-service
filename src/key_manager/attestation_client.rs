@@ -2,6 +2,7 @@ use anyhow::{Result, bail};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
+use url::Url;
 
 use super::key_manager::AttestationVerifierClient;
 
@@ -23,12 +24,12 @@ fn strip_hex_prefix(s: &str) -> &str {
 }
 
 pub struct HttpAttestationVerifierClient {
-    base_url: String,
+    base_url: Url,
     client: Client,
 }
 
 impl HttpAttestationVerifierClient {
-    pub fn new(base_url: String, timeout_secs: u64) -> Result<Self> {
+    pub fn new(base_url: Url, timeout_secs: u64) -> Result<Self> {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(timeout_secs))
             .build()?;
@@ -39,10 +40,13 @@ impl HttpAttestationVerifierClient {
 #[async_trait]
 impl AttestationVerifierClient for HttpAttestationVerifierClient {
     async fn generate_zk_proof(&self, attestation: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
-        let url = format!("{}/generate_proof", self.base_url);
+        let url = self
+            .base_url
+            .join("generate_proof")
+            .map_err(|e| anyhow::anyhow!("failed to construct generate_proof URL: {e}"))?;
         let response = self
             .client
-            .post(&url)
+            .post(url)
             .header("Content-Type", "application/octet-stream")
             .body(attestation.to_vec())
             .send()

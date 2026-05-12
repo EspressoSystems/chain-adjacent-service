@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
                     operator_signer,
                 );
                 let attestation_client = HttpAttestationVerifierClient::new(
-                    km_config.attestation_verifier_url.to_string(),
+                    km_config.attestation_verifier_url.clone(),
                     km_config.attestation_client_timeout_secs,
                 )?;
                 let mut key_manager = EspressoKeyManager::new(
@@ -58,7 +58,7 @@ async fn main() -> Result<()> {
                     km_config.max_register_attempts,
                     TeeType::Nitro,
                 )?;
-                key_manager.register_service().await?;
+                key_manager.initialize().await?;
                 tracing::info!(
                     "TEE key registered, signer address: {:?}",
                     key_manager.signer().map(|s| s.address())

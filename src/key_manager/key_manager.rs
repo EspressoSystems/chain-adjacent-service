@@ -69,6 +69,13 @@ trait AttestationProvider: Send + Sync {
     fn get_attestation(&self, pub_key: &[u8]) -> Result<Vec<u8>>;
 }
 
+/// Attestation provider backed by the AWS Nitro Security Module (NSM).
+///
+/// NSM is the hardware root-of-trust inside AWS Nitro Enclaves. It exposes
+/// a `/dev/nsm` device that can produce signed attestation documents
+/// containing an enclave's measurements (PCRs), an optional public key, and
+/// optional user data. These documents are signed by the Nitro hypervisor
+/// and can be verified against the AWS Nitro Attestation PKI.
 struct NsmAttestationProvider;
 
 impl AttestationProvider for NsmAttestationProvider {
@@ -188,7 +195,7 @@ impl EspressoKeyManager {
         Ok((journal_bytes, proof_bytes))
     }
 
-    pub async fn register_service(&mut self) -> Result<(), KeyManagerError> {
+    pub async fn initialize(&mut self) -> Result<(), KeyManagerError> {
         if self.signer.is_none() {
             self.signer = Some(PrivateKeySigner::random());
         }
@@ -237,10 +244,16 @@ impl EspressoKeyManager {
                 .await
             {
                 Ok(_) => {
-                    tracing::info!(
-                        "successfully registered service on attempt {attempt} for signer address: {signer_addr}"
+                    let is_registered = self.verify_registration_on_chain().await?;
+                    if is_registered {
+                        tracing::info!(
+                            "successfully registered and verified service on attempt {attempt} for signer address: {signer_addr}"
+                        );
+                        return Ok(());
+                    }
+                    tracing::warn!(
+                        "registration call succeeded on attempt {attempt} but on-chain verification failed for signer address: {signer_addr}"
                     );
-                    return Ok(());
                 }
                 Err(e) => {
                     tracing::error!(
@@ -440,14 +453,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_register_service() {
+    async fn test_initialize() {
         let mut ctx =
             make_test_key_manager(MockTEEVerifier::new(), MockAttestationProvider::new(), 3);
 
         ctx.key_manager
-            .register_service()
+            .initialize()
             .await
-            .expect("register_service should succeed");
+            .expect("initialize should succeed");
 
         let signer = ctx
             .key_manager
@@ -457,7 +470,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_register_service_already_registered() {
+    async fn test_initialize_already_registered() {
         let mut ctx = make_test_key_manager(
             MockTEEVerifier::always_registered(),
             MockAttestationProvider::new(),
@@ -465,20 +478,20 @@ mod tests {
         );
 
         ctx.key_manager
-            .register_service()
+            .initialize()
             .await
-            .expect("register_service should succeed when already registered");
+            .expect("initialize should succeed when already registered");
     }
 
     #[tokio::test]
-    async fn test_register_service_preparation_attempts() {
+    async fn test_initialize_preparation_attempts() {
         let mut ctx = make_test_key_manager(
             MockTEEVerifier::new(),
             MockAttestationProvider::with_failures(2),
             3,
         );
         ctx.key_manager
-            .register_service()
+            .initialize()
             .await
             .expect("should succeed after retrying preparation");
         let signer = ctx.key_manager.signer().expect("signer should be set");
@@ -489,7 +502,7 @@ mod tests {
             MockAttestationProvider::with_failures(3),
             3,
         );
-        let err = ctx.key_manager.register_service().await.unwrap_err();
+        let err = ctx.key_manager.initialize().await.unwrap_err();
         assert!(matches!(
             err,
             KeyManagerError::PreparationExhausted { attempts: 3, .. }
@@ -497,14 +510,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_register_service_registration_attempts() {
+    async fn test_initialize_registration_attempts() {
         let mut ctx = make_test_key_manager(
             MockTEEVerifier::with_register_failures(2),
             MockAttestationProvider::new(),
             3,
         );
         ctx.key_manager
-            .register_service()
+            .initialize()
             .await
             .expect("should succeed after retrying registration");
         let signer = ctx.key_manager.signer().expect("signer should be set");
@@ -515,7 +528,7 @@ mod tests {
             MockAttestationProvider::new(),
             3,
         );
-        let err = ctx.key_manager.register_service().await.unwrap_err();
+        let err = ctx.key_manager.initialize().await.unwrap_err();
         assert!(matches!(
             err,
             KeyManagerError::RegistrationExhausted { attempts: 3, .. }

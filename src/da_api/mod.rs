@@ -2,7 +2,7 @@ pub mod config;
 pub mod error;
 pub mod nitro;
 
-use axum::Router;
+use axum::{Router, http::StatusCode, routing::get};
 use tracing::info;
 
 use crate::{
