@@ -68,6 +68,14 @@ check:
         exit 1
     fi
 
+# ─── Build ────────────────────────────────────────────────────────────────────
+
+build:
+    cargo build --release --bin chain-adjacent-service
+
+docker-build tag="chain-adjacent-service:latest":
+    docker build -t {{tag}} .
+
 # ─── Running tests ────────────────────────────────────────────────────────────
 
 # Run all E2E tests (tests must run sequentially)
