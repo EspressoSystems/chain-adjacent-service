@@ -367,7 +367,7 @@ mod tests {
     }
 
     fn test_key_manager() -> EspressoKeyManager {
-        let mut km = EspressoKeyManager::new_with_attestation_provider(
+        EspressoKeyManager::new_with_attestation_provider(
             Box::new(NoOpTeeVerifier),
             Box::new(NoOpAttestationClient),
             Box::new(NoOpAttestationProvider),
@@ -375,10 +375,9 @@ mod tests {
             TeeType::Nitro,
             1,
             Address::ZERO,
+            PrivateKeySigner::random(),
         )
-        .unwrap();
-        km.signer = Some(PrivateKeySigner::random());
-        km
+        .unwrap()
     }
 
     fn create_mock_cert() -> CasCertificate {
@@ -448,7 +447,7 @@ mod tests {
         assert_eq!(cert.downstream_certificate, downstream);
         assert_eq!(cert.min_hotshot_block_still_in_streamer_queue, 3);
 
-        let expected_signer = km.signer.as_ref().unwrap().address();
+        let expected_signer = km.signer.address();
         cert.validate(expected_signer, 10, 20, 5, 1, Address::ZERO)
             .unwrap();
 

@@ -61,6 +61,7 @@ async fn main() -> Result<()> {
                 let provider = ProviderBuilder::new().connect_http(km_config.rpc_url.clone());
                 let parent_chain_id = provider.get_chain_id().await?;
 
+                let signer = PrivateKeySigner::random();
                 let mut key_manager = EspressoKeyManager::new(
                     Box::new(tee_verifier),
                     Box::new(attestation_client),
@@ -68,11 +69,12 @@ async fn main() -> Result<()> {
                     TeeType::Nitro,
                     parent_chain_id,
                     km_config.tee_verifier_address,
+                    signer,
                 )?;
                 key_manager.initialize().await?;
                 tracing::info!(
                     "TEE key registered, signer address: {:?}",
-                    key_manager.signer().map(|s| s.address())
+                    key_manager.signer().address()
                 );
                 Some(Arc::new(key_manager))
             } else {

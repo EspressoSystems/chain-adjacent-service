@@ -49,9 +49,6 @@ pub enum KeyManagerError {
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
 
-    #[error("signer not initialized")]
-    SignerNotInitialized,
-
     #[error("empty attestation for TEE type {0:?}")]
     EmptyAttestation(TeeType),
 
@@ -132,7 +129,7 @@ pub struct EspressoKeyManager {
     attestation_provider: Box<dyn AttestationProvider>,
     max_register_attempts: u8,
     tee_type: TeeType,
-    pub(crate) signer: Option<PrivateKeySigner>,
+    pub(crate) signer: PrivateKeySigner,
     parent_chain_id: u64,
     tee_verifier_address: Address,
 }
@@ -145,6 +142,7 @@ impl EspressoKeyManager {
         tee_type: TeeType,
         parent_chain_id: u64,
         tee_verifier_address: Address,
+        signer: PrivateKeySigner,
     ) -> Result<Self, KeyManagerError> {
         Self::new_with_attestation_provider(
             tee_verifier,
@@ -154,6 +152,7 @@ impl EspressoKeyManager {
             tee_type,
             parent_chain_id,
             tee_verifier_address,
+            signer,
         )
     }
 
@@ -165,6 +164,7 @@ impl EspressoKeyManager {
         tee_type: TeeType,
         parent_chain_id: u64,
         tee_verifier_address: Address,
+        signer: PrivateKeySigner,
     ) -> Result<Self, KeyManagerError> {
         if max_register_attempts == 0 {
             return Err(KeyManagerError::InvalidConfig(
@@ -185,15 +185,15 @@ impl EspressoKeyManager {
             attestation_provider,
             max_register_attempts,
             tee_type,
-            signer: None,
+            signer,
             parent_chain_id,
             tee_verifier_address,
         })
     }
 
     async fn prepare_register_service(&self) -> Result<(Vec<u8>, Vec<u8>), KeyManagerError> {
-        let pub_key_bytes = self.public_key_uncompressed()?;
-        let signer_addr = self.signer_address()?;
+        let pub_key_bytes = self.public_key_uncompressed();
+        let signer_addr = self.signer_address();
         tracing::info!("Preparing registration data for signer address: {signer_addr}");
         let attestation = self
             .get_attestation(&pub_key_bytes)
@@ -221,11 +221,8 @@ impl EspressoKeyManager {
     }
 
     pub async fn initialize(&mut self) -> Result<(), KeyManagerError> {
-        if self.signer.is_none() {
-            self.signer = Some(PrivateKeySigner::random());
-        }
         let attempts = self.max_register_attempts;
-        let signer_addr = self.signer_address()?;
+        let signer_addr = self.signer_address();
         tracing::info!("Attempting to register service with signer address: {signer_addr}");
         let has_registered = self.verify_registration_on_chain().await?;
 
@@ -295,19 +292,16 @@ impl EspressoKeyManager {
         })
     }
 
-    pub fn signer(&self) -> Option<&PrivateKeySigner> {
-        self.signer.as_ref()
+    pub fn signer(&self) -> &PrivateKeySigner {
+        &self.signer
     }
 
-    fn signer_address(&self) -> Result<Address, KeyManagerError> {
-        self.signer
-            .as_ref()
-            .map(|s| s.address())
-            .ok_or(KeyManagerError::SignerNotInitialized)
+    fn signer_address(&self) -> Address {
+        self.signer.address()
     }
 
     async fn verify_registration_on_chain(&self) -> Result<bool, KeyManagerError> {
-        let addr = self.signer_address()?;
+        let addr = self.signer_address();
         self.tee_verifier
             .registered_services(addr, self.tee_type)
             .await
@@ -318,23 +312,15 @@ impl EspressoKeyManager {
         self.attestation_provider.get_attestation(pub_key)
     }
 
-    fn public_key_uncompressed(&self) -> Result<Vec<u8>, KeyManagerError> {
-        let signer = self
-            .signer
-            .as_ref()
-            .ok_or(KeyManagerError::SignerNotInitialized)?;
-        let verifying_key = signer.credential().verifying_key();
-        Ok(verifying_key.to_encoded_point(false).as_bytes().to_vec())
+    fn public_key_uncompressed(&self) -> Vec<u8> {
+        let verifying_key = self.signer.credential().verifying_key();
+        verifying_key.to_encoded_point(false).as_bytes().to_vec()
     }
 
     pub fn sign_message(&self, message: &[u8]) -> Result<[u8; 65], KeyManagerError> {
-        let signer = self
-            .signer
-            .as_ref()
-            .ok_or(KeyManagerError::SignerNotInitialized)?;
         sign_typed_message(
             message,
-            signer,
+            &self.signer,
             self.parent_chain_id,
             self.tee_verifier_address,
         )
@@ -513,6 +499,7 @@ mod tests {
             TeeType::Nitro,
             1,
             Address::ZERO,
+            PrivateKeySigner::random(),
         )
         .expect("test setup: invalid key manager config");
 
@@ -532,11 +519,11 @@ mod tests {
             .await
             .expect("initialize should succeed");
 
-        let signer = ctx
-            .key_manager
-            .signer()
-            .expect("signer should be set after registration");
-        assert!(ctx.registered.lock().unwrap().contains(&signer.address()));
+        assert!(ctx
+            .registered
+            .lock()
+            .unwrap()
+            .contains(&ctx.key_manager.signer().address()));
     }
 
     #[tokio::test]
@@ -564,8 +551,11 @@ mod tests {
             .initialize()
             .await
             .expect("should succeed after retrying preparation");
-        let signer = ctx.key_manager.signer().expect("signer should be set");
-        assert!(ctx.registered.lock().unwrap().contains(&signer.address()));
+        assert!(ctx
+            .registered
+            .lock()
+            .unwrap()
+            .contains(&ctx.key_manager.signer().address()));
 
         let mut ctx = make_test_key_manager(
             MockTEEVerifier::new(),
@@ -590,8 +580,11 @@ mod tests {
             .initialize()
             .await
             .expect("should succeed after retrying registration");
-        let signer = ctx.key_manager.signer().expect("signer should be set");
-        assert!(ctx.registered.lock().unwrap().contains(&signer.address()));
+        assert!(ctx
+            .registered
+            .lock()
+            .unwrap()
+            .contains(&ctx.key_manager.signer().address()));
 
         let mut ctx = make_test_key_manager(
             MockTEEVerifier::with_register_failures(3),

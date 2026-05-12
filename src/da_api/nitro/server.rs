@@ -426,18 +426,19 @@ mod tests {
     }
 
     fn test_key_manager() -> Arc<EspressoKeyManager> {
-        let mut km = EspressoKeyManager::new_with_attestation_provider(
-            Box::new(NoOpTeeVerifier),
-            Box::new(NoOpAttestationClient),
-            Box::new(NoOpAttestationProvider),
-            1,
-            TeeType::Nitro,
-            1,
-            Address::ZERO,
+        Arc::new(
+            EspressoKeyManager::new_with_attestation_provider(
+                Box::new(NoOpTeeVerifier),
+                Box::new(NoOpAttestationClient),
+                Box::new(NoOpAttestationProvider),
+                1,
+                TeeType::Nitro,
+                1,
+                Address::ZERO,
+                PrivateKeySigner::random(),
+            )
+            .unwrap(),
         )
-        .unwrap();
-        km.signer = Some(PrivateKeySigner::random());
-        Arc::new(km)
     }
 
     fn spawn_server(addr: SocketAddr, config: Vec<DaProviderConfig>) -> JoinHandle<()> {
