@@ -27,10 +27,13 @@ use crate::{
 const HEADER_CONTENT_TYPE: &str = "application/json";
 
 const STORE: &str = "daprovider_store";
+const GET_MAX_MESSAGE_SIZE: &str = "daprovider_getMaxMessageSize";
 const RECOVER_PAYLOAD: &str = "daprovider_recoverPayload";
 const COLLECT_PREIMAGES: &str = "daprovider_collectPreimages";
 const RECOVER_PAYLOAD_AND_PREIMAGES: &str = "daprovider_recoverPayloadAndPreimages";
 const GET_SUPPORTED_HEADER_BYTES: &str = "daprovider_getSupportedHeaderBytes";
+
+const CALLDATA_MAX_SIZE: u16 = 50_000; // 50 kb
 
 #[derive(Clone)]
 pub struct ServerState {
@@ -91,6 +94,16 @@ async fn handle_rpc(State(state): State<ServerState>, body: Bytes) -> Result<Res
                 "id": parsed["id"],
                 "jsonrpc": "2.0",
                 "result": {"headerBytes": "0x70"}
+            });
+            let bytes = serde_json::to_vec(&result)
+                .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
+            Ok((StatusCode::OK, bytes).into_response())
+        }
+        GET_MAX_MESSAGE_SIZE if state.da_config.name == "calldata" => {
+            let result = serde_json::json!({
+                "id": parsed["id"],
+                "jsonrpc": "2.0",
+                "result": {"maxSize": CALLDATA_MAX_SIZE}
             });
             let bytes = serde_json::to_vec(&result)
                 .map_err(|err| DaApiError::ParsingError(err.to_string()))?;

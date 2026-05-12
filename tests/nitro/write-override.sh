@@ -83,28 +83,17 @@ EOF
         ;;
 esac
 
-# if [ -n "${CAS_FEED_URL:-}" ]; then
-#     cat >> "$OVERRIDE_FILE" << EOF
-#   poster:
-#     command:
-#       - --conf.file
-#       - /config/poster_config.json
-#       - --node.da.external-provider.enable=true
-#       - --node.da.external-provider.with-writer=true
-#       - '--node.da.external-provider.rpc.url="$CAS_CALLDATA_RPC_URL"'
-#       - '--node.feed.input.url=\"$CAS_FEED_URL\"'
-# EOF
-# fi
 if [ -n "${CAS_FEED_URL:-}" ]; then
     cat >> "$OVERRIDE_FILE" << EOF
   poster:
     command:
       - --conf.file
       - /config/poster_config.json
-      - --node.da-provider.enable=true
-      - --node.da-provider.with-writer=true
-      - --node.da-provider.rpc.url=$CAS_CALLDATA_RPC_URL
+      - --node.da.external-provider.enable=true
+      - --node.da.external-provider.with-writer=true
+      - --node.da.external-provider.rpc.url=$CAS_CALLDATA_RPC_URL
       - --node.feed.input.url=$CAS_FEED_URL
+      - --node.seq-coordinator.enable=false
       - --node.dangerous.no-sequencer-coordinator=true
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -115,7 +104,8 @@ if [ -n "${CAS_FEED_URL:-}" ]; then
       - --node.feed.output.port=9642
       - --node.feed.output.signed=true
       - --http.api=net,web3,eth,txpool,debug,timeboost,auctioneer
-      - --node.seq-coordinator.my-url=http://sequencer:8547
+      - --node.seq-coordinator.enable=false
+      - --node.dangerous.no-sequencer-coordinator=true
 EOF
 fi
 
