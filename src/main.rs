@@ -1,7 +1,11 @@
+use alloy::signers::local::PrivateKeySigner;
 use anyhow::Result;
 use chain_agnostic_service::config::RollupType;
 use chain_agnostic_service::da_api;
 use chain_agnostic_service::espresso_client::client::EspressoClient;
+use chain_agnostic_service::key_manager::attestation_client::HttpAttestationVerifierClient;
+use chain_agnostic_service::key_manager::key_manager::{EspressoKeyManager, TeeType};
+use chain_agnostic_service::key_manager::tee_verifier::TEEVerifier;
 use chain_agnostic_service::rollups::nitro::types::Nitro;
 use chain_agnostic_service::rollups::rollup::L1Monitor;
 use chain_agnostic_service::streamer::streamer::Streamer;
@@ -31,6 +35,36 @@ async fn main() -> Result<()> {
         RollupType::Nitro => {
             let config: ServiceConfig<<Nitro as Rollup>::StackConfig> =
                 serde_json::from_str(&config_contents)?;
+
+            if let Some(km_config) = &config.key_manager {
+                let operator_private_key = std::env::var("OPERATOR_PRIVATE_KEY").map_err(|_| {
+                    anyhow::anyhow!(
+                        "OPERATOR_PRIVATE_KEY env var must be set when key_manager is configured"
+                    )
+                })?;
+                let operator_signer: PrivateKeySigner = operator_private_key.parse()?;
+                let tee_verifier = TEEVerifier::new(
+                    km_config.rpc_url.clone(),
+                    km_config.tee_verifier_address,
+                    operator_signer,
+                );
+                let attestation_client = HttpAttestationVerifierClient::new(
+                    km_config.attestation_verifier_url.clone(),
+                    km_config.attestation_client_timeout_secs,
+                )?;
+                let mut key_manager = EspressoKeyManager::new(
+                    Box::new(tee_verifier),
+                    Box::new(attestation_client),
+                    km_config.max_register_attempts,
+                    TeeType::Nitro,
+                )?;
+                key_manager.initialize().await?;
+                tracing::info!(
+                    "TEE key registered, signer address: {:?}",
+                    key_manager.signer().map(|s| s.address())
+                );
+            }
+
             run::<Nitro>(config).await
         }
     }

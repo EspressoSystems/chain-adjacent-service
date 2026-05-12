@@ -1,4 +1,6 @@
+use alloy::primitives::Address;
 use serde::Deserialize;
+use url::Url;
 
 use crate::{
     da_api::config::DaApiConfig, espresso_client::client::Config as EspressoClientConfig,
@@ -17,6 +19,7 @@ pub struct ServiceConfig<C> {
     pub submitter: SubmitterConfig,
     #[serde(default)]
     pub advanced: AdvancedConfig,
+    pub key_manager: Option<KeyManagerConfig>,
     /// Indicates whether this is a fresh deployment without any existing state.
     /// Should be set to `false` when restarting the service with existing state,
     /// so that the service can properly initialize from the latest checkpoint.
@@ -81,4 +84,23 @@ impl Default for AdvancedConfig {
 #[serde(rename_all = "lowercase")]
 pub enum RollupType {
     Nitro,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct KeyManagerConfig {
+    pub rpc_url: Url,
+    pub tee_verifier_address: Address,
+    pub attestation_verifier_url: Url,
+    #[serde(default = "default_max_register_attempts")]
+    pub max_register_attempts: u8,
+    #[serde(default = "default_attestation_client_timeout_secs")]
+    pub attestation_client_timeout_secs: u64,
+}
+
+fn default_max_register_attempts() -> u8 {
+    3
+}
+
+fn default_attestation_client_timeout_secs() -> u64 {
+    30
 }
