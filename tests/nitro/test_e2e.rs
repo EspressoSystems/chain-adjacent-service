@@ -8,13 +8,13 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 use tokio::time::{Instant, sleep};
 
-use chain_agnostic_service::espresso_e2e::espresso_dev_node::EspressoDevNode;
-use chain_agnostic_service::rollups::nitro::l1_monitor::ISequencerInbox;
+use chain_adjacent_service::espresso_e2e::espresso_dev_node::EspressoDevNode;
+use chain_adjacent_service::rollups::nitro::l1_monitor::ISequencerInbox;
 
 use crate::cas_harness::setup_l1_reuse_mode_with_cas_poster;
 use crate::nitro_node::nitro_node::{NitroNode, NitroNodeConfig};
 
-const CAS_BIN: &str = env!("CARGO_BIN_EXE_chain-agnostic-service");
+const CAS_BIN: &str = env!("CARGO_BIN_EXE_chain-adjacent-service");
 
 const CAS_FEED_URL: &str = "ws://host.docker.internal:9643";
 const CAS_CALLDATA_RPC_URL: &str = "http://host.docker.internal:8000/cas/arb/calldata";

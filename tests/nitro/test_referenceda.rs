@@ -7,7 +7,7 @@ use tokio::{
     time::sleep,
 };
 
-use chain_agnostic_service::{
+use chain_adjacent_service::{
     VerificationResult,
     config::RollupType,
     da_api::{
