@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::{
     Router,
     body::Bytes,
@@ -22,6 +24,7 @@ use crate::{
             utils::{SEQUENCER_HEADER_LEN, try_extract_da_sequencer_msg_from_espresso_da_cert},
         },
     },
+    key_manager::key_manager::EspressoKeyManager,
 };
 
 const HEADER_CONTENT_TYPE: &str = "application/json";
@@ -37,14 +40,20 @@ pub struct ServerState {
     pub da_config: DaProviderConfig,
     pub client: reqwest::Client,
     pub verification_channel: VerificationSender,
+    pub key_manager: Option<Arc<EspressoKeyManager>>,
 }
 
 impl ServerState {
-    pub fn new(da_config: DaProviderConfig, verification_channel: VerificationSender) -> Self {
+    pub fn new(
+        da_config: DaProviderConfig,
+        verification_channel: VerificationSender,
+        key_manager: Option<Arc<EspressoKeyManager>>,
+    ) -> Self {
         Self {
             da_config,
             client: reqwest::Client::new(),
             verification_channel,
+            key_manager,
         }
     }
 
@@ -59,12 +68,13 @@ pub fn build_app(
     mut providers: Vec<DaProviderConfig>,
     verification_channel: VerificationSender,
     rollup_prefix: &str,
+    key_manager: Option<Arc<EspressoKeyManager>>,
 ) -> Router {
     let mut app = Router::new();
     providers.push(DaProviderConfig::calldata());
     for provider in providers {
         let name = provider.name.clone();
-        let state = ServerState::new(provider, verification_channel.clone());
+        let state = ServerState::new(provider, verification_channel.clone(), key_manager.clone());
         let sub = Router::new().route("/", post(handle_rpc)).with_state(state);
         app = app.nest(&format!("/{rollup_prefix}/{name}"), sub);
     }
@@ -222,7 +232,13 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
         downstream_cert = raw_cert.serialized_da_certificate;
     }
 
+    let key_manager = state
+        .key_manager
+        .as_deref()
+        .ok_or(DaApiError::Signing("key manager not initialized".into()))?;
+
     let final_cert = CasCertificate::build_espresso_certificate(
+        key_manager,
         start_message_position,
         end_message_position,
         start_espresso_block,
@@ -343,10 +359,13 @@ async fn handle_recover_inner(
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::{Bytes, FixedBytes, b256};
+    use alloy::primitives::{Address, Bytes, FixedBytes, b256};
+    use alloy::signers::local::PrivateKeySigner;
+    use anyhow::Result;
+    use async_trait::async_trait;
     use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder, rpc_params};
     use serde_json::json;
-    use std::{net::SocketAddr, str::FromStr};
+    use std::{net::SocketAddr, str::FromStr, sync::Arc};
     use tokio::{sync::oneshot, task::JoinHandle};
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
@@ -363,6 +382,10 @@ mod tests {
                 types::{DAStoreResponse, PreImagesResult, RecoverPayloadResult},
             },
         },
+        key_manager::key_manager::{
+            AttestationProvider, AttestationVerifierClient, EspressoKeyManager,
+            EspressoTEEVerifier, TeeType,
+        },
     };
 
     fn valid_message() -> Bytes {
@@ -373,12 +396,56 @@ mod tests {
         "0x010500000000000000000000" // 0x01, 0x05, then padding
     }
 
+    struct NoOpTeeVerifier;
+
+    #[async_trait]
+    impl EspressoTEEVerifier for NoOpTeeVerifier {
+        async fn register_service(&self, _: &[u8], _: &[u8], _: u8) -> Result<()> {
+            Ok(())
+        }
+        async fn registered_services(&self, _: Address, _: TeeType) -> Result<bool> {
+            Ok(true)
+        }
+    }
+
+    struct NoOpAttestationClient;
+
+    #[async_trait]
+    impl AttestationVerifierClient for NoOpAttestationClient {
+        async fn generate_zk_proof(&self, _: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+            Ok((vec![], vec![]))
+        }
+    }
+
+    struct NoOpAttestationProvider;
+
+    impl AttestationProvider for NoOpAttestationProvider {
+        fn get_attestation(&self, k: &[u8]) -> Result<Vec<u8>> {
+            Ok(k.to_vec())
+        }
+    }
+
+    fn test_key_manager() -> Arc<EspressoKeyManager> {
+        let mut km = EspressoKeyManager::new_with_attestation_provider(
+            Box::new(NoOpTeeVerifier),
+            Box::new(NoOpAttestationClient),
+            Box::new(NoOpAttestationProvider),
+            1,
+            TeeType::Nitro,
+            1,
+            Address::ZERO,
+        )
+        .unwrap();
+        km.signer = Some(PrivateKeySigner::random());
+        Arc::new(km)
+    }
+
     fn spawn_server(addr: SocketAddr, config: Vec<DaProviderConfig>) -> JoinHandle<()> {
+        let km = test_key_manager();
         tokio::spawn(async move {
             let (verification_channel, mut verify_receiver) =
                 tokio::sync::mpsc::channel::<(Bytes, oneshot::Sender<VerificationResult>)>(1);
 
-            // Spawn a mock verification handler that always succeeds
             tokio::spawn(async move {
                 while let Some((_, reply)) = verify_receiver.recv().await {
                     let _ = reply.send(VerificationResult {
@@ -391,7 +458,7 @@ mod tests {
                 }
             });
 
-            let app = build_app(config, verification_channel, "arb");
+            let app = build_app(config, verification_channel, "arb", Some(km));
             let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
             axum::serve(listener, app).await.unwrap();
         })
@@ -626,7 +693,7 @@ mod tests {
                                     "3": {
                                         // Inner key: keccak256(da_certificate), where da_certificate is
                                         // the inner DA cert extracted from sequencer_msg by
-                                        // extract_da_sequencer_msg_from_espresso_da_certificate(). 
+                                        // extract_da_sequencer_msg_from_espresso_da_certificate().
                                         // Correctness of this falls under the responsibility of the downstream DA provider
                                         //
                                         // Value: the raw batch data retrieved from the DA layer — identical

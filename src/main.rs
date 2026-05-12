@@ -1,4 +1,9 @@
-use alloy::signers::local::PrivateKeySigner;
+use std::sync::Arc;
+
+use alloy::{
+    providers::{Provider, ProviderBuilder},
+    signers::local::PrivateKeySigner,
+};
 use anyhow::Result;
 use chain_agnostic_service::config::RollupType;
 use chain_agnostic_service::da_api;
@@ -36,7 +41,7 @@ async fn main() -> Result<()> {
             let config: ServiceConfig<<Nitro as Rollup>::StackConfig> =
                 serde_json::from_str(&config_contents)?;
 
-            if let Some(km_config) = &config.key_manager {
+            let key_manager = if let Some(km_config) = &config.key_manager {
                 let operator_private_key = std::env::var("OPERATOR_PRIVATE_KEY").map_err(|_| {
                     anyhow::anyhow!(
                         "OPERATOR_PRIVATE_KEY env var must be set when key_manager is configured"
@@ -52,25 +57,37 @@ async fn main() -> Result<()> {
                     km_config.attestation_verifier_url.clone(),
                     km_config.attestation_client_timeout_secs,
                 )?;
+
+                let provider = ProviderBuilder::new().connect_http(km_config.rpc_url.clone());
+                let parent_chain_id = provider.get_chain_id().await?;
+
                 let mut key_manager = EspressoKeyManager::new(
                     Box::new(tee_verifier),
                     Box::new(attestation_client),
                     km_config.max_register_attempts,
                     TeeType::Nitro,
+                    parent_chain_id,
+                    km_config.tee_verifier_address,
                 )?;
                 key_manager.initialize().await?;
                 tracing::info!(
                     "TEE key registered, signer address: {:?}",
                     key_manager.signer().map(|s| s.address())
                 );
-            }
+                Some(Arc::new(key_manager))
+            } else {
+                None
+            };
 
-            run::<Nitro>(config).await
+            run::<Nitro>(config, key_manager).await
         }
     }
 }
 
-async fn run<R: Rollup>(config: ServiceConfig<R::StackConfig>) -> Result<()> {
+async fn run<R: Rollup>(
+    config: ServiceConfig<R::StackConfig>,
+    key_manager: Option<Arc<EspressoKeyManager>>,
+) -> Result<()> {
     let l1_monitor = R::create_l1_monitor(&config.rollup.stack).await?;
 
     let (batch_cursor, hotshot_height) = if !config.is_fresh_deployment {
@@ -138,7 +155,12 @@ async fn run<R: Rollup>(config: ServiceConfig<R::StackConfig>) -> Result<()> {
         espresso_finalization_sender,
     );
 
-    let da_task = da_api::run(config.da_server, R::rollup_type(), verification_sender);
+    let da_task = da_api::run(
+        config.da_server,
+        R::rollup_type(),
+        verification_sender,
+        key_manager,
+    );
 
     let l1_monitor_task = l1_monitor.start(l1_finalized_msg_idx_sender, batch_cursor_sender);
 

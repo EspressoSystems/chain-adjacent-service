@@ -19,7 +19,7 @@ pub fn try_extract_da_sequencer_msg_from_espresso_da_cert(
     }
 
     let cas_cert = CasCertificate::from_bytes(&sequencer_msg[SEQUENCER_HEADER_LEN..])?;
-    cas_cert.validate()?;
+    cas_cert.validate_structure()?;
 
     let seq_header = sequencer_msg.slice(0..SEQUENCER_HEADER_LEN);
     let res = [

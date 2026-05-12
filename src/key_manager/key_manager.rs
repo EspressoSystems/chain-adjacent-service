@@ -1,4 +1,16 @@
-use alloy::{primitives::Address, signers::local::PrivateKeySigner};
+use alloy::{
+    primitives::{Address, B256, U256, keccak256},
+    signers::{SignerSync, local::PrivateKeySigner},
+    sol_types::{Eip712Domain, SolStruct},
+};
+
+pub mod eip712 {
+    alloy::sol! {
+        struct EspressoTEEVerifier {
+            bytes32 commitment;
+        }
+    }
+}
 use anyhow::{Result, bail};
 use async_trait::async_trait;
 use aws_nitro_enclaves_nsm_api::{
@@ -63,9 +75,12 @@ pub enum KeyManagerError {
 
     #[error("registration failed after {attempts} attempts for signer {signer_addr}")]
     RegistrationExhausted { attempts: u8, signer_addr: Address },
+
+    #[error("signing failed: {0}")]
+    SigningFailed(#[source] alloy::signers::Error),
 }
 
-trait AttestationProvider: Send + Sync {
+pub(crate) trait AttestationProvider: Send + Sync {
     fn get_attestation(&self, pub_key: &[u8]) -> Result<Vec<u8>>;
 }
 
@@ -117,7 +132,9 @@ pub struct EspressoKeyManager {
     attestation_provider: Box<dyn AttestationProvider>,
     max_register_attempts: u8,
     tee_type: TeeType,
-    signer: Option<PrivateKeySigner>,
+    pub(crate) signer: Option<PrivateKeySigner>,
+    parent_chain_id: u64,
+    tee_verifier_address: Address,
 }
 
 impl EspressoKeyManager {
@@ -126,6 +143,8 @@ impl EspressoKeyManager {
         attestation_verifier_client: Box<dyn AttestationVerifierClient>,
         max_register_attempts: u8,
         tee_type: TeeType,
+        parent_chain_id: u64,
+        tee_verifier_address: Address,
     ) -> Result<Self, KeyManagerError> {
         Self::new_with_attestation_provider(
             tee_verifier,
@@ -133,15 +152,19 @@ impl EspressoKeyManager {
             Box::new(NsmAttestationProvider),
             max_register_attempts,
             tee_type,
+            parent_chain_id,
+            tee_verifier_address,
         )
     }
 
-    fn new_with_attestation_provider(
+    pub(crate) fn new_with_attestation_provider(
         tee_verifier: Box<dyn EspressoTEEVerifier>,
         attestation_verifier_client: Box<dyn AttestationVerifierClient>,
         attestation_provider: Box<dyn AttestationProvider>,
         max_register_attempts: u8,
         tee_type: TeeType,
+        parent_chain_id: u64,
+        tee_verifier_address: Address,
     ) -> Result<Self, KeyManagerError> {
         if max_register_attempts == 0 {
             return Err(KeyManagerError::InvalidConfig(
@@ -163,6 +186,8 @@ impl EspressoKeyManager {
             max_register_attempts,
             tee_type,
             signer: None,
+            parent_chain_id,
+            tee_verifier_address,
         })
     }
 
@@ -301,6 +326,49 @@ impl EspressoKeyManager {
         let verifying_key = signer.credential().verifying_key();
         Ok(verifying_key.to_encoded_point(false).as_bytes().to_vec())
     }
+
+    pub fn sign_message(&self, message: &[u8]) -> Result<[u8; 65], KeyManagerError> {
+        let signer = self
+            .signer
+            .as_ref()
+            .ok_or(KeyManagerError::SignerNotInitialized)?;
+        sign_typed_message(
+            message,
+            signer,
+            self.parent_chain_id,
+            self.tee_verifier_address,
+        )
+    }
+}
+
+pub fn compute_cas_signing_hash(
+    message: &[u8],
+    parent_chain_id: u64,
+    verifier_address: Address,
+) -> B256 {
+    let commitment = keccak256(message);
+    let domain = Eip712Domain {
+        name: Some("EspressoTEEVerifier".into()),
+        version: Some("1".into()),
+        chain_id: Some(U256::from(parent_chain_id)),
+        verifying_contract: Some(verifier_address),
+        salt: None,
+    };
+    let typed_data = eip712::EspressoTEEVerifier { commitment };
+    typed_data.eip712_signing_hash(&domain)
+}
+
+pub fn sign_typed_message(
+    message: &[u8],
+    signer: &PrivateKeySigner,
+    parent_chain_id: u64,
+    verifier_address: Address,
+) -> Result<[u8; 65], KeyManagerError> {
+    let signing_hash = compute_cas_signing_hash(message, parent_chain_id, verifier_address);
+    let sig = signer
+        .sign_hash_sync(&signing_hash)
+        .map_err(KeyManagerError::SigningFailed)?;
+    Ok(sig.as_bytes())
 }
 
 #[cfg(test)]
@@ -443,6 +511,8 @@ mod tests {
             Box::new(attestation_provider),
             max_attempts,
             TeeType::Nitro,
+            1,
+            Address::ZERO,
         )
         .expect("test setup: invalid key manager config");
 
@@ -533,5 +603,41 @@ mod tests {
             err,
             KeyManagerError::RegistrationExhausted { attempts: 3, .. }
         ));
+    }
+
+    #[test]
+    fn test_sign_typed_message_recovers_() {
+        use alloy::primitives::{B256, Signature};
+
+        let signer = PrivateKeySigner::random();
+        let expected_address = signer.address();
+        let chain_id: u64 = 42161;
+        let verifier_addr = Address::repeat_byte(0xAB);
+        let message = b"commitment payload";
+
+        let sig_bytes = sign_typed_message(message, &signer, chain_id, verifier_addr).unwrap();
+
+        let commitment = keccak256(message);
+        let domain = Eip712Domain {
+            name: Some("EspressoTEEVerifier".into()),
+            version: Some("1".into()),
+            chain_id: Some(U256::from(chain_id)),
+            verifying_contract: Some(verifier_addr),
+            salt: None,
+        };
+        let typed_data = eip712::EspressoTEEVerifier { commitment };
+        let signing_hash = typed_data.eip712_signing_hash(&domain);
+
+        let parity = match sig_bytes[64] {
+            27 => false,
+            28 => true,
+            v => panic!("unexpected v value: {v}"),
+        };
+        let sig = Signature::from_bytes_and_parity(&sig_bytes[..64], parity);
+        let recovered = sig
+            .recover_address_from_prehash(&B256::from(signing_hash))
+            .expect("signature recovery should succeed");
+
+        assert_eq!(recovered, expected_address);
     }
 }
