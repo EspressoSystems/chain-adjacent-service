@@ -20,7 +20,7 @@ pub async fn run(
     da_api_config: DaApiConfig,
     rollup_type: RollupType,
     verification_channel: VerificationSender,
-    key_manager: Option<Arc<EspressoKeyManager>>,
+    key_manager: Arc<EspressoKeyManager>,
 ) -> DaApiResult<()> {
     match rollup_type {
         RollupType::Nitro => {

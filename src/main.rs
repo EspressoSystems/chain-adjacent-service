@@ -41,45 +41,40 @@ async fn main() -> Result<()> {
             let config: ServiceConfig<<Nitro as Rollup>::StackConfig> =
                 serde_json::from_str(&config_contents)?;
 
-            let key_manager = if let Some(km_config) = &config.key_manager {
-                let operator_private_key = std::env::var("OPERATOR_PRIVATE_KEY").map_err(|_| {
-                    anyhow::anyhow!(
-                        "OPERATOR_PRIVATE_KEY env var must be set when key_manager is configured"
-                    )
-                })?;
-                let operator_signer: PrivateKeySigner = operator_private_key.parse()?;
-                let tee_verifier = TEEVerifier::new(
-                    km_config.rpc_url.clone(),
-                    km_config.tee_verifier_address,
-                    operator_signer,
-                );
-                let attestation_client = HttpAttestationVerifierClient::new(
-                    km_config.attestation_verifier_url.clone(),
-                    km_config.attestation_client_timeout_secs,
-                )?;
+            let operator_private_key = std::env::var("OPERATOR_PRIVATE_KEY").map_err(|_| {
+                anyhow::anyhow!(
+                    "OPERATOR_PRIVATE_KEY env var must be set when key_manager is configured"
+                )
+            })?;
+            let operator_signer: PrivateKeySigner = operator_private_key.parse()?;
+            let tee_verifier = TEEVerifier::new(
+                config.key_manager.rpc_url.clone(),
+                config.key_manager.tee_verifier_address,
+                operator_signer,
+            );
+            let attestation_client = HttpAttestationVerifierClient::new(
+                config.key_manager.attestation_verifier_url.clone(),
+                config.key_manager.attestation_client_timeout_secs,
+            )?;
 
-                let provider = ProviderBuilder::new().connect_http(km_config.rpc_url.clone());
-                let parent_chain_id = provider.get_chain_id().await?;
+            let provider = ProviderBuilder::new().connect_http(config.key_manager.rpc_url.clone());
+            let parent_chain_id = provider.get_chain_id().await?;
 
-                let signer = PrivateKeySigner::random();
-                let mut key_manager = EspressoKeyManager::new(
-                    Box::new(tee_verifier),
-                    Box::new(attestation_client),
-                    km_config.max_register_attempts,
-                    TeeType::Nitro,
-                    parent_chain_id,
-                    km_config.tee_verifier_address,
-                    signer,
-                )?;
-                key_manager.initialize().await?;
-                tracing::info!(
-                    "TEE key registered, signer address: {:?}",
-                    key_manager.signer().address()
-                );
-                Some(Arc::new(key_manager))
-            } else {
-                None
-            };
+            let signer = PrivateKeySigner::random();
+            let mut key_manager = EspressoKeyManager::new(
+                Box::new(tee_verifier),
+                Box::new(attestation_client),
+                config.key_manager.max_register_attempts,
+                TeeType::Nitro,
+                parent_chain_id,
+                config.key_manager.tee_verifier_address,
+                signer,
+            )?;
+            key_manager.initialize().await?;
+            tracing::info!(
+                "TEE key registered, signer address: {:?}",
+                key_manager.signer().address()
+            );
 
             run::<Nitro>(config, key_manager).await
         }
@@ -88,7 +83,7 @@ async fn main() -> Result<()> {
 
 async fn run<R: Rollup>(
     config: ServiceConfig<R::StackConfig>,
-    key_manager: Option<Arc<EspressoKeyManager>>,
+    key_manager: EspressoKeyManager,
 ) -> Result<()> {
     let l1_monitor = R::create_l1_monitor(&config.rollup.stack).await?;
 
@@ -161,7 +156,7 @@ async fn run<R: Rollup>(
         config.da_server,
         R::rollup_type(),
         verification_sender,
-        key_manager,
+        Arc::new(key_manager),
     );
 
     let l1_monitor_task = l1_monitor.start(l1_finalized_msg_idx_sender, batch_cursor_sender);

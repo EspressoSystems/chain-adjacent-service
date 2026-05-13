@@ -15,7 +15,9 @@ use chain_agnostic_service::{
         nitro::utils::{SEQUENCER_HEADER_LEN, try_extract_da_sequencer_msg_from_espresso_da_cert},
         run,
     },
+    key_manager::key_manager::EspressoKeyManager,
 };
+use std::sync::Arc;
 
 use crate::{
     EXPECTED_RECOVER_PAYLOAD_RESPONSE, STORE_REQUEST_DATA,
@@ -50,9 +52,14 @@ fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
     });
 
     tokio::spawn(async move {
-        run(config, RollupType::Nitro, verification_channel, None)
-            .await
-            .expect("server should start");
+        run(
+            config,
+            RollupType::Nitro,
+            verification_channel,
+            Arc::new(EspressoKeyManager::new_signing_only()),
+        )
+        .await
+        .expect("server should start");
     })
 }
 

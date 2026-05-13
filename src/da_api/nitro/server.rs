@@ -40,14 +40,14 @@ pub struct ServerState {
     pub da_config: DaProviderConfig,
     pub client: reqwest::Client,
     pub verification_channel: VerificationSender,
-    pub key_manager: Option<Arc<EspressoKeyManager>>,
+    pub key_manager: Arc<EspressoKeyManager>,
 }
 
 impl ServerState {
     pub fn new(
         da_config: DaProviderConfig,
         verification_channel: VerificationSender,
-        key_manager: Option<Arc<EspressoKeyManager>>,
+        key_manager: Arc<EspressoKeyManager>,
     ) -> Self {
         Self {
             da_config,
@@ -68,7 +68,7 @@ pub fn build_app(
     mut providers: Vec<DaProviderConfig>,
     verification_channel: VerificationSender,
     rollup_prefix: &str,
-    key_manager: Option<Arc<EspressoKeyManager>>,
+    key_manager: Arc<EspressoKeyManager>,
 ) -> Router {
     let mut app = Router::new();
     providers.push(DaProviderConfig::calldata());
@@ -232,10 +232,7 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
         downstream_cert = raw_cert.serialized_da_certificate;
     }
 
-    let key_manager = state
-        .key_manager
-        .as_deref()
-        .ok_or(DaApiError::Signing("key manager not initialized".into()))?;
+    let key_manager = &state.key_manager;
 
     let final_cert = CasCertificate::build_espresso_certificate(
         key_manager,
@@ -408,7 +405,7 @@ mod tests {
                 }
             });
 
-            let app = build_app(config, verification_channel, "arb", Some(km));
+            let app = build_app(config, verification_channel, "arb", km);
             let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
             axum::serve(listener, app).await.unwrap();
         })

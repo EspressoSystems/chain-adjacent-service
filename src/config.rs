@@ -19,7 +19,7 @@ pub struct ServiceConfig<C> {
     pub submitter: SubmitterConfig,
     #[serde(default)]
     pub advanced: AdvancedConfig,
-    pub key_manager: Option<KeyManagerConfig>,
+    pub key_manager: KeyManagerConfig,
     /// Indicates whether this is a fresh deployment without any existing state.
     /// Should be set to `false` when restarting the service with existing state,
     /// so that the service can properly initialize from the latest checkpoint.

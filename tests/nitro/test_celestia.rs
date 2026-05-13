@@ -17,7 +17,9 @@ use chain_agnostic_service::{
         config::{DaApiConfig, DaProviderConfig},
         run,
     },
+    key_manager::key_manager::EspressoKeyManager,
 };
+use std::sync::Arc;
 
 pub const _CELESTIA_DA_IDENTIFIER: &str = "0x63";
 pub const CELESTIA_DA_MAX_SIZE: usize = 33554432;
@@ -49,9 +51,14 @@ fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
     });
 
     tokio::spawn(async move {
-        run(config, RollupType::Nitro, verification_channel, None)
-            .await
-            .expect("server should start");
+        run(
+            config,
+            RollupType::Nitro,
+            verification_channel,
+            Arc::new(EspressoKeyManager::new_signing_only()),
+        )
+        .await
+        .expect("server should start");
     })
 }
 

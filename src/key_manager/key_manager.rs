@@ -11,6 +11,7 @@ pub mod eip712 {
         }
     }
 }
+use super::test_utils::{NoOpAttestationClient, NoOpAttestationProvider, NoOpTeeVerifier};
 use anyhow::{Result, bail};
 use async_trait::async_trait;
 use aws_nitro_enclaves_nsm_api::{
@@ -24,6 +25,7 @@ use thiserror::Error;
 #[repr(u8)]
 pub enum TeeType {
     Nitro = 0,
+    Test = 1,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,6 +156,21 @@ impl EspressoKeyManager {
             tee_verifier_address,
             signer,
         )
+    }
+
+    // new_signing_only should only be used for TESTING
+    // as it uses no-op implementations and a random signer.
+    pub fn new_signing_only() -> Self {
+        Self {
+            tee_verifier: Box::new(NoOpTeeVerifier),
+            attestation_verifier_client: Box::new(NoOpAttestationClient),
+            attestation_provider: Box::new(NoOpAttestationProvider),
+            max_register_attempts: 1,
+            tee_type: TeeType::Test,
+            signer: PrivateKeySigner::random(),
+            parent_chain_id: 0,
+            tee_verifier_address: Address::ZERO,
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

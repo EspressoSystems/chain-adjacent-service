@@ -1,11 +1,11 @@
 use alloy::primitives::Address;
-use alloy::signers::local::PrivateKeySigner;
 use anyhow::Result;
 use async_trait::async_trait;
 
+#[cfg(test)]
+use super::key_manager::EspressoKeyManager;
 use super::key_manager::{
-    AttestationProvider, AttestationVerifierClient, EspressoKeyManager, EspressoTEEVerifier,
-    TeeType,
+    AttestationProvider, AttestationVerifierClient, EspressoTEEVerifier, TeeType,
 };
 
 pub(crate) struct NoOpTeeVerifier;
@@ -42,16 +42,7 @@ impl AttestationProvider for NoOpAttestationProvider {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn test_key_manager() -> EspressoKeyManager {
-    EspressoKeyManager::new_with_attestation_provider(
-        Box::new(NoOpTeeVerifier),
-        Box::new(NoOpAttestationClient),
-        Box::new(NoOpAttestationProvider),
-        1,
-        TeeType::Nitro,
-        1,
-        Address::ZERO,
-        PrivateKeySigner::random(),
-    )
-    .unwrap()
+    EspressoKeyManager::new_signing_only()
 }

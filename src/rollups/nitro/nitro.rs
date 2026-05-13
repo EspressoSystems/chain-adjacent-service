@@ -921,7 +921,7 @@ pub mod testing {
 
     #[test]
     fn test_resolve_config_with_latest_batch_info() {
-        use crate::config::{ServiceConfig, StreamerConfig};
+        use crate::config::{KeyManagerConfig, ServiceConfig, StreamerConfig};
         use crate::da_api::config::DaApiConfig;
         use crate::espresso_client::client::Config as EspressoClientConfig;
         use crate::rollups::nitro::config::NitroConfig;
@@ -929,6 +929,7 @@ pub mod testing {
         use crate::rollups::nitro::feed::client::BroadcasterClientConfig;
         use crate::rollups::nitro::feed::relay::FeedConfig;
         use crate::submitter::submitter::SubmitterConfig;
+        use alloy::primitives::Address as VerifierAddress;
         use reqwest::Url;
 
         // Create initial config with minimal valid values
@@ -964,7 +965,13 @@ pub mod testing {
             submitter: SubmitterConfig::default(),
             da_server: DaApiConfig::default(),
             advanced: crate::config::AdvancedConfig::default(),
-            key_manager: None,
+            key_manager: KeyManagerConfig {
+                rpc_url: Url::parse("http://localhost:8545").unwrap(),
+                tee_verifier_address: VerifierAddress::ZERO,
+                attestation_verifier_url: Url::parse("http://localhost:9000").unwrap(),
+                max_register_attempts: 3,
+                attestation_client_timeout_secs: 30,
+            },
             is_fresh_deployment: false,
         };
 
