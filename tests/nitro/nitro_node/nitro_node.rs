@@ -7,6 +7,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 const REFERENCE_DA_ENDPOINT: i32 = 9880;
 const TESTNODE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/nitro-testnode");
+const NITRO_NODE_VERSION: &str = "offchainlabs/nitro-node:v3.10.0-b1cf6db";
 
 #[derive(Debug, Clone, Default)]
 pub struct NitroNodeConfig {
@@ -89,6 +90,7 @@ impl NitroNode {
             .args(&args)
             // critical: script resolves all its relative paths from its own repo root
             .current_dir(TESTNODE_DIR)
+            .env("NITRO_NODE_VERSION", NITRO_NODE_VERSION)
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .spawn()
