@@ -45,7 +45,13 @@ where
         while i + 1 < layer.len() {
             let (first_hash, first_size) = layer[i];
             let (other_hash, other_size) = layer[i + 1];
-            let size_under = first_size + other_size;
+            // u32 matches upstream's wire format (the size is serialized as
+            // 4-byte BE in `data_under`). For a single tree-hash invocation
+            // the total size fits in u32 iff the preimage does — overflowing
+            // here is a programmer error rather than a runtime condition.
+            let size_under = first_size
+                .checked_add(other_size)
+                .expect("tree::record_hash: cumulative leaf size exceeds u32::MAX");
             let mut data_under = Vec::with_capacity(1 + 32 + 32 + 4);
             data_under.push(NODE_BYTE);
             data_under.extend_from_slice(first_hash.as_slice());

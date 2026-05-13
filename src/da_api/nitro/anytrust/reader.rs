@@ -6,7 +6,10 @@ use serde::Deserialize;
 
 use crate::da_api::{
     error::DaApiError,
-    nitro::anytrust::tree::{self},
+    nitro::anytrust::{
+        http_util::{GET_BY_HASH_RESPONSE_LIMIT, read_body_bounded},
+        tree::{self},
+    },
 };
 
 const GET_BY_HASH_PATH: &str = "/get-by-hash/";
@@ -24,18 +27,12 @@ pub struct RestReader {
 }
 
 impl RestReader {
-    pub fn new(rest_urls: Vec<String>, request_timeout: Duration) -> Self {
+    pub fn new(client: reqwest::Client, rest_urls: Vec<String>, request_timeout: Duration) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client,
             rest_urls,
             request_timeout,
         }
-    }
-
-    #[cfg(test)]
-    pub fn with_http(mut self, client: reqwest::Client) -> Self {
-        self.client = client;
-        self
     }
 
     /// Try each configured REST URL in order until one returns a preimage
@@ -74,16 +71,16 @@ impl RestReader {
             .map_err(|e| DaApiError::DownstreamDa(e.to_string()))?;
 
         let status = resp.status();
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| DaApiError::ParsingError(e.to_string()))?;
         if !status.is_success() {
+            // Drain a small slice for diagnostics, but cap at 1 KB so an
+            // error response can't be used to OOM us either.
+            let bytes = read_body_bounded(resp, 1024).await.unwrap_or_default();
             return Err(DaApiError::DownstreamDa(format!(
                 "status {status}: {}",
                 String::from_utf8_lossy(&bytes)
             )));
         }
+        let bytes = read_body_bounded(resp, GET_BY_HASH_RESPONSE_LIMIT).await?;
 
         let parsed: RestResponse = serde_json::from_slice(&bytes)
             .map_err(|e| DaApiError::ParsingError(format!("bad get-by-hash body: {e}")))?;

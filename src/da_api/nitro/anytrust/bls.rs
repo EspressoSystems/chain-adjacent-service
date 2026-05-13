@@ -45,7 +45,11 @@ pub fn aggregate_signatures(sigs: &[[u8; SIG_BYTES]]) -> Result<[u8; SIG_BYTES],
         .collect::<Result<_, _>>()?;
     let refs: Vec<&Signature> = parsed.iter().collect();
 
-    let agg = AggregateSignature::aggregate(&refs, false)
+    // `check_for_infinity = true`: reject any input that is the identity
+    // point on G1. A misbehaving backend could otherwise submit the identity
+    // as its "signature" — it's silently absorbed by aggregation but produces
+    // a cert that will fail downstream signature verification.
+    let agg = AggregateSignature::aggregate(&refs, true)
         .map_err(|e| DaApiError::Signing(format!("bls aggregate failed: {e:?}")))?;
     Ok(agg.to_signature().serialize())
 }

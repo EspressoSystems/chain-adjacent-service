@@ -35,6 +35,7 @@ impl AnytrustAggregator {
     pub fn from_config(
         cluster_name: String,
         cfg: AnytrustClusterConfig,
+        http: reqwest::Client,
     ) -> Result<Self, DaApiError> {
         if cfg.backends.is_empty() {
             return Err(DaApiError::Configuration(format!(
@@ -80,14 +81,8 @@ impl AnytrustAggregator {
             request_timeout: Duration::from_millis(cfg.request_timeout_ms),
             required_successes,
             keyset_hash,
-            http: reqwest::Client::new(),
+            http,
         })
-    }
-
-    #[cfg(test)]
-    pub fn with_http(mut self, client: reqwest::Client) -> Self {
-        self.http = client;
-        self
     }
 
     pub fn cluster_name(&self) -> &str {
@@ -116,7 +111,12 @@ impl AnytrustAggregator {
         let max_failures = self.backends.len().saturating_sub(self.required_successes);
 
         while let Some((mask, url, result)) = tasks.next().await {
-            match validate_response(result, expected_hash.as_slice(), timeout) {
+            match validate_response(
+                result,
+                expected_hash.as_slice(),
+                timeout,
+                self.keyset_hash.as_slice(),
+            ) {
                 Ok(sig) => {
                     sigs.push(sig);
                     signers_mask |= mask;
@@ -166,6 +166,7 @@ fn validate_response(
     result: Result<StoreResult, DaApiError>,
     expected_hash: &[u8],
     expected_timeout: u64,
+    expected_keyset_hash: &[u8],
 ) -> Result<[u8; SIG_BYTES], DaApiError> {
     let r = result?;
     if r.data_hash.as_slice() != expected_hash {
@@ -177,6 +178,16 @@ fn validate_response(
         return Err(DaApiError::DownstreamDa(format!(
             "backend returned timeout {} expected {expected_timeout}",
             r.timeout
+        )));
+    }
+    // Reject backends signing under a different keyset than the one the
+    // cluster is configured with — otherwise we'd aggregate signatures the
+    // L1 reader can never verify against our keyset_hash.
+    if r.keyset_hash.as_slice() != expected_keyset_hash {
+        return Err(DaApiError::DownstreamDa(format!(
+            "backend returned keysetHash 0x{} expected 0x{}",
+            hex::encode(r.keyset_hash),
+            hex::encode(expected_keyset_hash)
         )));
     }
     Ok(r.sig)
@@ -315,9 +326,12 @@ mod tests {
             assumed_honest: 2,
             request_timeout_ms: 5_000,
         };
-        let aggregator = AnytrustAggregator::from_config("test".to_string(), cfg)
-            .expect("from_config")
-            .with_http(reqwest::Client::builder().no_proxy().build().unwrap());
+        let aggregator = AnytrustAggregator::from_config(
+            "test".to_string(),
+            cfg,
+            reqwest::Client::builder().no_proxy().build().unwrap(),
+        )
+        .expect("from_config");
 
         let cert_bytes = aggregator.store(message, timeout).await.expect("store");
 
@@ -361,9 +375,12 @@ mod tests {
             assumed_honest: 1,
             request_timeout_ms: 5_000,
         };
-        let aggregator = AnytrustAggregator::from_config("test".to_string(), cfg)
-            .expect("from_config")
-            .with_http(reqwest::Client::builder().no_proxy().build().unwrap());
+        let aggregator = AnytrustAggregator::from_config(
+            "test".to_string(),
+            cfg,
+            reqwest::Client::builder().no_proxy().build().unwrap(),
+        )
+        .expect("from_config");
 
         let err = aggregator.store(message, timeout).await.unwrap_err();
         assert!(matches!(err, DaApiError::DownstreamDa(_)), "got: {err}");

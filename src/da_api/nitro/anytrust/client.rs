@@ -4,7 +4,13 @@ use alloy::primitives::Bytes;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::da_api::{error::DaApiError, nitro::anytrust::bls::SIG_BYTES};
+use crate::da_api::{
+    error::DaApiError,
+    nitro::anytrust::{
+        bls::SIG_BYTES,
+        http_util::{DAS_STORE_RESPONSE_LIMIT, read_body_bounded},
+    },
+};
 
 #[derive(Debug, Clone, Deserialize)]
 struct JsonRpcEnvelope<T> {
@@ -67,10 +73,12 @@ pub async fn das_store(
         .await
         .map_err(|e| DaApiError::DownstreamDa(format!("{url}: {e}")))?;
 
-    let bytes = resp
-        .bytes()
+    let bytes = read_body_bounded(resp, DAS_STORE_RESPONSE_LIMIT)
         .await
-        .map_err(|e| DaApiError::ParsingError(format!("{url}: {e}")))?;
+        .map_err(|e| match e {
+            DaApiError::DownstreamDa(msg) => DaApiError::DownstreamDa(format!("{url}: {msg}")),
+            other => other,
+        })?;
 
     let env: JsonRpcEnvelope<StoreResultRaw> = serde_json::from_slice(&bytes)
         .map_err(|e| DaApiError::ParsingError(format!("{url}: {e}")))?;

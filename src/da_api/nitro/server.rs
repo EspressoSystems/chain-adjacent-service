@@ -56,10 +56,14 @@ pub struct ServerState {
 }
 
 impl ServerState {
-    pub fn new(da_config: DaProviderConfig, verification_channel: VerificationSender) -> Self {
+    pub fn new(
+        da_config: DaProviderConfig,
+        client: reqwest::Client,
+        verification_channel: VerificationSender,
+    ) -> Self {
         Self {
             da_config,
-            client: reqwest::Client::new(),
+            client,
             verification_channel,
             anytrust: None,
             anytrust_recovery: None,
@@ -81,20 +85,26 @@ pub fn build_app(
     verification_channel: VerificationSender,
     rollup_prefix: &str,
 ) -> Result<Router, DaApiError> {
+    // One client shared across every provider and AnyTrust cluster — keeps
+    // connection pooling effective and avoids one fresh TCP/TLS pool per
+    // route mounted.
+    let http = reqwest::Client::new();
+
     let mut app = Router::new();
     providers.push(DaProviderConfig::calldata());
     for provider in providers {
         let name = provider.name.clone();
-        let state = ServerState::new(provider, verification_channel.clone());
+        let state = ServerState::new(provider, http.clone(), verification_channel.clone());
         let sub = Router::new().route("/", post(handle_rpc)).with_state(state);
         app = app.nest(&format!("/{rollup_prefix}/{name}"), sub);
     }
 
     for (cluster_name, cluster_cfg) in anytrust_clusters {
-        let recovery = Arc::new(AnytrustRecovery::from_config(&cluster_cfg));
+        let recovery = Arc::new(AnytrustRecovery::from_config(&cluster_cfg, http.clone()));
         let aggregator = Arc::new(AnytrustAggregator::from_config(
             cluster_name.clone(),
             cluster_cfg,
+            http.clone(),
         )?);
         let provider_name = format!("anytrust-{cluster_name}");
         let state = ServerState {
@@ -102,7 +112,7 @@ pub fn build_app(
                 name: provider_name.clone(),
                 endpoint_url: String::new(),
             },
-            client: reqwest::Client::new(),
+            client: http.clone(),
             verification_channel: verification_channel.clone(),
             anytrust: Some(aggregator),
             anytrust_recovery: Some(recovery),

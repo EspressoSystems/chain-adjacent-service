@@ -23,9 +23,10 @@ pub struct AnytrustRecovery {
 }
 
 impl AnytrustRecovery {
-    pub fn from_config(cfg: &AnytrustClusterConfig) -> Self {
+    pub fn from_config(cfg: &AnytrustClusterConfig, http: reqwest::Client) -> Self {
         Self {
             reader: RestReader::new(
+                http,
                 cfg.rest_urls.clone(),
                 std::time::Duration::from_millis(cfg.request_timeout_ms),
             ),
@@ -237,8 +238,11 @@ mod tests {
         ])
         .await;
 
-        let reader = RestReader::new(vec![rest.url.clone()], Duration::from_secs(5))
-            .with_http(reqwest::Client::builder().no_proxy().build().unwrap());
+        let reader = RestReader::new(
+            reqwest::Client::builder().no_proxy().build().unwrap(),
+            vec![rest.url.clone()],
+            Duration::from_secs(5),
+        );
         let recovery = AnytrustRecovery::from_reader(reader);
 
         let mut seq_msg = vec![0u8; SEQUENCER_HEADER_LEN];
@@ -259,8 +263,11 @@ mod tests {
         ])
         .await;
 
-        let reader = RestReader::new(vec![rest.url.clone()], Duration::from_secs(5))
-            .with_http(reqwest::Client::builder().no_proxy().build().unwrap());
+        let reader = RestReader::new(
+            reqwest::Client::builder().no_proxy().build().unwrap(),
+            vec![rest.url.clone()],
+            Duration::from_secs(5),
+        );
         let recovery = AnytrustRecovery::from_reader(reader);
 
         let mut seq_msg = vec![0u8; SEQUENCER_HEADER_LEN];
@@ -299,8 +306,11 @@ mod tests {
         ])
         .await;
 
-        let reader = RestReader::new(vec![rest.url.clone()], Duration::from_secs(5))
-            .with_http(reqwest::Client::builder().no_proxy().build().unwrap());
+        let reader = RestReader::new(
+            reqwest::Client::builder().no_proxy().build().unwrap(),
+            vec![rest.url.clone()],
+            Duration::from_secs(5),
+        );
         let recovery = AnytrustRecovery::from_reader(reader);
 
         let mut seq_msg = vec![0u8; SEQUENCER_HEADER_LEN];
