@@ -37,10 +37,15 @@ impl Drop for CasProcess {
     }
 }
 
+/// Anvil/Hardhat account 0 from the "test test ... junk" mnemonic.
+const TEST_OPERATOR_PRIVATE_KEY: &str =
+    "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+
 fn spawn_cas(config_path: &Path) -> CasProcess {
     let child = Command::new(CAS_BIN)
         .arg("--config")
         .arg(config_path)
+        .env("OPERATOR_PRIVATE_KEY", TEST_OPERATOR_PRIVATE_KEY)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()
