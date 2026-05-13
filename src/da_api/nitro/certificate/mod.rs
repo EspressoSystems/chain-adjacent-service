@@ -245,17 +245,6 @@ impl CasCertificate {
             return Err(DaApiError::InvalidCasSignature);
         }
 
-        let v = self.cas_signature[64];
-        let parity = match v {
-            27 => false,
-            28 => true,
-            _ => {
-                return Err(DaApiError::CertificateValidation(format!(
-                    "invalid ECDSA recovery id: {v}, expected 27 or 28"
-                )));
-            }
-        };
-
         let payload = Self::build_canonical_payload(
             start_message_pos,
             end_message_pos,
@@ -266,7 +255,9 @@ impl CasCertificate {
         let signing_hash =
             compute_cas_signing_hash(&payload, parent_chain_id, tee_verifier_address);
 
-        let sig = Signature::from_bytes_and_parity(&self.cas_signature[..64], parity);
+        let sig = Signature::try_from(self.cas_signature.as_slice()).map_err(|err| {
+            DaApiError::CertificateValidation(format!("invalid CAS signature: {err}"))
+        })?;
         let recovered = sig
             .recover_address_from_prehash(&signing_hash)
             .map_err(|_| DaApiError::InvalidCasSignature)?;
@@ -321,64 +312,10 @@ mod tests {
     use std::str::FromStr;
 
     use crate::da_api::nitro::utils::SEQUENCER_HEADER_LEN;
-    use crate::key_manager::key_manager::{
-        AttestationProvider, AttestationVerifierClient, EspressoKeyManager, EspressoTEEVerifier,
-        TeeType,
-    };
+    use crate::key_manager::test_utils::test_key_manager;
 
     use super::*;
     use alloy::primitives::{Address, Bytes};
-    use alloy::signers::local::PrivateKeySigner;
-    use anyhow::Result;
-    use async_trait::async_trait;
-
-    struct NoOpTeeVerifier;
-
-    #[async_trait]
-    impl EspressoTEEVerifier for NoOpTeeVerifier {
-        async fn register_service(
-            &self,
-            _attestation: &[u8],
-            _data: &[u8],
-            _tee_type: u8,
-        ) -> Result<()> {
-            Ok(())
-        }
-        async fn registered_services(&self, _addr: Address, _tee_type: TeeType) -> Result<bool> {
-            Ok(true)
-        }
-    }
-
-    struct NoOpAttestationClient;
-
-    #[async_trait]
-    impl AttestationVerifierClient for NoOpAttestationClient {
-        async fn generate_zk_proof(&self, _attestation: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
-            Ok((vec![], vec![]))
-        }
-    }
-
-    struct NoOpAttestationProvider;
-
-    impl AttestationProvider for NoOpAttestationProvider {
-        fn get_attestation(&self, pub_key: &[u8]) -> Result<Vec<u8>> {
-            Ok(pub_key.to_vec())
-        }
-    }
-
-    fn test_key_manager() -> EspressoKeyManager {
-        EspressoKeyManager::new_with_attestation_provider(
-            Box::new(NoOpTeeVerifier),
-            Box::new(NoOpAttestationClient),
-            Box::new(NoOpAttestationProvider),
-            1,
-            TeeType::Nitro,
-            1,
-            Address::ZERO,
-            PrivateKeySigner::random(),
-        )
-        .unwrap()
-    }
 
     fn create_mock_cert() -> CasCertificate {
         let mut header = vec![0x00; 32];

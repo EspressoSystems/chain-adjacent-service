@@ -359,10 +359,7 @@ async fn handle_recover_inner(
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::{Address, Bytes, FixedBytes, b256};
-    use alloy::signers::local::PrivateKeySigner;
-    use anyhow::Result;
-    use async_trait::async_trait;
+    use alloy::primitives::{Bytes, FixedBytes, b256};
     use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder, rpc_params};
     use serde_json::json;
     use std::{net::SocketAddr, str::FromStr, sync::Arc};
@@ -382,10 +379,7 @@ mod tests {
                 types::{DAStoreResponse, PreImagesResult, RecoverPayloadResult},
             },
         },
-        key_manager::key_manager::{
-            AttestationProvider, AttestationVerifierClient, EspressoKeyManager,
-            EspressoTEEVerifier, TeeType,
-        },
+        key_manager::test_utils,
     };
 
     fn valid_message() -> Bytes {
@@ -396,53 +390,8 @@ mod tests {
         "0x010500000000000000000000" // 0x01, 0x05, then padding
     }
 
-    struct NoOpTeeVerifier;
-
-    #[async_trait]
-    impl EspressoTEEVerifier for NoOpTeeVerifier {
-        async fn register_service(&self, _: &[u8], _: &[u8], _: u8) -> Result<()> {
-            Ok(())
-        }
-        async fn registered_services(&self, _: Address, _: TeeType) -> Result<bool> {
-            Ok(true)
-        }
-    }
-
-    struct NoOpAttestationClient;
-
-    #[async_trait]
-    impl AttestationVerifierClient for NoOpAttestationClient {
-        async fn generate_zk_proof(&self, _: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
-            Ok((vec![], vec![]))
-        }
-    }
-
-    struct NoOpAttestationProvider;
-
-    impl AttestationProvider for NoOpAttestationProvider {
-        fn get_attestation(&self, k: &[u8]) -> Result<Vec<u8>> {
-            Ok(k.to_vec())
-        }
-    }
-
-    fn test_key_manager() -> Arc<EspressoKeyManager> {
-        Arc::new(
-            EspressoKeyManager::new_with_attestation_provider(
-                Box::new(NoOpTeeVerifier),
-                Box::new(NoOpAttestationClient),
-                Box::new(NoOpAttestationProvider),
-                1,
-                TeeType::Nitro,
-                1,
-                Address::ZERO,
-                PrivateKeySigner::random(),
-            )
-            .unwrap(),
-        )
-    }
-
     fn spawn_server(addr: SocketAddr, config: Vec<DaProviderConfig>) -> JoinHandle<()> {
-        let km = test_key_manager();
+        let km = Arc::new(test_utils::test_key_manager());
         tokio::spawn(async move {
             let (verification_channel, mut verify_receiver) =
                 tokio::sync::mpsc::channel::<(Bytes, oneshot::Sender<VerificationResult>)>(1);
