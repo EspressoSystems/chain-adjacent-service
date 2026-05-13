@@ -5,10 +5,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 L1_NODE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROJECT_ROOT="$(cd "$L1_NODE_DIR/../../.." && pwd)"
 NITRO_TESTNODE_DIR="$PROJECT_ROOT/nitro-testnode"
+NITRO_CONTRACTS_DIR="${NITRO_CONTRACTS_DIR:-$HOME/Espresso/nitro-contracts}"
+TEE_CONTRACTS_DIR="$NITRO_CONTRACTS_DIR/lib/espresso-tee-contracts"
 STATE_DIR="$SCRIPT_DIR"
 STATE_FILE="$STATE_DIR/anvil-state.json"
 CHAIN_INFO_FILE="$STATE_DIR/deployed_chain_info.json"
 DEPLOYMENT_FILE="$STATE_DIR/deployment.json"
+TEE_VERIFIER_FILE="$STATE_DIR/tee_verifier_address.txt"
 WRITE_OVERRIDE="$L1_NODE_DIR/../write-override.sh"
 OVERRIDE_FILE="$NITRO_TESTNODE_DIR/docker-compose.override.yml"
 
@@ -51,7 +54,7 @@ fi
 
 if $FORCE_REBOOTSTRAP; then
     echo "== --init-force: removing saved state files"
-    rm -f "$STATE_FILE" "$CHAIN_INFO_FILE" "$DEPLOYMENT_FILE"
+    rm -f "$STATE_FILE" "$CHAIN_INFO_FILE" "$DEPLOYMENT_FILE" "$TEE_VERIFIER_FILE"
 fi
 
 STATE_AVAILABLE=false
@@ -90,6 +93,30 @@ for i in $(seq 1 60); do
 done
 
 if ! $STATE_AVAILABLE; then
+    DEPLOYER_KEY="${DEPLOYER_PRIVKEY:-0xb6b15c8cb491557369f3c7d2c287b053eb229daa9c22138887752191c9520659}"
+
+    echo "== Deploying mock TEE verifier contracts from $TEE_CONTRACTS_DIR"
+    if [ -d "$TEE_CONTRACTS_DIR" ]; then
+        mkdir -p "$TEE_CONTRACTS_DIR/deployments"
+        DEPLOY_OUTPUT=$(cd "$TEE_CONTRACTS_DIR" && forge script \
+            scripts/DeployMockTEEVerifiers.s.sol:DeployMockTEEVerifiers \
+            --rpc-url http://localhost:8545 \
+            --private-key "$DEPLOYER_KEY" \
+            --broadcast 2>&1) && {
+            echo "$DEPLOY_OUTPUT"
+            TEE_ADDR=$(echo "$DEPLOY_OUTPUT" | grep "EspressoTEEVerifierMock deployed at:" | tail -1 | awk '{print $NF}')
+            if [ -n "$TEE_ADDR" ]; then
+                echo "$TEE_ADDR" > "$TEE_VERIFIER_FILE"
+                echo "== Mock TEE verifier at $TEE_ADDR"
+            fi
+        } || {
+            echo "WARNING: mock TEE verifier deploy failed:"
+            echo "$DEPLOY_OUTPUT"
+        }
+    else
+        echo "WARNING: $TEE_CONTRACTS_DIR not found, skipping mock TEE verifier deploy"
+    fi
+
     echo "== Dumping anvil L1 state"
     cast rpc anvil_dumpState --rpc-url http://localhost:8545 > "$STATE_FILE"
 

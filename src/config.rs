@@ -86,6 +86,14 @@ pub enum RollupType {
     Nitro,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TeeTypeConfig {
+    #[default]
+    Nitro,
+    Test,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct KeyManagerConfig {
     pub rpc_url: Url,
@@ -95,6 +103,8 @@ pub struct KeyManagerConfig {
     pub max_register_attempts: u8,
     #[serde(default = "default_attestation_client_timeout_secs")]
     pub attestation_client_timeout_secs: u64,
+    #[serde(default)]
+    pub tee_type: TeeTypeConfig,
 }
 
 fn default_max_register_attempts() -> u8 {

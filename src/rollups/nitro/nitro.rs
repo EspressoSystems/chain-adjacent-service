@@ -971,6 +971,7 @@ pub mod testing {
                 attestation_verifier_url: Url::parse("http://localhost:9000").unwrap(),
                 max_register_attempts: 3,
                 attestation_client_timeout_secs: 30,
+                tee_type: Default::default(),
             },
             is_fresh_deployment: false,
         };

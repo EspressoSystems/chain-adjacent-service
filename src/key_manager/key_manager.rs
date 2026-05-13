@@ -11,6 +11,30 @@ pub mod eip712 {
         }
     }
 }
+
+pub mod mock_journal {
+    alloy::sol! {
+        struct Bytes48 {
+            bytes32 first;
+            bytes16 second;
+        }
+        struct Pcr {
+            uint64 index;
+            Bytes48 value;
+        }
+        struct VerifierJournal {
+            uint8 result;
+            uint8 trustedCertsPrefixLen;
+            uint64 timestamp;
+            bytes32[] certs;
+            bytes userData;
+            bytes nonce;
+            bytes publicKey;
+            Pcr[] pcrs;
+            string moduleId;
+        }
+    }
+}
 use super::test_utils::{NoOpAttestationClient, NoOpAttestationProvider, NoOpTeeVerifier};
 use anyhow::{Result, bail};
 use async_trait::async_trait;
@@ -213,6 +237,13 @@ impl EspressoKeyManager {
         let pub_key_bytes = self.public_key_uncompressed();
         let signer_addr = self.signer_address();
         tracing::info!("Preparing registration data for signer address: {signer_addr}");
+
+        if self.tee_type == TeeType::Test {
+            let journal_bytes = Self::encode_mock_verifier_journal(&pub_key_bytes);
+            tracing::info!("Test mode: using mock VerifierJournal for signer {signer_addr}");
+            return Ok((journal_bytes, vec![]));
+        }
+
         let attestation = self
             .get_attestation(&pub_key_bytes)
             .map_err(KeyManagerError::AttestationRetrievalFailed)?;
@@ -236,6 +267,22 @@ impl EspressoKeyManager {
         }
 
         Ok((journal_bytes, proof_bytes))
+    }
+
+    fn encode_mock_verifier_journal(pub_key: &[u8]) -> Vec<u8> {
+        use alloy::sol_types::SolValue;
+        mock_journal::VerifierJournal {
+            result: 0,
+            trustedCertsPrefixLen: 0,
+            timestamp: 0,
+            certs: vec![],
+            userData: alloy::primitives::Bytes::new(),
+            nonce: alloy::primitives::Bytes::new(),
+            publicKey: alloy::primitives::Bytes::copy_from_slice(pub_key),
+            pcrs: vec![],
+            moduleId: String::new(),
+        }
+        .abi_encode()
     }
 
     pub async fn initialize(&mut self) -> Result<(), KeyManagerError> {
@@ -280,7 +327,7 @@ impl EspressoKeyManager {
 
             match self
                 .tee_verifier
-                .register_service(&journal_bytes, &proof_bytes, self.tee_type as u8)
+                .register_service(&journal_bytes, &proof_bytes, self.on_chain_tee_type() as u8)
                 .await
             {
                 Ok(_) => {
@@ -318,10 +365,17 @@ impl EspressoKeyManager {
         self.signer.address()
     }
 
+    fn on_chain_tee_type(&self) -> TeeType {
+        match self.tee_type {
+            TeeType::Test => TeeType::Nitro,
+            other => other,
+        }
+    }
+
     async fn verify_registration_on_chain(&self) -> Result<bool, KeyManagerError> {
         let addr = self.signer_address();
         self.tee_verifier
-            .registered_services(addr, self.tee_type)
+            .registered_services(addr, self.on_chain_tee_type())
             .await
             .map_err(KeyManagerError::OnChainVerificationFailed)
     }

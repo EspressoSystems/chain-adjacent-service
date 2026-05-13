@@ -24,7 +24,7 @@ const CAS_CALLDATA_RPC_URL: &str = "http://host.docker.internal:8000/cas/arb/cal
 const CAS_CALLDATA_RPC_URL_LOCAL: &str = "http://localhost:8000/cas/arb/calldata";
 
 const L1_WS_URL: &str = "ws://localhost:8546";
-const SEQUENCER_INBOX: Address = address!("18d19C5d3E685f5be5b9C86E097f0E439285D216");
+const SEQUENCER_INBOX: Address = address!("E44f73d4e7b3C008b71CF273000703F5B6380119");
 
 /// RAII wrapper that kills the CAS subprocess on drop so the test never
 /// leaks a background process if it panics.
@@ -145,6 +145,18 @@ async fn connect_l1_ws_with_retries() -> RootProvider {
     );
 }
 
+const TEE_VERIFIER_STATE_FILE: &str = "tests/nitro/l1_node/state/tee_verifier_address.txt";
+
+fn read_tee_verifier_address() -> Address {
+    let content = std::fs::read_to_string(TEE_VERIFIER_STATE_FILE).unwrap_or_else(|_| {
+        panic!("missing {TEE_VERIFIER_STATE_FILE} — run setup.sh --init-force")
+    });
+    content
+        .trim()
+        .parse()
+        .unwrap_or_else(|e| panic!("bad address in {TEE_VERIFIER_STATE_FILE}: {e}"))
+}
+
 /// Builds the CAS config inline and writes it to a runtime path so each
 /// test can inject the right `streamer.starting_hotshot_height` (the
 /// Espresso dev node container is reused across runs and accumulates
@@ -154,7 +166,7 @@ async fn connect_l1_ws_with_retries() -> RootProvider {
 /// Sets `is_fresh_deployment: true` so `resolve_config_with_checkpoint`
 /// preserves the `starting_hotshot_height` we wrote here instead of
 /// overwriting it with whatever it scans off L1.
-fn write_cas_config(starting_hotshot_height: u64) -> PathBuf {
+fn write_cas_config(starting_hotshot_height: u64, tee_verifier_address: Address) -> PathBuf {
     let config = json!({
         "espresso_client": {
             "base_url": "http://localhost:41000"
@@ -183,7 +195,7 @@ fn write_cas_config(starting_hotshot_height: u64) -> PathBuf {
                     }
                 },
                 "l1_ws_url": "ws://localhost:8546",
-                "sequencer_inbox_address": "0x18d19C5d3E685f5be5b9C86E097f0E439285D216"
+                "sequencer_inbox_address": "0xE44f73d4e7b3C008b71CF273000703F5B6380119"
             }
         },
         "da_server": {
@@ -194,8 +206,9 @@ fn write_cas_config(starting_hotshot_height: u64) -> PathBuf {
         },
         "key_manager": {
             "rpc_url": "http://localhost:8545",
-            "tee_verifier_address": "0x0000000000000000000000000000000000000000",
-            "attestation_verifier_url": "http://localhost:9000"
+            "tee_verifier_address": format!("{tee_verifier_address}"),
+            "attestation_verifier_url": "http://localhost:9000",
+            "tee_type": "test"
         },
         "is_fresh_deployment": true,
     });
@@ -288,7 +301,9 @@ async fn test_e2e() {
         .await
         .expect("failed to fetch latest hotshot block height")
         + 1;
-    let cas_config_path = write_cas_config(starting_hotshot_height);
+    let tee_verifier_address = read_tee_verifier_address();
+    println!("Using TEE verifier mock at {tee_verifier_address}");
+    let cas_config_path = write_cas_config(starting_hotshot_height, tee_verifier_address);
     println!(
         "CAS config written to {} (starting_hotshot_height={starting_hotshot_height})",
         cas_config_path.display()

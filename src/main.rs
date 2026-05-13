@@ -5,7 +5,7 @@ use alloy::{
     signers::local::PrivateKeySigner,
 };
 use anyhow::Result;
-use chain_agnostic_service::config::RollupType;
+use chain_agnostic_service::config::{RollupType, TeeTypeConfig};
 use chain_agnostic_service::da_api;
 use chain_agnostic_service::espresso_client::client::EspressoClient;
 use chain_agnostic_service::key_manager::attestation_client::HttpAttestationVerifierClient;
@@ -60,12 +60,17 @@ async fn main() -> Result<()> {
             let provider = ProviderBuilder::new().connect_http(config.key_manager.rpc_url.clone());
             let parent_chain_id = provider.get_chain_id().await?;
 
+            let tee_type = match config.key_manager.tee_type {
+                TeeTypeConfig::Nitro => TeeType::Nitro,
+                TeeTypeConfig::Test => TeeType::Test,
+            };
+
             let signer = PrivateKeySigner::random();
             let mut key_manager = EspressoKeyManager::new(
                 Box::new(tee_verifier),
                 Box::new(attestation_client),
                 config.key_manager.max_register_attempts,
-                TeeType::Nitro,
+                tee_type,
                 parent_chain_id,
                 config.key_manager.tee_verifier_address,
                 signer,
