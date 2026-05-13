@@ -187,6 +187,11 @@ fn write_cas_config(starting_hotshot_height: u64) -> PathBuf {
         "submitter": {
             "max_in_flight": 1000
         },
+        "key_manager": {
+            "rpc_url": "http://localhost:8545",
+            "tee_verifier_address": "0x0000000000000000000000000000000000000000",
+            "attestation_verifier_url": "http://localhost:9000"
+        },
         "is_fresh_deployment": true,
     });
 

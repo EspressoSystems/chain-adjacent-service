@@ -385,13 +385,13 @@ mod tests {
         assert_eq!(cert.min_hotshot_block_still_in_streamer_queue, 3);
 
         let expected_signer = km.signer.address();
-        cert.validate(expected_signer, 10, 20, 5, 1, Address::ZERO)
+        cert.validate(expected_signer, 10, 20, 5, 0, Address::ZERO)
             .unwrap();
 
         let bytes = cert.to_bytes().unwrap();
         let recovered = CasCertificate::from_bytes(&bytes).unwrap();
         recovered
-            .validate(expected_signer, 10, 20, 5, 1, Address::ZERO)
+            .validate(expected_signer, 10, 20, 5, 0, Address::ZERO)
             .unwrap();
         assert_eq!(recovered.cas_signature, cert.cas_signature);
     }
