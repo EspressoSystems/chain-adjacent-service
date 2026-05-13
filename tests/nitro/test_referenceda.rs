@@ -50,7 +50,7 @@ fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
     });
 
     tokio::spawn(async move {
-        run(config, RollupType::Nitro, verification_channel)
+        run(config, RollupType::Nitro, verification_channel, None)
             .await
             .expect("server should start");
     })

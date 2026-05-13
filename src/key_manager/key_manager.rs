@@ -156,6 +156,7 @@ impl EspressoKeyManager {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_with_attestation_provider(
         tee_verifier: Box<dyn EspressoTEEVerifier>,
         attestation_verifier_client: Box<dyn AttestationVerifierClient>,
@@ -519,11 +520,12 @@ mod tests {
             .await
             .expect("initialize should succeed");
 
-        assert!(ctx
-            .registered
-            .lock()
-            .unwrap()
-            .contains(&ctx.key_manager.signer().address()));
+        assert!(
+            ctx.registered
+                .lock()
+                .unwrap()
+                .contains(&ctx.key_manager.signer().address())
+        );
     }
 
     #[tokio::test]
@@ -551,11 +553,12 @@ mod tests {
             .initialize()
             .await
             .expect("should succeed after retrying preparation");
-        assert!(ctx
-            .registered
-            .lock()
-            .unwrap()
-            .contains(&ctx.key_manager.signer().address()));
+        assert!(
+            ctx.registered
+                .lock()
+                .unwrap()
+                .contains(&ctx.key_manager.signer().address())
+        );
 
         let mut ctx = make_test_key_manager(
             MockTEEVerifier::new(),
@@ -580,11 +583,12 @@ mod tests {
             .initialize()
             .await
             .expect("should succeed after retrying registration");
-        assert!(ctx
-            .registered
-            .lock()
-            .unwrap()
-            .contains(&ctx.key_manager.signer().address()));
+        assert!(
+            ctx.registered
+                .lock()
+                .unwrap()
+                .contains(&ctx.key_manager.signer().address())
+        );
 
         let mut ctx = make_test_key_manager(
             MockTEEVerifier::with_register_failures(3),
