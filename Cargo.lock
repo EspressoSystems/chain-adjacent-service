@@ -2656,6 +2656,7 @@ dependencies = [
  "aws-nitro-enclaves-nsm-api",
  "axum 0.8.8",
  "base64 0.22.1",
+ "blst",
  "brotli",
  "bytes 1.11.1",
  "clap",

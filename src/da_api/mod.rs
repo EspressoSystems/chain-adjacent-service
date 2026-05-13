@@ -22,9 +22,10 @@ pub async fn run(
         RollupType::Nitro => {
             let inner = build_app(
                 da_api_config.da_providers,
+                da_api_config.anytrust,
                 verification_channel,
                 ARBITRUM_NITRO,
-            );
+            )?;
             let app = Router::new().nest("/cas", inner);
             let listener = tokio::net::TcpListener::bind(&da_api_config.listen_addr).await?;
 

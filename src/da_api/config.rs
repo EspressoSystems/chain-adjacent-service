@@ -1,4 +1,8 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
+
+use crate::da_api::nitro::anytrust::config::AnytrustClusterConfig;
 
 #[derive(Default, Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
@@ -8,6 +12,11 @@ pub struct DaApiConfig {
 
     /// DA provider name <-> DA provider config
     pub da_providers: Vec<DaProviderConfig>,
+
+    /// AnyTrust clusters keyed by cluster name. Each cluster is exposed at
+    /// `/cas/arb/anytrust-<name>` and CAS aggregates `daprovider_store` calls
+    /// across the cluster's backends.
+    pub anytrust: HashMap<String, AnytrustClusterConfig>,
 }
 
 #[derive(Default, Debug, Clone, Deserialize, Serialize)]

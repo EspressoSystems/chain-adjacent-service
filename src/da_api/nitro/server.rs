@@ -1,3 +1,5 @@
+use std::{collections::HashMap, sync::Arc};
+
 use axum::{
     Router,
     body::Bytes,
@@ -17,6 +19,10 @@ use crate::{
         config::DaProviderConfig,
         error::DaApiError,
         nitro::{
+            anytrust::{
+                aggregator::AnytrustAggregator, config::AnytrustClusterConfig,
+                recover::AnytrustRecovery,
+            },
             certificate::CasCertificate,
             types::DAStoreResponse,
             utils::{SEQUENCER_HEADER_LEN, try_extract_da_sequencer_msg_from_espresso_da_cert},
@@ -40,6 +46,13 @@ pub struct ServerState {
     pub da_config: DaProviderConfig,
     pub client: reqwest::Client,
     pub verification_channel: VerificationSender,
+    /// Set on routes backed by an AnyTrust cluster — `daprovider_store` is
+    /// then served by the aggregator instead of forwarded to a single endpoint.
+    pub anytrust: Option<Arc<AnytrustAggregator>>,
+    /// Recovery side for AnyTrust clusters — used by the
+    /// `daprovider_recoverPayload`/`collectPreimages`/`recoverPayloadAndPreimages`
+    /// methods to fetch the payload back from the cluster's REST endpoints.
+    pub anytrust_recovery: Option<Arc<AnytrustRecovery>>,
 }
 
 impl ServerState {
@@ -48,6 +61,8 @@ impl ServerState {
             da_config,
             client: reqwest::Client::new(),
             verification_channel,
+            anytrust: None,
+            anytrust_recovery: None,
         }
     }
 
@@ -57,12 +72,15 @@ impl ServerState {
 }
 
 /// Build the top-level Axum router. Each DA provider is mounted at `/{rollup_prefix}/{name}`,
-/// e.g. `/arb/celestia`, `/arb/anytrust`. All paths expose identical RPC handler logic.
+/// e.g. `/arb/celestia`, `/arb/anytrust`. AnyTrust clusters are mounted at
+/// `/{rollup_prefix}/anytrust-{cluster_name}` and dispatch to the
+/// `AnytrustAggregator` instead of forwarding to a single endpoint.
 pub fn build_app(
     mut providers: Vec<DaProviderConfig>,
+    anytrust_clusters: HashMap<String, AnytrustClusterConfig>,
     verification_channel: VerificationSender,
     rollup_prefix: &str,
-) -> Router {
+) -> Result<Router, DaApiError> {
     let mut app = Router::new();
     providers.push(DaProviderConfig::calldata());
     for provider in providers {
@@ -71,7 +89,29 @@ pub fn build_app(
         let sub = Router::new().route("/", post(handle_rpc)).with_state(state);
         app = app.nest(&format!("/{rollup_prefix}/{name}"), sub);
     }
-    app
+
+    for (cluster_name, cluster_cfg) in anytrust_clusters {
+        let recovery = Arc::new(AnytrustRecovery::from_config(&cluster_cfg));
+        let aggregator = Arc::new(AnytrustAggregator::from_config(
+            cluster_name.clone(),
+            cluster_cfg,
+        )?);
+        let provider_name = format!("anytrust-{cluster_name}");
+        let state = ServerState {
+            da_config: DaProviderConfig {
+                name: provider_name.clone(),
+                endpoint_url: String::new(),
+            },
+            client: reqwest::Client::new(),
+            verification_channel: verification_channel.clone(),
+            anytrust: Some(aggregator),
+            anytrust_recovery: Some(recovery),
+        };
+        let sub = Router::new().route("/", post(handle_rpc)).with_state(state);
+        app = app.nest(&format!("/{rollup_prefix}/{provider_name}"), sub);
+    }
+
+    Ok(app)
 }
 
 async fn handle_rpc(State(state): State<ServerState>, body: Bytes) -> Result<Response, DaApiError> {
@@ -186,7 +226,12 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
 
     let mut downstream_cert = data;
 
-    if !endpoint.is_empty() {
+    if let Some(aggregator) = state.anytrust.as_ref() {
+        let cert_bytes = aggregator
+            .store(downstream_cert.as_ref(), timeout.to::<u64>())
+            .await?;
+        downstream_cert = cert_bytes.into();
+    } else if !endpoint.is_empty() {
         let forwarded_body = serde_json::json!({
             "jsonrpc": "2.0",
             "method": "daprovider_store",
@@ -304,6 +349,16 @@ async fn handle_recover_inner(
     let da_certificate =
         try_extract_da_sequencer_msg_from_espresso_da_cert(&sequencer_msg).unwrap_or(sequencer_msg);
 
+    if let Some(recovery) = state.anytrust_recovery.as_ref() {
+        return handle_anytrust_recover(
+            recovery.as_ref(),
+            &da_certificate,
+            downstream_method,
+            &body["id"],
+        )
+        .await;
+    }
+
     if state.da_config.name == "calldata" {
         // Calldata returns the inner batch payload with the seq header stripped.
         let payload = &da_certificate[SEQUENCER_HEADER_LEN..];
@@ -354,8 +409,70 @@ async fn handle_recover_inner(
         .map_err(|e| DaApiError::ParsingError(e.to_string()))
 }
 
+/// Dispatch `daprovider_recover*` for an AnyTrust cluster.
+/// `sequencer_msg` is `[seq_header(40) | da_cert]` (espresso wrapper already
+/// stripped by the caller).
+async fn handle_anytrust_recover(
+    recovery: &AnytrustRecovery,
+    sequencer_msg: &[u8],
+    method: &str,
+    id: &Value,
+) -> Result<Response, DaApiError> {
+    let result_obj = match method {
+        RECOVER_PAYLOAD => {
+            let payload = recovery.recover_payload(sequencer_msg).await?;
+            serde_json::json!({"Payload": alloy::primitives::Bytes::from(payload)})
+        }
+        COLLECT_PREIMAGES => {
+            let preimages = recovery.collect_preimages(sequencer_msg).await?;
+            serde_json::json!({"Preimages": preimages_to_json(preimages)})
+        }
+        RECOVER_PAYLOAD_AND_PREIMAGES => {
+            let (payload, preimages) = recovery
+                .recover_payload_and_preimages(sequencer_msg)
+                .await?;
+            serde_json::json!({
+                "Payload": alloy::primitives::Bytes::from(payload),
+                "Preimages": preimages_to_json(preimages),
+            })
+        }
+        _ => {
+            return Err(DaApiError::InvalidRequest(format!(
+                "unexpected recover method: {method}"
+            )));
+        }
+    };
+
+    let envelope = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": result_obj,
+    });
+    let bytes =
+        serde_json::to_vec(&envelope).map_err(|e| DaApiError::ParsingError(e.to_string()))?;
+    Ok((StatusCode::OK, bytes).into_response())
+}
+
+/// Convert collected preimages into the daprovider JSON shape
+/// `{"<preimage_type>": {"<hash>": "<bytes hex>"}}`. AnyTrust only produces
+/// Keccak256 preimages (type 0).
+fn preimages_to_json(preimages: Vec<crate::da_api::nitro::anytrust::recover::Preimage>) -> Value {
+    use std::collections::BTreeMap;
+    let mut inner: BTreeMap<String, alloy::primitives::Bytes> = BTreeMap::new();
+    for p in preimages {
+        inner.insert(
+            format!("0x{}", hex::encode(p.hash.as_slice())),
+            alloy::primitives::Bytes::from(p.data),
+        );
+    }
+    let outer = serde_json::json!({ "0": inner });
+    outer
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use alloy::primitives::{Bytes, FixedBytes, b256};
     use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder, rpc_params};
     use serde_json::json;
@@ -404,7 +521,7 @@ mod tests {
                 }
             });
 
-            let app = build_app(config, verification_channel, "arb");
+            let app = build_app(config, HashMap::new(), verification_channel, "arb").unwrap();
             let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
             axum::serve(listener, app).await.unwrap();
         })
