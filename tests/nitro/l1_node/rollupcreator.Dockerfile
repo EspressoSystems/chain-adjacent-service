@@ -9,11 +9,6 @@ RUN yarn install && yarn cache clean
 RUN curl -L https://foundry.paradigm.xyz | bash
 ENV PATH="${PATH}:/root/.foundry/bin"
 RUN foundryup --install 1.0.0
-# Hardhat needs aws-nitro-enclave-attestation resolvable as an npm package
-RUN ln -s /workspace/lib/espresso-tee-contracts/lib/aws-nitro-enclave-attestation/contracts/src \
-        /workspace/node_modules/aws-nitro-enclave-attestation && \
-    echo '{"name":"aws-nitro-enclave-attestation","version":"0.0.0"}' \
-        > /workspace/node_modules/aws-nitro-enclave-attestation/package.json
 RUN touch scripts/config.ts
 RUN yarn build:all
 ENTRYPOINT ["yarn"]
