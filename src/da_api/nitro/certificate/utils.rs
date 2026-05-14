@@ -43,13 +43,6 @@ impl<'a> Decoder<'a> {
         Ok(slice)
     }
 
-    pub fn read_u32(&mut self) -> DaApiResult<u32> {
-        let bytes = self.read_bytes(4)?;
-        Ok(u32::from_be_bytes(bytes.try_into().map_err(|err| {
-            DaApiError::DecoderError(format!("Invalid u32:{err}"))
-        })?))
-    }
-
     pub fn read_u64(&mut self) -> DaApiResult<u64> {
         let bytes = self.read_bytes(8)?;
         Ok(u64::from_be_bytes(bytes.try_into().map_err(|err| {
