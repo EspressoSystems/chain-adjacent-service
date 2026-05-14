@@ -4,7 +4,7 @@ use crate::da_api::{error::DaApiError, nitro::certificate::CasCertificate};
 
 pub const SEQUENCER_HEADER_LEN: usize = 40;
 
-/// Sequencer message format is: [SequencerHeader(40 bytes), EspressoCert(117 bytes), DACert]
+/// Sequencer message format is: [SequencerHeader(40 bytes), EspressoCert(137 bytes), DACert]
 pub fn try_extract_da_sequencer_msg_from_espresso_da_cert(
     sequencer_msg: &Bytes,
     expected_signer: Address,

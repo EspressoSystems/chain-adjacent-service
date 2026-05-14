@@ -3,14 +3,14 @@
 //   [0]       : version (0x70 = V0)
 //   [1..31]   : reserved (zeros)
 //
-// [32..35]    : start_message_pos (u32, big-endian)
-// [36..39]    : end_message_pos (u32, big-endian)
-// [40..43]    : start_hotshot_block (u32, big-endian)
-// [44..47]    : after_delayed_messages_read (u32, big-endian)
-// [48..51]    : min_hotshot_block_still_in_streamer_queue (u32, big-endian)
-// [52..116]   : CAS ECDSA signature (65 bytes)
+// [32..39]    : start_message_pos (u64, big-endian)
+// [40..47]    : end_message_pos (u64, big-endian)
+// [48..55]    : start_hotshot_block (u64, big-endian)
+// [56..63]    : after_delayed_messages_read (u64, big-endian)
+// [64..71]    : min_hotshot_block_still_in_streamer_queue (u64, big-endian)
+// [72..136]   : CAS ECDSA signature (65 bytes)
 //
-// [117-...]   : downstream DA certificate
+// [137-...]   : downstream DA certificate
 
 use crate::{
     da_api::{
@@ -24,9 +24,9 @@ use serde::{Deserialize, Serialize};
 mod utils;
 use utils::{Decoder, Encoder};
 
-pub const MESSAGE_POS_SIZE: usize = 4; // u32
-pub const HOTSHOT_BLOCK_SIZE: usize = 4; // u32
-pub const AFTER_DELAYED_SIZE: usize = 4; // u32
+pub const MESSAGE_POS_SIZE: usize = 8; // u64
+pub const HOTSHOT_BLOCK_SIZE: usize = 8; // u64
+pub const AFTER_DELAYED_SIZE: usize = 8; // u64
 pub const CAS_SIG_SIZE: usize = 65; // ECDSA (r,s,v)
 pub const CERT_HEADER_SIZE_V0: usize = 32;
 
@@ -36,7 +36,7 @@ pub const CONTEXT_FIELDS_SIZE: usize = MESSAGE_POS_SIZE
     + AFTER_DELAYED_SIZE
     + HOTSHOT_BLOCK_SIZE;
 
-pub const ESPRESSO_CERT_SIZE: usize = CERT_HEADER_SIZE_V0 + CONTEXT_FIELDS_SIZE + CAS_SIG_SIZE; // 117
+pub const ESPRESSO_CERT_SIZE: usize = CERT_HEADER_SIZE_V0 + CONTEXT_FIELDS_SIZE + CAS_SIG_SIZE; // 137
 
 /// CAS certificate version
 /// This versioning will also allow us to parse future versions even if CAS header size changes
@@ -70,11 +70,11 @@ impl TryFrom<u8> for CASCertificateVersion {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CasCertificate {
     pub header: Vec<u8>,
-    pub start_message_pos: u32,
-    pub end_message_pos: u32,
-    pub start_hotshot_block: u32,
-    pub after_delayed_messages_read: u32,
-    pub min_hotshot_block_still_in_streamer_queue: u32,
+    pub start_message_pos: u64,
+    pub end_message_pos: u64,
+    pub start_hotshot_block: u64,
+    pub after_delayed_messages_read: u64,
+    pub min_hotshot_block_still_in_streamer_queue: u64,
     #[serde(with = "serde_bytes")]
     pub cas_signature: [u8; 65],
     pub downstream_certificate: Vec<u8>,
@@ -174,11 +174,11 @@ impl CasCertificate {
 
         let header = dec.read_bytes(header_size)?.to_vec();
 
-        let start_message_pos = dec.read_u32()?;
-        let end_message_pos = dec.read_u32()?;
-        let start_hotshot_block = dec.read_u32()?;
-        let after_delayed_messages_read = dec.read_u32()?;
-        let min_hotshot_block_still_in_streamer_queue = dec.read_u32()?;
+        let start_message_pos = dec.read_u64()?;
+        let end_message_pos = dec.read_u64()?;
+        let start_hotshot_block = dec.read_u64()?;
+        let after_delayed_messages_read = dec.read_u64()?;
+        let min_hotshot_block_still_in_streamer_queue = dec.read_u64()?;
 
         let cas_signature = dec.read_fixed::<CAS_SIG_SIZE>()?;
 
@@ -198,11 +198,11 @@ impl CasCertificate {
 
     pub fn build_espresso_certificate(
         key_manager: &EspressoKeyManager,
-        start_message_pos: u32,
-        end_message_pos: u32,
-        start_hotshot_block: u32,
-        after_delayed_messages_read: u32,
-        min_hotshot_block_still_in_streamer_queue: u32,
+        start_message_pos: u64,
+        end_message_pos: u64,
+        start_hotshot_block: u64,
+        after_delayed_messages_read: u64,
+        min_hotshot_block_still_in_streamer_queue: u64,
         downstream_cert: &[u8],
     ) -> DaApiResult<Self> {
         if downstream_cert.len() < 2 {
@@ -297,15 +297,15 @@ impl CasCertificate {
     }
 
     fn build_canonical_payload(
-        start_message_pos: u32,
-        end_message_pos: u32,
-        start_hotshot_block: u32,
-        after_delayed_messages_read: u32,
-        min_hotshot_block_still_in_streamer_queue: u32,
+        start_message_pos: u64,
+        end_message_pos: u64,
+        start_hotshot_block: u64,
+        after_delayed_messages_read: u64,
+        min_hotshot_block_still_in_streamer_queue: u64,
         downstream_cert: &[u8],
     ) -> Vec<u8> {
         let mut payload =
-            Vec::with_capacity(5 * std::mem::size_of::<u32>() + downstream_cert.len());
+            Vec::with_capacity(5 * std::mem::size_of::<u64>() + downstream_cert.len());
         payload.extend_from_slice(&start_message_pos.to_be_bytes());
         payload.extend_from_slice(&end_message_pos.to_be_bytes());
         payload.extend_from_slice(&start_hotshot_block.to_be_bytes());
@@ -317,11 +317,11 @@ impl CasCertificate {
 
     fn build_and_sign_payload(
         key_manager: &EspressoKeyManager,
-        start_message_pos: u32,
-        end_message_pos: u32,
-        start_hotshot_block: u32,
-        after_delayed_messages_read: u32,
-        min_hotshot_block_still_in_streamer_queue: u32,
+        start_message_pos: u64,
+        end_message_pos: u64,
+        start_hotshot_block: u64,
+        after_delayed_messages_read: u64,
+        min_hotshot_block_still_in_streamer_queue: u64,
         downstream_cert: &[u8],
     ) -> DaApiResult<[u8; 65]> {
         let payload = Self::build_canonical_payload(

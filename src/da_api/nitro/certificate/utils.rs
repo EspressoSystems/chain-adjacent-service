@@ -50,6 +50,13 @@ impl<'a> Decoder<'a> {
         })?))
     }
 
+    pub fn read_u64(&mut self) -> DaApiResult<u64> {
+        let bytes = self.read_bytes(8)?;
+        Ok(u64::from_be_bytes(bytes.try_into().map_err(|err| {
+            DaApiError::DecoderError(format!("Invalid u64:{err}"))
+        })?))
+    }
+
     pub fn read_fixed<const N: usize>(&mut self) -> DaApiResult<[u8; N]> {
         let bytes = self.read_bytes(N)?;
         bytes
