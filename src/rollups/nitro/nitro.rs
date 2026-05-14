@@ -172,13 +172,16 @@ impl Rollup for Nitro {
         }
 
         let start_message_position = context.next_batch_start_pos as u32;
-        // end index
         let end_message_position = start_message_position + batch_messages.len() as u32 - 1;
         let start_espresso_block = queue[0..batch_messages.len()]
             .iter()
             .map(|e| e.hotshot_height())
             .min()
             .unwrap_or(0) as u32;
+        let after_delayed_messages_read = queue[batch_messages.len() - 1]
+            .feed_message
+            .message
+            .delayed_messages_read as u32;
         let min_espresso_block_still_in_queue = queue[batch_messages.len()..]
             .iter()
             .map(|e| e.hotshot_height())
@@ -189,6 +192,7 @@ impl Rollup for Nitro {
             start_message_position,
             end_message_position,
             start_espresso_block,
+            after_delayed_messages_read,
             min_espresso_block_still_in_queue,
         }
     }

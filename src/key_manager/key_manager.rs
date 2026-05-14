@@ -361,6 +361,14 @@ impl EspressoKeyManager {
         &self.signer
     }
 
+    pub fn parent_chain_id(&self) -> u64 {
+        self.parent_chain_id
+    }
+
+    pub fn tee_verifier_address(&self) -> Address {
+        self.tee_verifier_address
+    }
+
     fn signer_address(&self) -> Address {
         self.signer.address()
     }

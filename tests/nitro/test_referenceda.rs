@@ -12,7 +12,7 @@ use chain_agnostic_service::{
     config::RollupType,
     da_api::{
         config::{DaApiConfig, DaProviderConfig},
-        nitro::utils::{SEQUENCER_HEADER_LEN, try_extract_da_sequencer_msg_from_espresso_da_cert},
+        nitro::{certificate::CasCertificate, utils::SEQUENCER_HEADER_LEN},
         run,
     },
     key_manager::key_manager::EspressoKeyManager,
@@ -46,6 +46,7 @@ fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
                 start_message_position: 0,
                 end_message_position: 0,
                 start_espresso_block: 0,
+                after_delayed_messages_read: 0,
                 min_espresso_block_still_in_queue: 0,
             });
         }
@@ -191,11 +192,8 @@ async fn test_nitro_reference_da_store_and_recover(my_addr: String) {
 
     assert_eq!(recover_payload, expected);
 
-    let da_cert =
-        try_extract_da_sequencer_msg_from_espresso_da_cert(&Bytes::from(sequencer_msg.clone()))
-            .unwrap()
-            .slice(SEQUENCER_HEADER_LEN..);
-    let keccak_hash_da_cert = keccak256(&da_cert).to_string();
+    let cas_cert = CasCertificate::from_bytes(&sequencer_msg[SEQUENCER_HEADER_LEN..]).unwrap();
+    let keccak_hash_da_cert = keccak256(&cas_cert.downstream_certificate).to_string();
 
     let expected_collect_preimages_response = json!({
     "3": {

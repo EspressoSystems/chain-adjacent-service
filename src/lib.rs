@@ -18,6 +18,7 @@ pub struct VerificationResult {
     pub start_message_position: u32,
     pub end_message_position: u32,
     pub start_espresso_block: u32,
+    pub after_delayed_messages_read: u32,
     pub min_espresso_block_still_in_queue: u32,
 }
 
@@ -26,6 +27,7 @@ impl VerificationResult {
         start_message_position: u32,
         end_message_position: u32,
         start_espresso_block: u32,
+        after_delayed_messages_read: u32,
         min_espresso_block_still_in_queue: u32,
     ) -> Self {
         Self {
@@ -33,6 +35,7 @@ impl VerificationResult {
             start_message_position,
             end_message_position,
             start_espresso_block,
+            after_delayed_messages_read,
             min_espresso_block_still_in_queue,
         }
     }
@@ -43,6 +46,7 @@ impl VerificationResult {
             start_message_position: 0,
             end_message_position: 0,
             start_espresso_block: 0,
+            after_delayed_messages_read: 0,
             min_espresso_block_still_in_queue: 0,
         }
     }

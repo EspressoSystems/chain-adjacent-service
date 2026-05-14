@@ -168,6 +168,7 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
         start_message_position,
         end_message_position,
         start_espresso_block,
+        after_delayed_messages_read,
         min_espresso_block_still_in_queue,
     } = rx
         .await
@@ -239,6 +240,7 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
         start_message_position,
         end_message_position,
         start_espresso_block,
+        after_delayed_messages_read,
         min_espresso_block_still_in_queue,
         &downstream_cert,
     )?;
@@ -299,10 +301,16 @@ async fn handle_recover_inner(
     //      `[seq header | batch data]` (the espresso cert is stripped
     //      before the batch hits L1).
     //
-    // try_extract parses+validates the CAS cert in case #1; case #2 errors
-    // out and we fall back to forwarding the raw msg.
-    let da_certificate =
-        try_extract_da_sequencer_msg_from_espresso_da_cert(&sequencer_msg).unwrap_or(sequencer_msg);
+    // try_extract parses and fully validates the CAS cert (including TEE
+    // signature verification) in case #1; case #2 errors out and we fall
+    // back to forwarding the raw msg.
+    let da_certificate = try_extract_da_sequencer_msg_from_espresso_da_cert(
+        &sequencer_msg,
+        state.key_manager.signer().address(),
+        state.key_manager.parent_chain_id(),
+        state.key_manager.tee_verifier_address(),
+    )
+    .unwrap_or(sequencer_msg);
 
     if state.da_config.name == "calldata" {
         // Calldata returns the inner batch payload with the seq header stripped.
@@ -374,6 +382,7 @@ mod tests {
                 certificate::CasCertificate,
                 server::build_app,
                 types::{DAStoreResponse, PreImagesResult, RecoverPayloadResult},
+                utils::SEQUENCER_HEADER_LEN,
             },
         },
         key_manager::test_utils,
@@ -400,6 +409,7 @@ mod tests {
                         start_message_position: 0,
                         end_message_position: 0,
                         start_espresso_block: 0,
+                        after_delayed_messages_read: 0,
                         min_espresso_block_still_in_queue: 0,
                     });
                 }
@@ -600,8 +610,11 @@ mod tests {
         .mount(&mock_da_provider)
         .await;
 
-        // Full sequencer_msg containing espresso wrapper + inner DA certificate
-        let sequencer_msg = Bytes::from_str("0x000000000000000000000000000000000000000000000000000000000000000000000000000000007000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d6f4495acb1e8e0c5583a2357178fffd13f0cec5b216542b40027999633d72f000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1bc5981b980a01a85bb7c5299545170e1126a6a84b1c9e83719562fbe022d24ae126266b22c4717b69f9b4771a8b0c1d28681ddd0582a55b9fd76286be70cf54dc").unwrap();
+        // Build sequencer_msg from the STORE response so the CAS cert is
+        // signed by the test key_manager and passes full signature validation.
+        let mut seq_msg_bytes = vec![0u8; SEQUENCER_HEADER_LEN];
+        seq_msg_bytes.extend_from_slice(&cas_cert.to_bytes().unwrap());
+        let sequencer_msg = Bytes::from(seq_msg_bytes);
 
         let response3: Result<RecoverPayloadResult, _> = client
             .request(
