@@ -27,6 +27,9 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 L1_NODE_DIR="$SCRIPT_DIR/l1_node"
 STATE_DIR="$L1_NODE_DIR/state"
 WRAPPER_SCRIPT="$L1_NODE_DIR/rollupcreator-wrapper.sh"
+DATOOL_WRAPPER_SCRIPT="$L1_NODE_DIR/datool-wrapper.sh"
+SCRIPTS_WRAPPER_SCRIPT="$L1_NODE_DIR/scripts-wrapper.sh"
+DAS_KEYS_DIR="$STATE_DIR/das-keys"
 NITRO_TESTNODE_DIR="$PROJECT_ROOT/nitro-testnode"
 OVERRIDE_FILE="$NITRO_TESTNODE_DIR/docker-compose.override.yml"
 
@@ -75,6 +78,14 @@ services:
     volumes:
       - "$WRAPPER_SCRIPT:/app/rollupcreator-wrapper.sh:ro"
       - "$STATE_DIR:/app/state:ro"
+  datool:
+    volumes:
+      - "$DATOOL_WRAPPER_SCRIPT:/usr/local/bin/datool:ro"
+      - "$DAS_KEYS_DIR:/app/state/das-keys:ro"
+  scripts:
+    entrypoint: ["/app/scripts-wrapper.sh"]
+    volumes:
+      - "$SCRIPTS_WRAPPER_SCRIPT:/app/scripts-wrapper.sh:ro"
 EOF
         ;;
     *)

@@ -67,7 +67,13 @@ impl NitroNode {
         // test-node.bash, but the init steps still bring up geth (L1),
         // the sequencer, and referenceda-provider when `--l2-referenceda`
         // is set. Poster is left for `start_poster()`.
-        let mut args = vec!["--init-force", "--no-tokenbridge", "--no-run", "--detach"];
+        let mut args = vec![
+            "--init-force",
+            "--no-tokenbridge",
+            "--no-run",
+            "--l2-anytrust",
+            "--detach",
+        ];
 
         if !config.simple {
             args.push("--no-simple");
