@@ -160,6 +160,33 @@ impl NitroNode {
         assert!(status.success(), "`docker compose up --wait poster` failed");
     }
 
+    /// Brings up the AnyTrust DAS committee (and mirror) via
+    /// `docker compose up --wait das-committee-a das-committee-b das-mirror`.
+    ///
+    /// Required for tests that route the poster through CAS's anytrust
+    /// path: CAS dispatches `daprovider_store` to the committee backends,
+    /// so they must be live before the poster's first store call.
+    pub fn start_das_committee(&self) {
+        let status = Command::new("docker")
+            .args([
+                "compose",
+                "up",
+                "--wait",
+                "das-committee-a",
+                "das-committee-b",
+                "das-mirror",
+            ])
+            .current_dir(TESTNODE_DIR)
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .expect("failed to run `docker compose up --wait das-committee-* das-mirror`");
+        assert!(
+            status.success(),
+            "`docker compose up --wait das-committee-* das-mirror` failed"
+        );
+    }
+
     pub fn stop(&self) {
         // docker compose down -v: remove containers and volumes
         let status = Command::new("docker")

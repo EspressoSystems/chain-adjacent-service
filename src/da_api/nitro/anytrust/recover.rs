@@ -1,10 +1,13 @@
-use alloy::primitives::B256;
+use alloy::primitives::{B256, keccak256};
 
 use crate::da_api::{
     error::DaApiError,
     nitro::{
         anytrust::{
-            cert::DataAvailabilityCertificate, config::AnytrustClusterConfig, reader::RestReader,
+            bls::RawPublicKey,
+            cert::{DataAvailabilityCertificate, keyset_hash_and_bytes},
+            config::AnytrustClusterConfig,
+            reader::RestReader,
             tree,
         },
         utils::SEQUENCER_HEADER_LEN,
@@ -20,22 +23,50 @@ pub struct Preimage {
 
 pub struct AnytrustRecovery {
     reader: RestReader,
+    /// Pre-computed keyset for this cluster — `(hash, serialized_bytes)`.
+    /// Upstream's `KeysetFetcher` reads these from L1 `SetValidKeyset` events
+    /// (daprovider/anytrust/keyset_fetcher.go); daserver REST endpoints only
+    /// store payloads, not keysets, so fetching the keyset from REST would
+    /// always 404. We re-derive the keyset locally from the cluster config —
+    /// `(assumed_honest, pubkeys)` already pins it byte-for-byte.
+    keyset_hash: B256,
+    keyset_bytes: Vec<u8>,
 }
 
 impl AnytrustRecovery {
-    pub fn from_config(cfg: &AnytrustClusterConfig, http: reqwest::Client) -> Self {
-        Self {
+    pub fn from_config(
+        cfg: &AnytrustClusterConfig,
+        http: reqwest::Client,
+    ) -> Result<Self, DaApiError> {
+        let raw_pubkeys: Vec<Vec<u8>> = cfg
+            .backends
+            .iter()
+            .map(|b| RawPublicKey::from_base64(&b.pubkey).map(|p| p.0))
+            .collect::<Result<_, _>>()?;
+        let (keyset_hash, keyset_bytes) =
+            keyset_hash_and_bytes(cfg.assumed_honest as u64, &raw_pubkeys)?;
+        Ok(Self {
             reader: RestReader::new(
                 http,
                 cfg.rest_urls.clone(),
                 std::time::Duration::from_millis(cfg.request_timeout_ms),
             ),
-        }
+            keyset_hash,
+            keyset_bytes,
+        })
     }
 
     #[cfg(test)]
-    pub fn from_reader(reader: RestReader) -> Self {
-        Self { reader }
+    pub fn from_reader_with_keyset(
+        reader: RestReader,
+        keyset_hash: B256,
+        keyset_bytes: Vec<u8>,
+    ) -> Self {
+        Self {
+            reader,
+            keyset_hash,
+            keyset_bytes,
+        }
     }
 
     /// Recover the payload. Returns the inner batch bytes.
@@ -102,10 +133,19 @@ impl AnytrustRecovery {
             None
         };
 
-        // Always need the keyset preimage; record it if we're collecting.
-        let keyset_bytes = self.reader.get_by_hash(cert.keyset_hash).await?;
+        // Keyset: derive locally from cluster config (see field doc on
+        // `keyset_bytes`). Reject certs that reference a different keyset
+        // than the one we've been told about — they're outside this
+        // cluster's purview and we have no way to validate them.
+        if cert.keyset_hash != self.keyset_hash {
+            return Err(DaApiError::CertificateValidation(format!(
+                "anytrust cert references unknown keyset 0x{} (cluster keyset is 0x{})",
+                hex::encode(cert.keyset_hash),
+                hex::encode(self.keyset_hash),
+            )));
+        }
         if let Some(ref mut p) = preimages {
-            tree::record_hash(&keyset_bytes, |h, d| {
+            tree::record_hash(&self.keyset_bytes, |h, d| {
                 p.push(Preimage {
                     hash: h,
                     data: d.to_vec(),
@@ -115,15 +155,49 @@ impl AnytrustRecovery {
 
         let mut payload: Option<Vec<u8>> = None;
         if want_payload || want_preimages {
-            let data = self.reader.get_by_hash(cert.data_hash).await?;
+            // For v0 certs the cert holds a flat keccak hash, but daservers
+            // store the payload under `FlatHashToTreeHash(flat)` in the
+            // tree-style layout. Try the tree-rewritten key first, fall
+            // back to the flat one (mirrors upstream
+            // recoverPayloadFromBatchInternal's getByHash closure in
+            // daprovider/anytrust/util/util.go).
+            let data = if cert.version == 0 {
+                let tree_key = tree::flat_hash_to_tree_hash(cert.data_hash);
+                match self.reader.get_by_hash(tree_key).await {
+                    Ok(d) => d,
+                    Err(_) => self.reader.get_by_hash(cert.data_hash).await?,
+                }
+            } else {
+                self.reader.get_by_hash(cert.data_hash).await?
+            };
+
+            // Version-specific integrity check: v0 commits to the flat
+            // keccak of the payload; v1 commits to the tree hash.
+            // `RestReader::get_by_hash` already validates via
+            // `tree::valid_hash`, but that accepts either form when the
+            // preimage isn't a tree node — so for v0 we re-check explicitly
+            // against the cert's flat hash.
+            if cert.version == 0 && keccak256(&data) != cert.data_hash {
+                return Err(DaApiError::CertificateValidation(format!(
+                    "v0 cert: keccak256(payload) does not match cert.data_hash 0x{}",
+                    hex::encode(cert.data_hash),
+                )));
+            }
+
             if let Some(ref mut p) = preimages {
                 if cert.version == 0 {
-                    // v0: flat keccak. Upstream also records the synthetic
-                    // tree leaf so a v0 cert can be re-hashed by validators
-                    // that expect tree-style preimages.
+                    // v0 records two entries: the flat dataHash → payload,
+                    // plus keccak256(tree_leaf) → tree_leaf so validators
+                    // that walk the tree-style index can still resolve it
+                    // (matches util.go:283-287).
                     p.push(Preimage {
                         hash: cert.data_hash,
                         data: data.clone(),
+                    });
+                    let tree_leaf = tree::flat_hash_to_tree_leaf(cert.data_hash);
+                    p.push(Preimage {
+                        hash: keccak256(&tree_leaf),
+                        data: tree_leaf,
                     });
                 } else {
                     tree::record_hash(&data, |h, d| {
@@ -243,7 +317,11 @@ mod tests {
             vec![rest.url.clone()],
             Duration::from_secs(5),
         );
-        let recovery = AnytrustRecovery::from_reader(reader);
+        let recovery = AnytrustRecovery::from_reader_with_keyset(
+            reader,
+            cert.keyset_hash,
+            keyset_bytes.clone(),
+        );
 
         let mut seq_msg = vec![0u8; SEQUENCER_HEADER_LEN];
         seq_msg.extend_from_slice(&cert.serialize());
@@ -268,7 +346,11 @@ mod tests {
             vec![rest.url.clone()],
             Duration::from_secs(5),
         );
-        let recovery = AnytrustRecovery::from_reader(reader);
+        let recovery = AnytrustRecovery::from_reader_with_keyset(
+            reader,
+            cert.keyset_hash,
+            keyset_bytes.clone(),
+        );
 
         let mut seq_msg = vec![0u8; SEQUENCER_HEADER_LEN];
         seq_msg.extend_from_slice(&cert.serialize());
@@ -311,7 +393,11 @@ mod tests {
             vec![rest.url.clone()],
             Duration::from_secs(5),
         );
-        let recovery = AnytrustRecovery::from_reader(reader);
+        let recovery = AnytrustRecovery::from_reader_with_keyset(
+            reader,
+            cert.keyset_hash,
+            keyset_bytes.clone(),
+        );
 
         let mut seq_msg = vec![0u8; SEQUENCER_HEADER_LEN];
         seq_msg.extend_from_slice(&cert.serialize());
@@ -323,5 +409,81 @@ mod tests {
             DaApiError::DownstreamDa(msg) => assert!(msg.contains("does not match"), "{msg}"),
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    /// The recovery doesn't fetch the keyset from REST anymore (upstream
+    /// daservers don't serve it), so a recovery configured with a
+    /// different keyset than the cert references must reject locally.
+    #[tokio::test]
+    async fn recover_rejects_unknown_keyset() {
+        let payload = b"payload".to_vec();
+        let (cert, _, _) = make_cert(&payload, 1);
+
+        // Mock REST has the payload available, but recovery is configured
+        // with a *different* keyset (all zeros). The recovery should reject
+        // before even hitting REST.
+        let rest = spawn_rest(vec![(cert.data_hash, payload.clone())]).await;
+        let reader = RestReader::new(
+            reqwest::Client::builder().no_proxy().build().unwrap(),
+            vec![rest.url.clone()],
+            Duration::from_secs(5),
+        );
+        let other_keyset_hash = B256::repeat_byte(0x55);
+        let recovery =
+            AnytrustRecovery::from_reader_with_keyset(reader, other_keyset_hash, vec![0u8; 1]);
+
+        let mut seq_msg = vec![0u8; SEQUENCER_HEADER_LEN];
+        seq_msg.extend_from_slice(&cert.serialize());
+
+        let err = recovery.recover_payload(&seq_msg).await.unwrap_err();
+        match &err {
+            DaApiError::CertificateValidation(msg) => {
+                assert!(msg.contains("unknown keyset"), "{msg}")
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    /// V0 certs commit to a flat keccak hash, but storage backends key data
+    /// by the tree-rewritten hash. Recovery must try the tree key first and
+    /// fall back to the flat one, matching upstream
+    /// `recoverPayloadFromBatchInternal` (util.go:218-244).
+    #[tokio::test]
+    async fn recover_v0_payload_via_tree_rewritten_key() {
+        use alloy::primitives::keccak256;
+
+        let payload = b"v0 payload bytes".to_vec();
+        let pubkeys = vec![vec![0xaa; 289]];
+        let (keyset_hash, keyset_bytes) = keyset_hash_and_bytes(1, &pubkeys).unwrap();
+        let flat_data_hash = keccak256(&payload);
+        let cert = DataAvailabilityCertificate {
+            keyset_hash,
+            data_hash: flat_data_hash,
+            timeout: 999,
+            version: 0,
+            signers_mask: 0b1,
+            sig: [0u8; SIG_BYTES],
+        };
+
+        // Daserver behavior: payload is keyed by the *tree-rewritten* hash,
+        // not the flat one. The recovery must rewrite-then-fall-back to find it.
+        let tree_key = crate::da_api::nitro::anytrust::tree::flat_hash_to_tree_hash(flat_data_hash);
+        let rest = spawn_rest(vec![(tree_key, payload.clone())]).await;
+        let reader = RestReader::new(
+            reqwest::Client::builder().no_proxy().build().unwrap(),
+            vec![rest.url.clone()],
+            Duration::from_secs(5),
+        );
+        let recovery = AnytrustRecovery::from_reader_with_keyset(
+            reader,
+            cert.keyset_hash,
+            keyset_bytes.clone(),
+        );
+
+        let mut seq_msg = vec![0u8; SEQUENCER_HEADER_LEN];
+        seq_msg.extend_from_slice(&cert.serialize());
+
+        let got = recovery.recover_payload(&seq_msg).await.expect("recover");
+        assert_eq!(got, payload);
     }
 }

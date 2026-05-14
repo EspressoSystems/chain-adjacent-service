@@ -29,6 +29,12 @@ pub struct AnytrustAggregator {
 struct Backend {
     url: String,
     signers_mask: u64,
+    /// `keyset_hash` upstream daservers return in `das_store` responses —
+    /// hash of a 1-of-1 keyset containing only this backend's own pubkey.
+    /// Daservers don't know about their peers, so they can't report the
+    /// cluster's keyset hash; matching against the self-hash still catches
+    /// a backend that loaded the wrong BLS key.
+    self_keyset_hash: B256,
 }
 
 impl AnytrustAggregator {
@@ -67,13 +73,18 @@ impl AnytrustAggregator {
 
         let backends: Vec<Backend> = cfg
             .backends
-            .into_iter()
+            .iter()
+            .zip(raw_pubkeys.iter())
             .enumerate()
-            .map(|(i, b)| Backend {
-                url: b.url,
-                signers_mask: 1u64 << i,
+            .map(|(i, (b, pk))| {
+                let (self_keyset_hash, _) = keyset_hash_and_bytes(1, std::slice::from_ref(pk))?;
+                Ok::<_, DaApiError>(Backend {
+                    url: b.url.clone(),
+                    signers_mask: 1u64 << i,
+                    self_keyset_hash,
+                })
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
 
         Ok(Self {
             cluster_name,
@@ -101,7 +112,7 @@ impl AnytrustAggregator {
             .map(|b| async move {
                 let res =
                     das_store(&self.http, &b.url, message, timeout, self.request_timeout).await;
-                (b.signers_mask, b.url.as_str(), res)
+                (b.signers_mask, b.url.as_str(), b.self_keyset_hash, res)
             })
             .collect();
 
@@ -110,12 +121,12 @@ impl AnytrustAggregator {
         let mut failures: usize = 0;
         let max_failures = self.backends.len().saturating_sub(self.required_successes);
 
-        while let Some((mask, url, result)) = tasks.next().await {
+        while let Some((mask, url, self_keyset_hash, result)) = tasks.next().await {
             match validate_response(
                 result,
                 expected_hash.as_slice(),
                 timeout,
-                self.keyset_hash.as_slice(),
+                self_keyset_hash.as_slice(),
             ) {
                 Ok(sig) => {
                     sigs.push(sig);
@@ -166,7 +177,7 @@ fn validate_response(
     result: Result<StoreResult, DaApiError>,
     expected_hash: &[u8],
     expected_timeout: u64,
-    expected_keyset_hash: &[u8],
+    expected_self_keyset_hash: &[u8],
 ) -> Result<[u8; SIG_BYTES], DaApiError> {
     let r = result?;
     if r.data_hash.as_slice() != expected_hash {
@@ -180,14 +191,26 @@ fn validate_response(
             r.timeout
         )));
     }
-    // Reject backends signing under a different keyset than the one the
-    // cluster is configured with — otherwise we'd aggregate signatures the
-    // L1 reader can never verify against our keyset_hash.
-    if r.keyset_hash.as_slice() != expected_keyset_hash {
+    // Upstream nitro's aggregator (daprovider/anytrust/aggregator.go) ignores
+    // the `keysetHash` field entirely and instead BLS-verifies each backend's
+    // signature against its configured pubkey. We can't easily do that:
+    // upstream signs using keccak+padding+g1.MapToCurve (blsSignatures.go),
+    // not IETF hash-to-curve, so the `blst` crate's verify isn't compatible.
+    //
+    // The self-hash check below is a pragmatic proxy. Upstream daservers
+    // construct their `keysetHash` from a 1-of-1 keyset containing only
+    // their own pubkey (sign_after_store_writer.go:86-89), so this catches
+    // the same "backend running with a different BLS key than the one we
+    // have configured" misconfig that signature verification would. It is
+    // implementation-coupled — if upstream ever changes the field's
+    // semantics, this check needs revisiting (or replacing with proper
+    // signature verification once we have a compatible BLS impl).
+    if r.keyset_hash.as_slice() != expected_self_keyset_hash {
         return Err(DaApiError::DownstreamDa(format!(
-            "backend returned keysetHash 0x{} expected 0x{}",
+            "backend returned keysetHash 0x{} expected self-keyset 0x{} \
+             (configured BLS pubkey may not match this backend)",
             hex::encode(r.keyset_hash),
-            hex::encode(expected_keyset_hash)
+            hex::encode(expected_self_keyset_hash)
         )));
     }
     Ok(r.sig)
@@ -303,9 +326,17 @@ mod tests {
             crate::da_api::nitro::anytrust::cert::keyset_hash_and_bytes(2, pubkeys.as_ref())
                 .unwrap();
 
-        let b0 = spawn_backend(data_hash, timeout, expected_keyset_hash.into(), false).await;
-        let b1 = spawn_backend(data_hash, timeout, expected_keyset_hash.into(), false).await;
-        let b2 = spawn_backend(data_hash, timeout, expected_keyset_hash.into(), false).await;
+        // Each backend reports its own 1-of-1 self-keyset hash (mirrors
+        // real nitro daservers, which only know their own key).
+        let self_hash = |pk: &[u8]| -> [u8; 32] {
+            crate::da_api::nitro::anytrust::cert::keyset_hash_and_bytes(1, &[pk.to_vec()])
+                .unwrap()
+                .0
+                .into()
+        };
+        let b0 = spawn_backend(data_hash, timeout, self_hash(&pubkeys[0]), false).await;
+        let b1 = spawn_backend(data_hash, timeout, self_hash(&pubkeys[1]), false).await;
+        let b2 = spawn_backend(data_hash, timeout, self_hash(&pubkeys[2]), false).await;
 
         let cfg = AnytrustClusterConfig {
             backends: vec![
@@ -325,6 +356,7 @@ mod tests {
             rest_urls: vec![],
             assumed_honest: 2,
             request_timeout_ms: 5_000,
+            max_message_size: 100_000,
         };
         let aggregator = AnytrustAggregator::from_config(
             "test".to_string(),
@@ -353,12 +385,16 @@ mod tests {
         // 2-backend cluster, AssumedHonest = 1 ⇒ need K = 2. One backend
         // returns wrong dataHash, the other is fine — we should still fail.
         let pubkeys = [synthetic_pubkey_bytes(0x11), synthetic_pubkey_bytes(0x22)];
-        let (ks_hash, _) =
-            crate::da_api::nitro::anytrust::cert::keyset_hash_and_bytes(1, pubkeys.as_ref())
-                .unwrap();
 
-        let good = spawn_backend(data_hash, timeout, ks_hash.into(), false).await;
-        let bad = spawn_backend(data_hash, timeout, ks_hash.into(), true).await;
+        // Each backend reports its own 1-of-1 self-keyset hash.
+        let self_hash = |pk: &[u8]| -> [u8; 32] {
+            crate::da_api::nitro::anytrust::cert::keyset_hash_and_bytes(1, &[pk.to_vec()])
+                .unwrap()
+                .0
+                .into()
+        };
+        let good = spawn_backend(data_hash, timeout, self_hash(&pubkeys[0]), false).await;
+        let bad = spawn_backend(data_hash, timeout, self_hash(&pubkeys[1]), true).await;
 
         let cfg = AnytrustClusterConfig {
             backends: vec![
@@ -374,6 +410,7 @@ mod tests {
             rest_urls: vec![],
             assumed_honest: 1,
             request_timeout_ms: 5_000,
+            max_message_size: 100_000,
         };
         let aggregator = AnytrustAggregator::from_config(
             "test".to_string(),

@@ -8,6 +8,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
+use base64::{Engine, engine::general_purpose};
 use serde_json::Value;
 use tokio::sync::oneshot;
 use tracing::info;
@@ -39,8 +40,6 @@ const COLLECT_PREIMAGES: &str = "daprovider_collectPreimages";
 const RECOVER_PAYLOAD_AND_PREIMAGES: &str = "daprovider_recoverPayloadAndPreimages";
 const GET_SUPPORTED_HEADER_BYTES: &str = "daprovider_getSupportedHeaderBytes";
 
-const CALLDATA_MAX_SIZE: u16 = 50_000; // 50 kb
-
 #[derive(Clone)]
 pub struct ServerState {
     pub da_config: DaProviderConfig,
@@ -53,6 +52,11 @@ pub struct ServerState {
     /// `daprovider_recoverPayload`/`collectPreimages`/`recoverPayloadAndPreimages`
     /// methods to fetch the payload back from the cluster's REST endpoints.
     pub anytrust_recovery: Option<Arc<AnytrustRecovery>>,
+    /// `daprovider_getMaxMessageSize` is answered locally with this value
+    /// when set. `None` means the route forwards the call downstream (used
+    /// for forwarded providers like Celestia where the downstream owns the
+    /// size limit).
+    pub max_message_size: Option<u64>,
 }
 
 impl ServerState {
@@ -67,6 +71,7 @@ impl ServerState {
             verification_channel,
             anytrust: None,
             anytrust_recovery: None,
+            max_message_size: None,
         }
     }
 
@@ -84,6 +89,7 @@ pub fn build_app(
     anytrust_clusters: HashMap<String, AnytrustClusterConfig>,
     verification_channel: VerificationSender,
     rollup_prefix: &str,
+    calldata_max_size: u64,
 ) -> Result<Router, DaApiError> {
     // One client shared across every provider and AnyTrust cluster — keeps
     // connection pooling effective and avoids one fresh TCP/TLS pool per
@@ -94,13 +100,19 @@ pub fn build_app(
     providers.push(DaProviderConfig::calldata());
     for provider in providers {
         let name = provider.name.clone();
-        let state = ServerState::new(provider, http.clone(), verification_channel.clone());
+        let mut state = ServerState::new(provider, http.clone(), verification_channel.clone());
+        // Calldata is the only built-in provider that owns its own size
+        // limit; everything else forwards getMaxMessageSize downstream.
+        if name == "calldata" {
+            state.max_message_size = Some(calldata_max_size);
+        }
         let sub = Router::new().route("/", post(handle_rpc)).with_state(state);
         app = app.nest(&format!("/{rollup_prefix}/{name}"), sub);
     }
 
     for (cluster_name, cluster_cfg) in anytrust_clusters {
-        let recovery = Arc::new(AnytrustRecovery::from_config(&cluster_cfg, http.clone()));
+        let max_message_size = cluster_cfg.max_message_size;
+        let recovery = Arc::new(AnytrustRecovery::from_config(&cluster_cfg, http.clone())?);
         let aggregator = Arc::new(AnytrustAggregator::from_config(
             cluster_name.clone(),
             cluster_cfg,
@@ -116,6 +128,7 @@ pub fn build_app(
             verification_channel: verification_channel.clone(),
             anytrust: Some(aggregator),
             anytrust_recovery: Some(recovery),
+            max_message_size: Some(max_message_size),
         };
         let sub = Router::new().route("/", post(handle_rpc)).with_state(state);
         app = app.nest(&format!("/{rollup_prefix}/{provider_name}"), sub);
@@ -139,7 +152,10 @@ async fn handle_rpc(State(state): State<ServerState>, body: Bytes) -> Result<Res
         RECOVER_PAYLOAD_AND_PREIMAGES => {
             handle_recover_inner(state, parsed, RECOVER_PAYLOAD_AND_PREIMAGES).await
         }
-        GET_SUPPORTED_HEADER_BYTES if state.da_config.name == "calldata" => {
+        GET_SUPPORTED_HEADER_BYTES
+            if state.da_config.name == "calldata"
+                || state.da_config.name.starts_with("anytrust") =>
+        {
             let result = serde_json::json!({
                 "id": parsed["id"],
                 "jsonrpc": "2.0",
@@ -149,16 +165,19 @@ async fn handle_rpc(State(state): State<ServerState>, body: Bytes) -> Result<Res
                 .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
             Ok((StatusCode::OK, bytes).into_response())
         }
-        GET_MAX_MESSAGE_SIZE if state.da_config.name == "calldata" => {
-            let result = serde_json::json!({
-                "id": parsed["id"],
-                "jsonrpc": "2.0",
-                "result": {"maxSize": CALLDATA_MAX_SIZE}
-            });
-            let bytes = serde_json::to_vec(&result)
-                .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
-            Ok((StatusCode::OK, bytes).into_response())
-        }
+        GET_MAX_MESSAGE_SIZE => match state.max_message_size {
+            Some(max_size) => {
+                let result = serde_json::json!({
+                    "id": parsed["id"],
+                    "jsonrpc": "2.0",
+                    "result": {"maxSize": max_size}
+                });
+                let bytes = serde_json::to_vec(&result)
+                    .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
+                Ok((StatusCode::OK, bytes).into_response())
+            }
+            None => forward_raw(state, body).await,
+        },
         _ => forward_raw(state, body).await,
     }
 }
@@ -431,7 +450,7 @@ async fn handle_anytrust_recover(
     let result_obj = match method {
         RECOVER_PAYLOAD => {
             let payload = recovery.recover_payload(sequencer_msg).await?;
-            serde_json::json!({"Payload": alloy::primitives::Bytes::from(payload)})
+            serde_json::json!({"Payload": general_purpose::STANDARD.encode(&payload)})
         }
         COLLECT_PREIMAGES => {
             let preimages = recovery.collect_preimages(sequencer_msg).await?;
@@ -442,7 +461,7 @@ async fn handle_anytrust_recover(
                 .recover_payload_and_preimages(sequencer_msg)
                 .await?;
             serde_json::json!({
-                "Payload": alloy::primitives::Bytes::from(payload),
+                "Payload": general_purpose::STANDARD.encode(&payload),
                 "Preimages": preimages_to_json(preimages),
             })
         }
@@ -464,19 +483,20 @@ async fn handle_anytrust_recover(
 }
 
 /// Convert collected preimages into the daprovider JSON shape
-/// `{"<preimage_type>": {"<hash>": "<bytes hex>"}}`. AnyTrust only produces
-/// Keccak256 preimages (type 0).
+/// `{"<preimage_type>": {"<hash hex>": "<bytes base64>"}}`. AnyTrust only
+/// produces Keccak256 preimages (type 0). Preimage bytes are base64 because
+/// the Go client decodes `map[Hash][]byte`, and Go's `encoding/json` reads
+/// `[]byte` as base64.
 fn preimages_to_json(preimages: Vec<crate::da_api::nitro::anytrust::recover::Preimage>) -> Value {
     use std::collections::BTreeMap;
-    let mut inner: BTreeMap<String, alloy::primitives::Bytes> = BTreeMap::new();
+    let mut inner: BTreeMap<String, String> = BTreeMap::new();
     for p in preimages {
         inner.insert(
             format!("0x{}", hex::encode(p.hash.as_slice())),
-            alloy::primitives::Bytes::from(p.data),
+            general_purpose::STANDARD.encode(&p.data),
         );
     }
-    let outer = serde_json::json!({ "0": inner });
-    outer
+    serde_json::json!({ "0": inner })
 }
 
 #[cfg(test)]
@@ -513,7 +533,18 @@ mod tests {
         "0x010500000000000000000000" // 0x01, 0x05, then padding
     }
 
+    const TEST_CALLDATA_MAX_SIZE: u64 = 50_000;
+
     fn spawn_server(addr: SocketAddr, config: Vec<DaProviderConfig>) -> JoinHandle<()> {
+        spawn_server_with(addr, config, HashMap::new(), TEST_CALLDATA_MAX_SIZE)
+    }
+
+    fn spawn_server_with(
+        addr: SocketAddr,
+        config: Vec<DaProviderConfig>,
+        anytrust: HashMap<String, crate::da_api::nitro::anytrust::config::AnytrustClusterConfig>,
+        calldata_max_size: u64,
+    ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let (verification_channel, mut verify_receiver) =
                 tokio::sync::mpsc::channel::<(Bytes, oneshot::Sender<VerificationResult>)>(1);
@@ -531,7 +562,14 @@ mod tests {
                 }
             });
 
-            let app = build_app(config, HashMap::new(), verification_channel, "arb").unwrap();
+            let app = build_app(
+                config,
+                anytrust,
+                verification_channel,
+                "arb",
+                calldata_max_size,
+            )
+            .unwrap();
             let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
             axum::serve(listener, app).await.unwrap();
         })
@@ -592,7 +630,7 @@ mod tests {
                 ResponseTemplate::new(200).set_body_json(json!({
                     "jsonrpc": "2.0",
                     "id": id,
-                    "result": { "headerBytes": "0x80" }
+                    "result": { "headerBytes": "0x70" }
                 }))
             })
             .mount(&mock_da_provider2)
@@ -608,7 +646,7 @@ mod tests {
             .expect("RPC call failed");
 
         assert_eq!(response1["headerBytes"], "0x63");
-        assert_eq!(response2["headerBytes"], "0x80");
+        assert_eq!(response2["headerBytes"], "0x70");
     }
 
     #[tokio::test]
@@ -1040,6 +1078,73 @@ mod tests {
             .await;
 
         assert!(response.is_err(), "should fail with wrong field name");
+    }
+
+    #[tokio::test]
+    async fn test_calldata_max_size_is_configurable() {
+        // Use a non-default size to prove the configured value is what's
+        // returned (rather than any hard-coded constant).
+        const CUSTOM_MAX_SIZE: u64 = 123_456;
+
+        let addr: SocketAddr = "127.0.0.1:9966".parse().unwrap();
+        let _server = spawn_server_with(addr, vec![], HashMap::new(), CUSTOM_MAX_SIZE);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}/arb/calldata"))
+            .unwrap();
+
+        let response: serde_json::Value = client
+            .request("daprovider_getMaxMessageSize", rpc_params![])
+            .await
+            .expect("RPC call failed");
+        assert_eq!(response["maxSize"], CUSTOM_MAX_SIZE);
+    }
+
+    #[tokio::test]
+    async fn test_anytrust_get_max_message_size_handled_locally() {
+        use base64::{Engine, engine::general_purpose};
+
+        use crate::da_api::nitro::anytrust::config::{AnytrustClusterConfig, BackendConfig};
+
+        const CLUSTER_MAX_SIZE: u64 = 256_000;
+
+        // The aggregator needs a syntactically valid BLS pubkey blob
+        // (1-byte proof_len + 96-byte proof + 192-byte key = 289 bytes —
+        // see synthetic_pubkey_bytes in aggregator tests). Contents don't
+        // matter here because this test never reaches the cluster.
+        let mut pk_bytes = vec![0xa1u8; 289];
+        pk_bytes[0] = 96;
+        let pubkey = general_purpose::STANDARD.encode(&pk_bytes);
+
+        let mut clusters = HashMap::new();
+        clusters.insert(
+            "demo".to_string(),
+            AnytrustClusterConfig {
+                backends: vec![BackendConfig {
+                    url: "http://localhost:1".to_string(),
+                    pubkey,
+                }],
+                rest_urls: vec![],
+                assumed_honest: 1,
+                request_timeout_ms: 1_000,
+                max_message_size: CLUSTER_MAX_SIZE,
+            },
+        );
+
+        let addr: SocketAddr = "127.0.0.1:9967".parse().unwrap();
+        let _server = spawn_server_with(addr, vec![], clusters, TEST_CALLDATA_MAX_SIZE);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}/arb/anytrust-demo"))
+            .unwrap();
+
+        let response: serde_json::Value = client
+            .request("daprovider_getMaxMessageSize", rpc_params![])
+            .await
+            .expect("RPC call failed");
+        assert_eq!(response["maxSize"], CLUSTER_MAX_SIZE);
     }
 
     #[tokio::test]

@@ -18,6 +18,12 @@ pub struct AnytrustClusterConfig {
     /// Per-backend request timeout for `das_store` and `get-by-hash`.
     #[serde(default = "default_request_timeout_ms")]
     pub request_timeout_ms: u64,
+
+    /// Maximum message size advertised in response to
+    /// `daprovider_getMaxMessageSize`. AnyTrust batches are stored off-chain
+    /// so this is typically larger than the calldata cap.
+    #[serde(default = "default_max_message_size")]
+    pub max_message_size: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -30,4 +36,8 @@ pub struct BackendConfig {
 
 fn default_request_timeout_ms() -> u64 {
     5_000
+}
+
+fn default_max_message_size() -> u64 {
+    100_000
 }

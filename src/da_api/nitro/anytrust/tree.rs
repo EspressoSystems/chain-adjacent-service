@@ -92,6 +92,23 @@ fn flip_top_bit(mut h: B256) -> B256 {
     h
 }
 
+/// Wrap a flat keccak hash in a single-leaf tree node, matching upstream
+/// `daprovider/anytrust/tree.FlatHashToTreeLeaf`. Used to recover v0
+/// certificate payloads whose data hash is `keccak256(payload)` but whose
+/// storage key may be the tree-rewritten form (see `flat_hash_to_tree_hash`).
+pub fn flat_hash_to_tree_leaf(flat: B256) -> Vec<u8> {
+    let mut leaf = Vec::with_capacity(1 + 32);
+    leaf.push(LEAF_BYTE);
+    leaf.extend_from_slice(flat.as_slice());
+    leaf
+}
+
+/// Rewrite a flat keccak hash into the equivalent tree-style hash without
+/// re-hashing the original payload. Matches upstream `tree.FlatHashToTreeHash`.
+pub fn flat_hash_to_tree_hash(flat: B256) -> B256 {
+    flip_top_bit(keccak256(flat_hash_to_tree_leaf(flat)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

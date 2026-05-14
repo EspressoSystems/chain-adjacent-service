@@ -18,11 +18,8 @@ pub fn setup_l1_reuse_mode() {
 /// Same as [`setup_l1_reuse_mode`] but additionally rewrites the `poster`
 /// service so it subscribes to the given CAS feed and uses the given CAS
 /// DA RPC for batch data.
-pub fn setup_l1_reuse_mode_with_cas_poster(feed_url: &str, calldata_rpc_url: &str) {
-    run_write_override(&[
-        ("CAS_FEED_URL", feed_url),
-        ("CAS_CALLDATA_RPC_URL", calldata_rpc_url),
-    ]);
+pub fn setup_l1_reuse_mode_with_cas_poster(feed_url: &str, cas_rpc_url: &str) {
+    run_write_override(&[("CAS_FEED_URL", feed_url), ("CAS_RPC_URL", cas_rpc_url)]);
 }
 
 fn run_write_override(envs: &[(&str, &str)]) {
