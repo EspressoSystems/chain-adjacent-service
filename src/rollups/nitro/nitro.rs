@@ -171,6 +171,10 @@ impl Rollup for Nitro {
             }
         }
 
+        if batch_messages.is_empty() {
+            return VerificationResult::failure();
+        }
+
         let start_message_position = context.next_batch_start_pos as u32;
         let end_message_position = start_message_position + batch_messages.len() as u32 - 1;
         let start_espresso_block = queue[0..batch_messages.len()]
