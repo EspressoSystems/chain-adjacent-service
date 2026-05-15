@@ -42,7 +42,6 @@ aws-nitro-enclaves-nsm-api = "0.4"
 async-trait = "0.1.89"
 axum = "0.8.8"
 base64 = "0.22.1"
-blst = "0.3"
 brotli = "7"
 bytes = "1.11.0"
 committable = { git = "https://github.com/EspressoSystems/commit.git" }

@@ -30,6 +30,7 @@ fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
         da_providers: vec![DaProviderConfig {
             name: "referenceda".to_string(),
             endpoint_url: da_provider_url,
+            is_anytrust: false,
         }],
         ..Default::default()
     };

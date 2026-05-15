@@ -22,7 +22,6 @@ pub async fn run(
         RollupType::Nitro => {
             let inner = build_app(
                 da_api_config.da_providers,
-                da_api_config.anytrust,
                 verification_channel,
                 ARBITRUM_NITRO,
                 da_api_config.calldata_max_size,

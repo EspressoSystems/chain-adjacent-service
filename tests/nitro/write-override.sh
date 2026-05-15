@@ -20,6 +20,12 @@
 #                 this URL as its DA RPC endpoint. Required if CAS_FEED_URL is set
 #                 and the poster is enabled, since the poster needs to fetch batch
 #                 data from the DA provider in order to post batches.
+#   ANYTRUST      If set to "1", in `reuse` mode adds a `daprovider-anytrust`
+#                 service running `/usr/local/bin/daprovider --mode anytrust`.
+#                 CAS forwards anytrust requests to it instead of doing
+#                 aggregation itself. The committee backend pubkeys are read
+#                 from the das-keys directory and baked into the sidecar's
+#                 config file (written to STATE_DIR).
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,6 +38,16 @@ SCRIPTS_WRAPPER_SCRIPT="$L1_NODE_DIR/scripts-wrapper.sh"
 DAS_KEYS_DIR="$STATE_DIR/das-keys"
 NITRO_TESTNODE_DIR="$PROJECT_ROOT/nitro-testnode"
 OVERRIDE_FILE="$NITRO_TESTNODE_DIR/docker-compose.override.yml"
+
+# Path used by the anytrust sidecar; only written when ANYTRUST=1.
+ANYTRUST_DAPROVIDER_CONFIG="$STATE_DIR/anytrust_daprovider.json"
+# Host-side port the sidecar binds to (also the in-container port — we
+# match them to keep the URL the same on both sides).
+ANYTRUST_DAPROVIDER_PORT=9881
+
+# Sequencer inbox address from the saved L1 state (matches the constant in
+# tests/nitro/test_e2e.rs).
+SEQUENCER_INBOX_ADDRESS="0x18d19C5d3E685f5be5b9C86E097f0E439285D216"
 
 MODE="${1:-}"
 
@@ -111,6 +127,71 @@ EOF
         ;;
 esac
 
+if [ "${ANYTRUST:-}" = "1" ] && [ "$MODE" = "reuse" ]; then
+    # Generate the anytrust sidecar's config: it talks to the same
+    # das-committee-a/b that the test brings up, and falls back to
+    # das-mirror's REST endpoint for recover/preimage queries. BLS
+    # pubkeys are baked in from the committed das-keys files so the
+    # sidecar's view of the committee matches the keyset the saved L1
+    # state has already committed.
+    bls_a="$(tr -d '\n' < "$DAS_KEYS_DIR/a/das_bls.pub")"
+    bls_b="$(tr -d '\n' < "$DAS_KEYS_DIR/b/das_bls.pub")"
+    cat > "$ANYTRUST_DAPROVIDER_CONFIG" << EOF
+{
+  "mode": "anytrust",
+  "parent-chain": {
+    "node-url": "ws://geth:8546",
+    "sequencer-inbox-address": "$SEQUENCER_INBOX_ADDRESS"
+  },
+  "anytrust": {
+    "enable": true,
+    "max-batch-size": 1000000,
+    "request-timeout": "30s",
+    "rpc-aggregator": {
+      "enable": true,
+      "assumed-honest": 1,
+      "backends": [
+        {"url": "http://das-committee-a:9876", "pubkey": "$bls_a"},
+        {"url": "http://das-committee-b:9876", "pubkey": "$bls_b"}
+      ]
+    },
+    "rest-aggregator": {
+      "enable": true,
+      "urls": ["http://das-mirror:9877"]
+    }
+  },
+  "with-data-signer": true,
+  "data-signer-wallet": {
+    "private-key": "b6b15c8cb491557369f3c7d2c287b053eb229daa9c22138887752191c9520659"
+  },
+  "provider-server": {
+    "addr": "0.0.0.0",
+    "port": $ANYTRUST_DAPROVIDER_PORT,
+    "enable-da-writer": true
+  },
+  "log-level": "DEBUG"
+}
+EOF
+
+    cat >> "$OVERRIDE_FILE" << EOF
+  daprovider-anytrust:
+    pid: host
+    image: nitro-node-dev-testnode
+    entrypoint: /usr/local/bin/daprovider
+    ports:
+      - "127.0.0.1:$ANYTRUST_DAPROVIDER_PORT:$ANYTRUST_DAPROVIDER_PORT"
+    volumes:
+      - "$ANYTRUST_DAPROVIDER_CONFIG:/config/anytrust_daprovider.json:ro"
+    command:
+      - --conf.file=/config/anytrust_daprovider.json
+    depends_on:
+      - das-committee-a
+      - das-committee-b
+      - das-mirror
+      - geth
+EOF
+fi
+
 if [ -n "${CAS_FEED_URL:-}" ]; then
     cat >> "$OVERRIDE_FILE" << EOF
   poster:
@@ -137,4 +218,4 @@ if [ -n "${CAS_FEED_URL:-}" ]; then
 EOF
 fi
 
-echo "Wrote docker-compose override ($MODE mode${CAS_FEED_URL:+, poster→$CAS_FEED_URL}) to $OVERRIDE_FILE"
+echo "Wrote docker-compose override ($MODE mode${CAS_FEED_URL:+, poster→$CAS_FEED_URL}${ANYTRUST:+, anytrust sidecar enabled}) to $OVERRIDE_FILE"

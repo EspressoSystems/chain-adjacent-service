@@ -17,9 +17,15 @@ pub fn setup_l1_reuse_mode() {
 
 /// Same as [`setup_l1_reuse_mode`] but additionally rewrites the `poster`
 /// service so it subscribes to the given CAS feed and uses the given CAS
-/// DA RPC for batch data.
-pub fn setup_l1_reuse_mode_with_cas_poster(feed_url: &str, cas_rpc_url: &str) {
-    run_write_override(&[("CAS_FEED_URL", feed_url), ("CAS_RPC_URL", cas_rpc_url)]);
+/// DA RPC for batch data. Set `anytrust = true` to also include a
+/// `daprovider --mode anytrust` sidecar service that CAS forwards
+/// anytrust requests to.
+pub fn setup_l1_reuse_mode_with_cas_poster(feed_url: &str, cas_rpc_url: &str, anytrust: bool) {
+    let mut envs = vec![("CAS_FEED_URL", feed_url), ("CAS_RPC_URL", cas_rpc_url)];
+    if anytrust {
+        envs.push(("ANYTRUST", "1"));
+    }
+    run_write_override(&envs);
 }
 
 fn run_write_override(envs: &[(&str, &str)]) {
