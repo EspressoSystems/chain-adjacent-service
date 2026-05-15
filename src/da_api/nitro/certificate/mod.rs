@@ -17,7 +17,7 @@ use crate::{
         error::{DaApiError, DaApiResult},
         nitro::types::DAStoreResponse,
     },
-    key_manager::key_manager::{EspressoKeyManager, compute_cas_signing_hash},
+    key_manager::key_manager::{KeyManager, compute_cas_signing_hash},
 };
 use alloy::primitives::{Address, Signature};
 use serde::{Deserialize, Serialize};
@@ -197,7 +197,7 @@ impl CasCertificate {
     }
 
     pub fn build_espresso_certificate(
-        key_manager: &EspressoKeyManager,
+        key_manager: &KeyManager,
         start_message_pos: u64,
         end_message_pos: u64,
         start_hotshot_block: u64,
@@ -212,15 +212,15 @@ impl CasCertificate {
         let mut header = vec![0u8; 32];
         header[0] = CASCertificateVersion::V0 as u8;
 
-        let cas_signature = Self::build_and_sign_payload(
-            key_manager,
+        let payload = build_payload(
             start_message_pos,
             end_message_pos,
             start_hotshot_block,
             after_delayed_messages_read,
             min_hotshot_block_still_in_streamer_queue,
             downstream_cert,
-        )?;
+        );
+        let cas_signature = sign_payload(&payload, key_manager)?;
 
         Ok(Self {
             header,
@@ -271,7 +271,7 @@ impl CasCertificate {
             return Err(DaApiError::InvalidCasSignature);
         }
 
-        let payload = Self::build_canonical_payload(
+        let payload = build_payload(
             self.start_message_pos,
             self.end_message_pos,
             self.start_hotshot_block,
@@ -295,47 +295,30 @@ impl CasCertificate {
 
         Ok(())
     }
+}
 
-    fn build_canonical_payload(
-        start_message_pos: u64,
-        end_message_pos: u64,
-        start_hotshot_block: u64,
-        after_delayed_messages_read: u64,
-        min_hotshot_block_still_in_streamer_queue: u64,
-        downstream_cert: &[u8],
-    ) -> Vec<u8> {
-        let mut payload =
-            Vec::with_capacity(5 * std::mem::size_of::<u64>() + downstream_cert.len());
-        payload.extend_from_slice(&start_message_pos.to_be_bytes());
-        payload.extend_from_slice(&end_message_pos.to_be_bytes());
-        payload.extend_from_slice(&start_hotshot_block.to_be_bytes());
-        payload.extend_from_slice(&after_delayed_messages_read.to_be_bytes());
-        payload.extend_from_slice(&min_hotshot_block_still_in_streamer_queue.to_be_bytes());
-        payload.extend_from_slice(downstream_cert);
-        payload
-    }
+fn build_payload(
+    start_message_pos: u64,
+    end_message_pos: u64,
+    start_hotshot_block: u64,
+    after_delayed_messages_read: u64,
+    min_hotshot_block_still_in_streamer_queue: u64,
+    downstream_cert: &[u8],
+) -> Vec<u8> {
+    let mut enc = Encoder::new(CONTEXT_FIELDS_SIZE + downstream_cert.len());
+    enc.push_bytes(&start_message_pos.to_be_bytes());
+    enc.push_bytes(&end_message_pos.to_be_bytes());
+    enc.push_bytes(&start_hotshot_block.to_be_bytes());
+    enc.push_bytes(&after_delayed_messages_read.to_be_bytes());
+    enc.push_bytes(&min_hotshot_block_still_in_streamer_queue.to_be_bytes());
+    enc.push_bytes(downstream_cert);
+    enc.finish()
+}
 
-    fn build_and_sign_payload(
-        key_manager: &EspressoKeyManager,
-        start_message_pos: u64,
-        end_message_pos: u64,
-        start_hotshot_block: u64,
-        after_delayed_messages_read: u64,
-        min_hotshot_block_still_in_streamer_queue: u64,
-        downstream_cert: &[u8],
-    ) -> DaApiResult<[u8; 65]> {
-        let payload = Self::build_canonical_payload(
-            start_message_pos,
-            end_message_pos,
-            start_hotshot_block,
-            after_delayed_messages_read,
-            min_hotshot_block_still_in_streamer_queue,
-            downstream_cert,
-        );
-        key_manager
-            .sign_message(&payload)
-            .map_err(|e| DaApiError::Signing(e.to_string()))
-    }
+fn sign_payload(payload: &[u8], key_manager: &KeyManager) -> DaApiResult<[u8; 65]> {
+    key_manager
+        .sign_message(payload)
+        .map_err(|e| DaApiError::Signing(e.to_string()))
 }
 
 #[cfg(test)]

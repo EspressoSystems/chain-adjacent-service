@@ -11,7 +11,7 @@ use crate::{
     VerificationSender,
     config::RollupType,
     da_api::{config::DaApiConfig, error::DaApiResult, nitro::server::build_app},
-    key_manager::key_manager::EspressoKeyManager,
+    key_manager::key_manager::KeyManager,
 };
 
 const ARBITRUM_NITRO: &str = "arb";
@@ -20,7 +20,7 @@ pub async fn run(
     da_api_config: DaApiConfig,
     rollup_type: RollupType,
     verification_channel: VerificationSender,
-    key_manager: Arc<EspressoKeyManager>,
+    key_manager: Arc<KeyManager>,
 ) -> DaApiResult<()> {
     match rollup_type {
         RollupType::Nitro => {

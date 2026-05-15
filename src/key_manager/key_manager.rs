@@ -149,7 +149,7 @@ impl AttestationProvider for NsmAttestationProvider {
     }
 }
 
-pub struct EspressoKeyManager {
+pub struct KeyManager {
     tee_verifier: Box<dyn EspressoTEEVerifier>,
     attestation_verifier_client: Box<dyn AttestationVerifierClient>,
     attestation_provider: Box<dyn AttestationProvider>,
@@ -160,7 +160,7 @@ pub struct EspressoKeyManager {
     tee_verifier_address: Address,
 }
 
-impl EspressoKeyManager {
+impl KeyManager {
     pub fn new(
         tee_verifier: Box<dyn EspressoTEEVerifier>,
         attestation_verifier_client: Box<dyn AttestationVerifierClient>,
@@ -219,7 +219,7 @@ impl EspressoKeyManager {
             ));
         }
 
-        tracing::info!("Initialized EspressoKeyManager with Nitro TEE type");
+        tracing::info!("Initialized KeyManager with Nitro TEE type");
 
         Ok(Self {
             tee_verifier,
@@ -373,6 +373,10 @@ impl EspressoKeyManager {
         self.signer.address()
     }
 
+    // TODO: TeeType::Test maps to TeeType::Nitro on-chain because the mock TEE
+    // verifier contract uses the Nitro type identifier. Once we have a dedicated
+    // test TEE type on-chain, this mapping should be removed so each variant
+    // registers under its own type.
     fn on_chain_tee_type(&self) -> TeeType {
         match self.tee_type {
             TeeType::Test => TeeType::Nitro,
@@ -560,7 +564,7 @@ mod tests {
     }
 
     struct TestContext {
-        key_manager: EspressoKeyManager,
+        key_manager: KeyManager,
         registered: Arc<StdMutex<HashSet<Address>>>,
     }
 
@@ -571,7 +575,7 @@ mod tests {
     ) -> TestContext {
         let registered = tee_verifier.registered.clone();
 
-        let key_manager = EspressoKeyManager::new_with_attestation_provider(
+        let key_manager = KeyManager::new_with_attestation_provider(
             Box::new(tee_verifier),
             Box::new(MockAttestationClient),
             Box::new(attestation_provider),

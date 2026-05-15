@@ -5,11 +5,11 @@ use alloy::{
     signers::local::PrivateKeySigner,
 };
 use anyhow::Result;
-use chain_agnostic_service::config::{RollupType, TeeTypeConfig};
+use chain_agnostic_service::config::RollupType;
 use chain_agnostic_service::da_api;
 use chain_agnostic_service::espresso_client::client::EspressoClient;
 use chain_agnostic_service::key_manager::attestation_client::HttpAttestationVerifierClient;
-use chain_agnostic_service::key_manager::key_manager::{EspressoKeyManager, TeeType};
+use chain_agnostic_service::key_manager::key_manager::KeyManager;
 use chain_agnostic_service::key_manager::tee_verifier::TEEVerifier;
 use chain_agnostic_service::rollups::nitro::types::Nitro;
 use chain_agnostic_service::rollups::rollup::L1Monitor;
@@ -60,17 +60,12 @@ async fn main() -> Result<()> {
             let provider = ProviderBuilder::new().connect_http(config.key_manager.rpc_url.clone());
             let parent_chain_id = provider.get_chain_id().await?;
 
-            let tee_type = match config.key_manager.tee_type {
-                TeeTypeConfig::Nitro => TeeType::Nitro,
-                TeeTypeConfig::Test => TeeType::Test,
-            };
-
             let signer = PrivateKeySigner::random();
-            let mut key_manager = EspressoKeyManager::new(
+            let mut key_manager = KeyManager::new(
                 Box::new(tee_verifier),
                 Box::new(attestation_client),
                 config.key_manager.max_register_attempts,
-                tee_type,
+                config.key_manager.tee_type.into(),
                 parent_chain_id,
                 config.key_manager.tee_verifier_address,
                 signer,
@@ -88,7 +83,7 @@ async fn main() -> Result<()> {
 
 async fn run<R: Rollup>(
     config: ServiceConfig<R::StackConfig>,
-    key_manager: EspressoKeyManager,
+    key_manager: KeyManager,
 ) -> Result<()> {
     let l1_monitor = R::create_l1_monitor(&config.rollup.stack).await?;
 

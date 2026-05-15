@@ -4,7 +4,7 @@ use url::Url;
 
 use crate::{
     da_api::config::DaApiConfig, espresso_client::client::Config as EspressoClientConfig,
-    submitter::submitter::SubmitterConfig,
+    key_manager::key_manager::TeeType as KmTeeType, submitter::submitter::SubmitterConfig,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -88,10 +88,19 @@ pub enum RollupType {
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
-pub enum TeeTypeConfig {
+pub enum TeeType {
     #[default]
     Nitro,
     Test,
+}
+
+impl From<TeeType> for KmTeeType {
+    fn from(val: TeeType) -> Self {
+        match val {
+            TeeType::Nitro => KmTeeType::Nitro,
+            TeeType::Test => KmTeeType::Test,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -104,7 +113,7 @@ pub struct KeyManagerConfig {
     #[serde(default = "default_attestation_client_timeout_secs")]
     pub attestation_client_timeout_secs: u64,
     #[serde(default)]
-    pub tee_type: TeeTypeConfig,
+    pub tee_type: TeeType,
 }
 
 fn default_max_register_attempts() -> u8 {

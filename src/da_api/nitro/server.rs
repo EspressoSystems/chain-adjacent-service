@@ -24,7 +24,7 @@ use crate::{
             utils::{SEQUENCER_HEADER_LEN, try_extract_da_sequencer_msg_from_espresso_da_cert},
         },
     },
-    key_manager::key_manager::EspressoKeyManager,
+    key_manager::key_manager::KeyManager,
 };
 
 const HEADER_CONTENT_TYPE: &str = "application/json";
@@ -40,14 +40,14 @@ pub struct ServerState {
     pub da_config: DaProviderConfig,
     pub client: reqwest::Client,
     pub verification_channel: VerificationSender,
-    pub key_manager: Arc<EspressoKeyManager>,
+    pub key_manager: Arc<KeyManager>,
 }
 
 impl ServerState {
     pub fn new(
         da_config: DaProviderConfig,
         verification_channel: VerificationSender,
-        key_manager: Arc<EspressoKeyManager>,
+        key_manager: Arc<KeyManager>,
     ) -> Self {
         Self {
             da_config,
@@ -68,7 +68,7 @@ pub fn build_app(
     mut providers: Vec<DaProviderConfig>,
     verification_channel: VerificationSender,
     rollup_prefix: &str,
-    key_manager: Arc<EspressoKeyManager>,
+    key_manager: Arc<KeyManager>,
 ) -> Router {
     let mut app = Router::new();
     providers.push(DaProviderConfig::calldata());

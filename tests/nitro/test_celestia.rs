@@ -17,7 +17,7 @@ use chain_agnostic_service::{
         config::{DaApiConfig, DaProviderConfig},
         run,
     },
-    key_manager::key_manager::EspressoKeyManager,
+    key_manager::key_manager::KeyManager,
 };
 use std::sync::Arc;
 
@@ -56,7 +56,7 @@ fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
             config,
             RollupType::Nitro,
             verification_channel,
-            Arc::new(EspressoKeyManager::new_signing_only()),
+            Arc::new(KeyManager::new_signing_only()),
         )
         .await
         .expect("server should start");

@@ -3,7 +3,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 
 #[cfg(test)]
-use super::key_manager::EspressoKeyManager;
+use super::key_manager::KeyManager;
 use super::key_manager::{
     AttestationProvider, AttestationVerifierClient, EspressoTEEVerifier, TeeType,
 };
@@ -43,6 +43,6 @@ impl AttestationProvider for NoOpAttestationProvider {
 }
 
 #[cfg(test)]
-pub(crate) fn test_key_manager() -> EspressoKeyManager {
-    EspressoKeyManager::new_signing_only()
+pub(crate) fn test_key_manager() -> KeyManager {
+    KeyManager::new_signing_only()
 }
