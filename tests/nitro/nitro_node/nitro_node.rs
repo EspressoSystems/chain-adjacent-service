@@ -67,7 +67,13 @@ impl NitroNode {
         // test-node.bash, but the init steps still bring up geth (L1),
         // the sequencer, and referenceda-provider when `--l2-referenceda`
         // is set. Poster is left for `start_poster()`.
-        let mut args = vec!["--init-force", "--no-tokenbridge", "--no-run", "--detach"];
+        let mut args = vec![
+            "--init-force",
+            "--no-tokenbridge",
+            "--no-run",
+            "--l2-anytrust", // for anytrust testing
+            "--detach",
+        ];
 
         if !config.simple {
             args.push("--no-simple");
@@ -154,6 +160,45 @@ impl NitroNode {
         assert!(status.success(), "`docker compose up --wait poster` failed");
     }
 
+    /// Brings up the AnyTrust DAS committee (and mirror) via
+    /// `docker compose up --wait das-committee-a das-committee-b das-mirror`.
+    pub fn start_das_committee(&self) {
+        let status = Command::new("docker")
+            .args([
+                "compose",
+                "up",
+                "--wait",
+                "das-committee-a",
+                "das-committee-b",
+                "das-mirror",
+            ])
+            .current_dir(TESTNODE_DIR)
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .expect("failed to run `docker compose up --wait das-committee-* das-mirror`");
+        assert!(
+            status.success(),
+            "`docker compose up --wait das-committee-* das-mirror` failed"
+        );
+    }
+
+    /// Brings up the `daprovider-anytrust` sidecar (configured via the
+    /// compose override written by `write-override.sh`).
+    pub fn start_anytrust_daprovider(&self) {
+        let status = Command::new("docker")
+            .args(["compose", "up", "--wait", "daprovider-anytrust"])
+            .current_dir(TESTNODE_DIR)
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .expect("failed to run `docker compose up --wait daprovider-anytrust`");
+        assert!(
+            status.success(),
+            "`docker compose up --wait daprovider-anytrust` failed"
+        );
+    }
+
     pub fn stop(&self) {
         // docker compose down -v: remove containers and volumes
         let status = Command::new("docker")
@@ -167,9 +212,6 @@ impl NitroNode {
             Ok(s) if s.success() => {}
             Ok(s) => {
                 let msg = format!("`docker compose down -v` exited with status: {s}");
-                // If we're already panicking, a second panic would abort the
-                // process immediately, swallowing the original panic message.
-                // Print instead and let the original panic surface cleanly.
                 if std::thread::panicking() {
                     eprintln!("ERROR during cleanup: {msg}");
                 } else {

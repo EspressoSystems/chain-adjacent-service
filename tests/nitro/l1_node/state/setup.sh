@@ -9,6 +9,7 @@ STATE_DIR="$SCRIPT_DIR"
 STATE_FILE="$STATE_DIR/anvil-state.json"
 CHAIN_INFO_FILE="$STATE_DIR/deployed_chain_info.json"
 DEPLOYMENT_FILE="$STATE_DIR/deployment.json"
+DAS_KEYS_DIR="$STATE_DIR/das-keys"
 WRITE_OVERRIDE="$L1_NODE_DIR/../write-override.sh"
 OVERRIDE_FILE="$NITRO_TESTNODE_DIR/docker-compose.override.yml"
 
@@ -52,10 +53,12 @@ fi
 if $FORCE_REBOOTSTRAP; then
     echo "== --init-force: removing saved state files"
     rm -f "$STATE_FILE" "$CHAIN_INFO_FILE" "$DEPLOYMENT_FILE"
+    rm -rf "$DAS_KEYS_DIR"
 fi
 
 STATE_AVAILABLE=false
-if [ -f "$STATE_FILE" ] && [ -f "$CHAIN_INFO_FILE" ] && [ -f "$DEPLOYMENT_FILE" ]; then
+if [ -f "$STATE_FILE" ] && [ -f "$CHAIN_INFO_FILE" ] && [ -f "$DEPLOYMENT_FILE" ] \
+    && [ -f "$DAS_KEYS_DIR/a/das_bls" ] && [ -f "$DAS_KEYS_DIR/b/das_bls" ]; then
     STATE_AVAILABLE=true
 fi
 
@@ -72,7 +75,7 @@ fi
 
 echo "== Running nitro testnode with anvil L1 (this may take a few minutes)"
 cd "$NITRO_TESTNODE_DIR"
-./test-node.bash --no-simple --detach --init-force
+./test-node.bash --no-simple --detach --init-force --l2-anytrust --no-run
 
 export https_proxy=""
 export http_proxy=""
@@ -97,6 +100,13 @@ if ! $STATE_AVAILABLE; then
     docker compose run --rm --entrypoint sh rollupcreator -c 'cat /config/deployed_chain_info.json' > "$CHAIN_INFO_FILE"
     docker compose run --rm --entrypoint sh rollupcreator -c 'cat /config/deployment.json' > "$DEPLOYMENT_FILE"
 
+    echo "== Saving AnyTrust BLS keys"
+    mkdir -p "$DAS_KEYS_DIR/a" "$DAS_KEYS_DIR/b"
+    docker compose run --rm --entrypoint sh datool -c 'cat /das-committee-a/keys/das_bls' > "$DAS_KEYS_DIR/a/das_bls"
+    docker compose run --rm --entrypoint sh datool -c 'cat /das-committee-a/keys/das_bls.pub' > "$DAS_KEYS_DIR/a/das_bls.pub"
+    docker compose run --rm --entrypoint sh datool -c 'cat /das-committee-b/keys/das_bls' > "$DAS_KEYS_DIR/b/das_bls"
+    docker compose run --rm --entrypoint sh datool -c 'cat /das-committee-b/keys/das_bls.pub' > "$DAS_KEYS_DIR/b/das_bls.pub"
+
     echo "== Rewriting override to reuse-mode so subsequent test-node.bash runs load the saved state"
     "$WRITE_OVERRIDE" reuse
 fi
@@ -107,6 +117,7 @@ echo "== Done."
 echo "   Anvil L1 state:          $STATE_FILE (L1 block: $L1_BLOCK)"
 echo "   Deployed chain info:     $CHAIN_INFO_FILE"
 echo "   Deployment info:         $DEPLOYMENT_FILE"
+echo "   AnyTrust BLS keys:       $DAS_KEYS_DIR"
 echo "   Sequencer L2 block:      $L2_BLOCK"
 echo ""
 echo "To restore original geth: rm $OVERRIDE_FILE"
