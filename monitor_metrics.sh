@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ALTTECH_URL="https://espresso-mainnet.alt.technology/v1/status/metrics"
-QUERY_URL="https://query-0.main.net.espresso.network/v1/status/metrics"
+QUERY_URL="https://q0-kx268rjgdiwhzue.main.net.espresso.network/v1/status/metrics"
 CSV="metrics_history.csv"
 INTERVAL=60
 COMMIT_EVERY=1
