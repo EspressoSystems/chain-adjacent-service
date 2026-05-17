@@ -30,7 +30,7 @@ sample_count=0
 
 while true; do
     cdn=$(fetch_metric "$CDN_URL" "consensus_cdn_num_failed_messages")
-    libp2p=$(fetch_metric "$LIBP2P_URL" "consensus_finalized_bytes_count")
+    libp2p=$(fetch_metric "$LIBP2P_URL" "consensus_libp2p_num_failed_messages")
 
     if [[ -z "$cdn" || -z "$libp2p" ]]; then
         echo "$(date -u '+%Y-%m-%d %H:%M:%S UTC') WARN: failed to fetch metrics (cdn='$cdn' libp2p='$libp2p')"
