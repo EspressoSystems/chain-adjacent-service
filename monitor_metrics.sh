@@ -39,10 +39,10 @@ fi
 sample_count=0
 
 while true; do
-    alttech_cdn=$(fetch_metric    "$ALTTECH_URL" "consensus_cdn_num_failed_messages")
-    alttech_libp2p=$(fetch_metric "$ALTTECH_URL" "consensus_libp2p_num_failed_messages")
-    query_cdn=$(fetch_metric      "$QUERY_URL"   "consensus_cdn_num_failed_messages")
-    query_libp2p=$(fetch_metric   "$QUERY_URL"   "consensus_libp2p_num_failed_messages")
+    alttech_cdn=$(fetch_metric    "$ALTTECH_URL" "consensus_cdn_num_failed_messages")    || true
+    alttech_libp2p=$(fetch_metric "$ALTTECH_URL" "consensus_libp2p_num_failed_messages") || true
+    query_cdn=$(fetch_metric      "$QUERY_URL"   "consensus_cdn_num_failed_messages")    || true
+    query_libp2p=$(fetch_metric   "$QUERY_URL"   "consensus_libp2p_num_failed_messages") || true
 
     if [[ -z "$alttech_cdn" || -z "$alttech_libp2p" || -z "$query_cdn" || -z "$query_libp2p" ]]; then
         echo "$(date -u '+%Y-%m-%d %H:%M:%S UTC') WARN: incomplete fetch (alttech_cdn='$alttech_cdn' alttech_libp2p='$alttech_libp2p' query_cdn='$query_cdn' query_libp2p='$query_libp2p')"
