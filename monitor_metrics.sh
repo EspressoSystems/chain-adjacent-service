@@ -5,7 +5,7 @@ ALTTECH_URL="https://espresso-mainnet.alt.technology/v1/status/metrics"
 QUERY_URL="https://query-0.main.net.espresso.network/v1/status/metrics"
 CSV="metrics_history.csv"
 INTERVAL=60
-COMMIT_EVERY=5
+COMMIT_EVERY=1
 
 fetch_metric() {
     local url="$1"
