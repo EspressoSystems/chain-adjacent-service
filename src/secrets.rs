@@ -24,11 +24,35 @@ pub struct SecretOverrides {
     pub anytrust_endpoint: String,
 }
 
-pub async fn fetch_secret_overrides() -> Result<SecretOverrides> {
-    let region = env::var(ENV_AWS_REGION)
-        .with_context(|| format!("{ENV_AWS_REGION} env var must be set"))?;
-    let secret_id = env::var(ENV_AWS_SECRET_ID)
-        .with_context(|| format!("{ENV_AWS_SECRET_ID} env var must be set"))?;
+/// Fetches the secret overrides from AWS Secrets Manager.
+///
+/// Returns `Ok(None)` when **both** `AWS_REGION` and `AWS_SECRET_ID` are
+/// unset — this lets local/e2e runs ship a fully-baked config file and skip
+/// AWS entirely. Returns `Err` if only one of the two is set (operator
+/// misconfig) or if the fetch itself fails.
+///
+/// Production safety is preserved by `assert_no_placeholders_nitro`, which
+/// runs unconditionally after the (optional) merge: an operator who forgets
+/// the env vars but ships a placeholder-laden config will still fail at
+/// startup.
+pub async fn fetch_secret_overrides() -> Result<Option<SecretOverrides>> {
+    let region = env::var(ENV_AWS_REGION).ok();
+    let secret_id = env::var(ENV_AWS_SECRET_ID).ok();
+
+    let (region, secret_id) = match (region, secret_id) {
+        (None, None) => {
+            tracing::info!(
+                "{ENV_AWS_REGION} and {ENV_AWS_SECRET_ID} not set; skipping AWS secret fetch"
+            );
+            return Ok(None);
+        }
+        (Some(_), None) | (None, Some(_)) => {
+            bail!(
+                "{ENV_AWS_REGION} and {ENV_AWS_SECRET_ID} must both be set or both unset"
+            );
+        }
+        (Some(r), Some(s)) => (r, s),
+    };
 
     let aws_cfg = aws_config::defaults(BehaviorVersion::latest())
         .region(Region::new(region))
@@ -47,7 +71,7 @@ pub async fn fetch_secret_overrides() -> Result<SecretOverrides> {
         .secret_string()
         .context("secret has no SecretString payload")?;
 
-    parse_secret_overrides(secret_str)
+    parse_secret_overrides(secret_str).map(Some)
 }
 
 pub fn parse_secret_overrides(secret_str: &str) -> Result<SecretOverrides> {
@@ -290,7 +314,8 @@ mod tests {
 
         let overrides = fetch_secret_overrides()
             .await
-            .expect("fetch_secret_overrides failed — check AWS_REGION, AWS_SECRET_ID, credentials, and secret JSON shape");
+            .expect("fetch_secret_overrides failed — check AWS_REGION, AWS_SECRET_ID, credentials, and secret JSON shape")
+            .expect("AWS_REGION and AWS_SECRET_ID must both be set to run the live integration test");
 
         assert!(
             !overrides.espresso_base_url.is_empty(),
