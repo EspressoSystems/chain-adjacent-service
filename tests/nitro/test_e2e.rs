@@ -200,7 +200,11 @@ fn read_tee_verifier_address() -> Address {
 /// Sets `is_fresh_deployment: true` so `resolve_config_with_checkpoint`
 /// preserves the `starting_hotshot_height` we wrote here instead of
 /// overwriting it with whatever it scans off L1.
-fn write_cas_config(starting_hotshot_height: u64, tee_verifier_address: Address, route: CasRoute) -> PathBuf {
+fn write_cas_config(
+    starting_hotshot_height: u64,
+    tee_verifier_address: Address,
+    route: CasRoute,
+) -> PathBuf {
     let da_server = match route {
         CasRoute::Calldata => json!({"listen_addr": "0.0.0.0:8000"}),
         CasRoute::Anytrust => json!({

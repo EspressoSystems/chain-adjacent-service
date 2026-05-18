@@ -90,7 +90,12 @@ pub fn build_app(
     providers.push(DaProviderConfig::calldata());
     for provider in providers {
         let name = provider.name.clone();
-        let mut state = ServerState::new(provider, http.clone(), verification_channel.clone(), key_manager.clone());
+        let mut state = ServerState::new(
+            provider,
+            http.clone(),
+            verification_channel.clone(),
+            key_manager.clone(),
+        );
         // Calldata is the only built-in provider that owns its own size
         // limit; everything else forwards getMaxMessageSize downstream.
         if name == "calldata" {
@@ -480,7 +485,7 @@ mod tests {
                 utils::SEQUENCER_HEADER_LEN,
             },
         },
-        key_manager::{test_utils, key_manager::KeyManager},
+        key_manager::{key_manager::KeyManager, test_utils},
     };
 
     fn valid_message() -> Bytes {
@@ -521,7 +526,14 @@ mod tests {
                 }
             });
 
-            let app = build_app(config, verification_channel, "arb", key_manager, calldata_max_size).unwrap();
+            let app = build_app(
+                config,
+                verification_channel,
+                "arb",
+                key_manager,
+                calldata_max_size,
+            )
+            .unwrap();
             let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
             axum::serve(listener, app).await.unwrap();
         })
