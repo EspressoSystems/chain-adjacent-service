@@ -16,6 +16,7 @@ RUN mkdir src && \
     echo "pub fn _dummy() {}" > src/lib.rs && \
     echo "fn main() {}" > src/main.rs && \
     cargo build --release && \
+    cargo clean --release -p chain-adjacent-service && \
     rm -rf src
 
 COPY src/ src/
@@ -25,6 +26,7 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libssl3 \
+        libcurl4 \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
