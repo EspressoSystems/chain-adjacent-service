@@ -1,0 +1,34 @@
+{
+  "mode": "anytrust",
+  "parent-chain": {
+    "node-url": "ws://geth:8546",
+    "sequencer-inbox-address": "0x18d19C5d3E685f5be5b9C86E097f0E439285D216"
+  },
+  "anytrust": {
+    "enable": true,
+    "max-batch-size": 1000000,
+    "request-timeout": "30s",
+    "rpc-aggregator": {
+      "enable": true,
+      "assumed-honest": 1,
+      "backends": [
+        {"url": "http://das-committee-a:9876", "pubkey": "YATVDzQ+bvWdhVvuBCxuLynoNi/aDJdgE01ZoKSmixhcA7dZzHWLmYGIH1BCpUB7KA/J4JzijoY9ijZe5wB4erM8hJWBXESnsnxalU71Kqp96EPriSY8Vr+ibZMFbIDrXgfvKE2r4YGCLOjIDWL+PdYCOkwvLQnA9b08QE3kvnx5x7igi+q2Y1ZiVT+nxGlS+AeMip01YWF9jh+L8kb3iXmg9lwsRfzM1/0De3Lk4EA4vCs8/MpOiAKWcEDb1SMo6ADZ2Y+6gtnmU3BRwWByDVEUZ5ZjZFeacKZWG/u7LLhAC+/+a6h9HvYEIEFVOaz+ZA6dDCEZIvxpa6U53uv1IPri0Gs+NZXz6YbF54ANpsRHgWfIV5qmb/wqg8zX+JkcYA=="},
+        {"url": "http://das-committee-b:9876", "pubkey": "YAbFZoq7q2ubE6DPsnj/3hUiI32m+Z2opCMhtPNaQlBQzpEF069XrtWGt/fDOnefJgM99CljK1Mz5j8maY8rwO2hNgWB7bUdPgwxugOj4O7SKWNH/Shd0HCq1FLoA0F2jwpXiSvmktW9A2gbrxMrXWXH/ddVLjAcundMoQl+9nsvknlS3pcKnOKHwBtVguzzbwMYHi0eA5HOIX4xkSPWkkUAxGsteQhBAkrcrdxXabEOLjf9+Yjr1AKO+0IMOJvaQhd2oSI8GVKZibfisSIZKQZ7cNnKNk8N0Uvb+bzOALeK++SPn7P1rVuZSqX9Hurt7QTYQ7AZhikx9yS/O1PvwAcV5XPG1S+4/r+F8PuYpQEHTHOGgIhPgN+EH90rLiJHdg=="}
+      ]
+    },
+    "rest-aggregator": {
+      "enable": true,
+      "urls": ["http://das-mirror:9877"]
+    }
+  },
+  "with-data-signer": true,
+  "data-signer-wallet": {
+    "private-key": "b6b15c8cb491557369f3c7d2c287b053eb229daa9c22138887752191c9520659"
+  },
+  "provider-server": {
+    "addr": "0.0.0.0",
+    "port": 9881,
+    "enable-da-writer": true
+  },
+  "log-level": "DEBUG"
+}

@@ -8,9 +8,9 @@ use tokio::{
 };
 
 use crate::{EXPECTED_RECOVER_PAYLOAD_RESPONSE, STORE_REQUEST_DATA, celestia_node::CelestiaNode};
-use chain_agnostic_service::da_api::nitro::certificate::CasCertificate;
-use chain_agnostic_service::da_api::nitro::utils::SEQUENCER_HEADER_LEN;
-use chain_agnostic_service::{
+use chain_adjacent_service::da_api::nitro::certificate::CasCertificate;
+use chain_adjacent_service::da_api::nitro::utils::SEQUENCER_HEADER_LEN;
+use chain_adjacent_service::{
     VerificationResult,
     config::RollupType,
     da_api::{
@@ -31,7 +31,9 @@ fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
         da_providers: vec![DaProviderConfig {
             name: "celestia".to_string(),
             endpoint_url: da_provider_url,
+            is_anytrust: false,
         }],
+        ..Default::default()
     };
 
     let (verification_channel, mut verify_receiver) =

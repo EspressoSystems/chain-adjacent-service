@@ -7,7 +7,7 @@ use tokio::{
     time::sleep,
 };
 
-use chain_agnostic_service::{
+use chain_adjacent_service::{
     VerificationResult,
     config::RollupType,
     da_api::{
@@ -32,7 +32,9 @@ fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
         da_providers: vec![DaProviderConfig {
             name: "referenceda".to_string(),
             endpoint_url: da_provider_url,
+            is_anytrust: false,
         }],
+        ..Default::default()
     };
 
     let (verification_channel, mut verify_receiver) =

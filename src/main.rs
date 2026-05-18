@@ -5,18 +5,18 @@ use alloy::{
     signers::local::PrivateKeySigner,
 };
 use anyhow::Result;
-use chain_agnostic_service::config::RollupType;
-use chain_agnostic_service::da_api;
-use chain_agnostic_service::espresso_client::client::EspressoClient;
-use chain_agnostic_service::key_manager::attestation_client::HttpAttestationVerifierClient;
-use chain_agnostic_service::key_manager::key_manager::KeyManager;
-use chain_agnostic_service::key_manager::tee_verifier::TEEVerifier;
-use chain_agnostic_service::rollups::nitro::types::Nitro;
-use chain_agnostic_service::rollups::rollup::L1Monitor;
-use chain_agnostic_service::streamer::streamer::Streamer;
-use chain_agnostic_service::{cas_init, config::ServiceConfig, rollups::rollup::Rollup};
+use chain_adjacent_service::config::RollupType;
+use chain_adjacent_service::da_api;
+use chain_adjacent_service::espresso_client::client::EspressoClient;
+use chain_adjacent_service::key_manager::attestation_client::HttpAttestationVerifierClient;
+use chain_adjacent_service::key_manager::key_manager::KeyManager;
+use chain_adjacent_service::key_manager::tee_verifier::TEEVerifier;
+use chain_adjacent_service::rollups::nitro::types::Nitro;
+use chain_adjacent_service::rollups::rollup::L1Monitor;
+use chain_adjacent_service::streamer::streamer::Streamer;
+use chain_adjacent_service::{cas_init, config::ServiceConfig, rollups::rollup::Rollup};
 
-use chain_agnostic_service::submitter::submitter::Submitter;
+use chain_adjacent_service::submitter::submitter::Submitter;
 use clap::Parser;
 use espresso_types::NamespaceId;
 use tokio::sync::{mpsc, watch};

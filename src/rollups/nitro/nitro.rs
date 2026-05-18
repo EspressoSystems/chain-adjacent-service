@@ -424,7 +424,7 @@ pub fn verify_broadcast_feed_message_signature(
     sequencer_addresses: &[Address],
     msg: &BroadcastFeedMessage,
 ) -> Result<()> {
-    let hash = compute_message_hash(&msg.message, msg.sequence_number, chain_id);
+    let hash = signature_hash(msg, chain_id)?;
     let signer = recover_signer_address(hash, &msg.signature)?;
 
     if !sequencer_addresses.contains(&signer) {
@@ -432,36 +432,51 @@ pub fn verify_broadcast_feed_message_signature(
             "recovered signer: {:?} is not in the list of sequencer addresses",
             signer
         );
-        Err(anyhow::anyhow!("invalid message signature"))
+        Err(anyhow::anyhow!(format!("signer is not valid: {signer:?}")))
     } else {
         Ok(())
     }
 }
 
-pub fn compute_message_hash(
-    message: &MessageWithMetadata,
-    sequence_number: u64,
-    chain_id: u64,
-) -> FixedBytes<32> {
-    use alloy::primitives::Keccak256;
-
-    // Match Go: 24 bytes of big-endian extra data
-    let mut extra_data = [0u8; 24];
-    extra_data[0..8].copy_from_slice(&sequence_number.to_be_bytes());
-    extra_data[8..16].copy_from_slice(&chain_id.to_be_bytes());
-    extra_data[16..24].copy_from_slice(&message.delayed_messages_read.to_be_bytes());
-
-    // RLP-encode the L1IncomingMessage (nil pointer → empty list)
-    let serialized_message = match &message.message {
-        Some(msg) => alloy_rlp::encode(msg),
-        None => vec![0xC0], // empty RLP list
-    };
+/// Mirrors `BroadcastFeedMessage.SignatureHash` in
+/// broadcaster/message/message.go from upstream nitro v3.10. Hashes the
+/// hand-picked subset of fields covered by the sequencer signature, prefixed
+/// with "Arbitrum Nitro Feed:".
+pub fn signature_hash(msg: &BroadcastFeedMessage, chain_id: u64) -> Result<FixedBytes<32>> {
+    let l1_msg = msg
+        .message
+        .message
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("BroadcastFeedMessage missing L1IncomingMessage"))?;
+    let header = l1_msg
+        .header
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("BroadcastFeedMessage missing L1IncomingMessageHeader"))?;
 
     let mut hasher = Keccak256::new();
     hasher.update(b"Arbitrum Nitro Feed:");
-    hasher.update(extra_data);
-    hasher.update(&serialized_message);
-    hasher.finalize()
+    hasher.update(chain_id.to_be_bytes());
+    hasher.update(msg.sequence_number.to_be_bytes());
+    if let Some(block_hash) = &msg.block_hash {
+        hasher.update(block_hash.as_slice());
+    }
+    hasher.update(&msg.block_metadata);
+    hasher.update(msg.message.delayed_messages_read.to_be_bytes());
+
+    hasher.update([header.kind]);
+    hasher.update(header.poster.as_slice());
+    hasher.update(header.block_number.to_be_bytes());
+    hasher.update(header.timestamp.to_be_bytes());
+    if let Some(request_id) = &header.request_id {
+        hasher.update(request_id.as_slice());
+    }
+    if let Some(base_fee) = &header.l1_base_fee {
+        // Match Go big.Int.Bytes(): minimal big-endian representation.
+        hasher.update(base_fee.to_be_bytes_trimmed_vec());
+    }
+    hasher.update(&l1_msg.l2msg);
+
+    Ok(hasher.finalize())
 }
 
 const HOTSHOT_TX_PAYLOAD_MAX_SIZE: usize = 900 * 1024; // 900KB, under Espresso's 1MB limit

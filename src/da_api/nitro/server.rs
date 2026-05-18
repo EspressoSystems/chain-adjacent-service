@@ -29,7 +29,10 @@ use crate::{
 
 const HEADER_CONTENT_TYPE: &str = "application/json";
 
+const ESPRESSO_HEADER_BYTE: u8 = 0x70;
+
 const STORE: &str = "daprovider_store";
+const GET_MAX_MESSAGE_SIZE: &str = "daprovider_getMaxMessageSize";
 const RECOVER_PAYLOAD: &str = "daprovider_recoverPayload";
 const COLLECT_PREIMAGES: &str = "daprovider_collectPreimages";
 const RECOVER_PAYLOAD_AND_PREIMAGES: &str = "daprovider_recoverPayloadAndPreimages";
@@ -41,19 +44,26 @@ pub struct ServerState {
     pub client: reqwest::Client,
     pub verification_channel: VerificationSender,
     pub key_manager: Arc<KeyManager>,
+    /// `daprovider_getMaxMessageSize` is answered locally with this value
+    /// when set. `None` means the route forwards the call downstream (used
+    /// for forwarded providers like Celestia or AnyTrust where the
+    /// downstream owns the size limit).
+    pub max_message_size: Option<u64>,
 }
 
 impl ServerState {
     pub fn new(
         da_config: DaProviderConfig,
+        client: reqwest::Client,
         verification_channel: VerificationSender,
         key_manager: Arc<KeyManager>,
     ) -> Self {
         Self {
             da_config,
-            client: reqwest::Client::new(),
+            client,
             verification_channel,
             key_manager,
+            max_message_size: None,
         }
     }
 
@@ -62,23 +72,35 @@ impl ServerState {
     }
 }
 
-/// Build the top-level Axum router. Each DA provider is mounted at `/{rollup_prefix}/{name}`,
-/// e.g. `/arb/celestia`, `/arb/anytrust`. All paths expose identical RPC handler logic.
+/// Build the top-level Axum router. Each DA provider is mounted at
+/// `/{rollup_prefix}/{name}`, e.g. `/arb/celestia`, `/arb/anytrust`. CAS
+/// validates the Espresso wrapper and forwards `daprovider_*` calls to the
+/// provider's endpoint — for AnyTrust, that endpoint is a sidecar
+/// `daprovider --mode anytrust` running alongside the node.
 pub fn build_app(
     mut providers: Vec<DaProviderConfig>,
     verification_channel: VerificationSender,
     rollup_prefix: &str,
     key_manager: Arc<KeyManager>,
-) -> Router {
+    calldata_max_size: u64,
+) -> Result<Router, DaApiError> {
+    let http = reqwest::Client::new();
+
     let mut app = Router::new();
     providers.push(DaProviderConfig::calldata());
     for provider in providers {
         let name = provider.name.clone();
-        let state = ServerState::new(provider, verification_channel.clone(), key_manager.clone());
+        let mut state = ServerState::new(provider, http.clone(), verification_channel.clone(), key_manager.clone());
+        // Calldata is the only built-in provider that owns its own size
+        // limit; everything else forwards getMaxMessageSize downstream.
+        if name == "calldata" {
+            state.max_message_size = Some(calldata_max_size);
+        }
         let sub = Router::new().route("/", post(handle_rpc)).with_state(state);
         app = app.nest(&format!("/{rollup_prefix}/{name}"), sub);
     }
-    app
+
+    Ok(app)
 }
 
 async fn handle_rpc(State(state): State<ServerState>, body: Bytes) -> Result<Response, DaApiError> {
@@ -96,16 +118,25 @@ async fn handle_rpc(State(state): State<ServerState>, body: Bytes) -> Result<Res
         RECOVER_PAYLOAD_AND_PREIMAGES => {
             handle_recover_inner(state, parsed, RECOVER_PAYLOAD_AND_PREIMAGES).await
         }
-        GET_SUPPORTED_HEADER_BYTES if state.da_config.name == "calldata" => {
-            let result = serde_json::json!({
-                "id": parsed["id"],
-                "jsonrpc": "2.0",
-                "result": {"headerBytes": "0x70"}
-            });
-            let bytes = serde_json::to_vec(&result)
-                .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
-            Ok((StatusCode::OK, bytes).into_response())
+        GET_SUPPORTED_HEADER_BYTES
+            if state.da_config.name == "calldata" || state.da_config.is_anytrust =>
+        {
+            respond_header_bytes(&parsed["id"], &[ESPRESSO_HEADER_BYTE])
         }
+        GET_SUPPORTED_HEADER_BYTES => handle_supported_header_bytes_forwarded(state, parsed).await,
+        GET_MAX_MESSAGE_SIZE => match state.max_message_size {
+            Some(max_size) => {
+                let result = serde_json::json!({
+                    "id": parsed["id"],
+                    "jsonrpc": "2.0",
+                    "result": {"maxSize": max_size}
+                });
+                let bytes = serde_json::to_vec(&result)
+                    .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
+                Ok((StatusCode::OK, bytes).into_response())
+            }
+            None => forward_raw(state, body).await,
+        },
         _ => forward_raw(state, body).await,
     }
 }
@@ -135,6 +166,70 @@ async fn forward_raw(state: ServerState, body: Bytes) -> Result<Response, DaApiE
         bytes,
     )
         .into_response())
+}
+
+fn respond_header_bytes(id: &Value, bytes: &[u8]) -> Result<Response, DaApiError> {
+    let result = serde_json::json!({
+        "id": id,
+        "jsonrpc": "2.0",
+        "result": {"headerBytes": format!("0x{}", hex::encode(bytes))},
+    });
+    let body =
+        serde_json::to_vec(&result).map_err(|err| DaApiError::ParsingError(err.to_string()))?;
+    Ok((StatusCode::OK, body).into_response())
+}
+
+async fn handle_supported_header_bytes_forwarded(
+    state: ServerState,
+    body: Value,
+) -> Result<Response, DaApiError> {
+    let endpoint = state.current_endpoint();
+
+    let downstream = state
+        .client
+        .post(endpoint)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|err| DaApiError::DownstreamDa(err.to_string()))?;
+
+    let status = downstream.status();
+    let raw = downstream
+        .bytes()
+        .await
+        .map_err(|e| DaApiError::ParsingError(e.to_string()))?;
+
+    if !status.is_success() {
+        return Ok((
+            status,
+            [(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)],
+            raw,
+        )
+            .into_response());
+    }
+
+    let parsed: Value =
+        serde_json::from_slice(&raw).map_err(|e| DaApiError::ParsingError(e.to_string()))?;
+    if parsed.get("error").is_some() {
+        return Ok((
+            status,
+            [(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)],
+            raw,
+        )
+            .into_response());
+    }
+
+    let hex_str = parsed["result"]["headerBytes"]
+        .as_str()
+        .ok_or_else(|| DaApiError::ParsingError("missing headerBytes in response".to_string()))?;
+    let downstream_bytes = hex::decode(hex_str.strip_prefix("0x").unwrap_or(hex_str))
+        .map_err(|e| DaApiError::ParsingError(format!("bad headerBytes hex: {e}")))?;
+
+    let mut combined = Vec::with_capacity(1 + downstream_bytes.len());
+    combined.push(ESPRESSO_HEADER_BYTE);
+    combined.extend_from_slice(&downstream_bytes);
+
+    respond_header_bytes(&body["id"], &combined)
 }
 
 /// Intecept a `Store` RPC call.
@@ -385,7 +480,7 @@ mod tests {
                 utils::SEQUENCER_HEADER_LEN,
             },
         },
-        key_manager::test_utils,
+        key_manager::{test_utils, key_manager::KeyManager},
     };
 
     fn valid_message() -> Bytes {
@@ -396,8 +491,19 @@ mod tests {
         "0x010500000000000000000000" // 0x01, 0x05, then padding
     }
 
+    const TEST_CALLDATA_MAX_SIZE: u64 = 50_000;
+
     fn spawn_server(addr: SocketAddr, config: Vec<DaProviderConfig>) -> JoinHandle<()> {
         let km = Arc::new(test_utils::test_key_manager());
+        spawn_server_with(addr, config, TEST_CALLDATA_MAX_SIZE, km)
+    }
+
+    fn spawn_server_with(
+        addr: SocketAddr,
+        config: Vec<DaProviderConfig>,
+        calldata_max_size: u64,
+        key_manager: Arc<KeyManager>,
+    ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let (verification_channel, mut verify_receiver) =
                 tokio::sync::mpsc::channel::<(Bytes, oneshot::Sender<VerificationResult>)>(1);
@@ -415,7 +521,7 @@ mod tests {
                 }
             });
 
-            let app = build_app(config, verification_channel, "arb", km);
+            let app = build_app(config, verification_channel, "arb", key_manager, calldata_max_size).unwrap();
             let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
             axum::serve(listener, app).await.unwrap();
         })
@@ -433,10 +539,12 @@ mod tests {
                 DaProviderConfig {
                     name: "celestia".to_string(),
                     endpoint_url: mock_da_provider.uri(),
+                    is_anytrust: false,
                 },
                 DaProviderConfig {
                     name: "anytrust".to_string(),
                     endpoint_url: mock_da_provider2.uri(),
+                    is_anytrust: false,
                 },
             ],
         );
@@ -491,8 +599,54 @@ mod tests {
             .await
             .expect("RPC call failed");
 
-        assert_eq!(response1["headerBytes"], "0x63");
-        assert_eq!(response2["headerBytes"], "0x80");
+        // Forwarded providers: CAS prepends 0x70 (the Espresso wrapper
+        // byte) onto the downstream's reported header bytes, so the
+        // poster routes both wrapped messages AND raw downstream certs
+        // to this CAS endpoint.
+        assert_eq!(response1["headerBytes"], "0x7063");
+        assert_eq!(response2["headerBytes"], "0x7080");
+    }
+
+    #[tokio::test]
+    async fn test_anytrust_header_bytes_returned_locally() {
+        // is_anytrust=true: CAS answers `0x70` only and does NOT call
+        // the downstream sidecar (which would return 0x8088). The
+        // poster's local AnyTrust handler keeps ownership of 0x80/0x88.
+        let mock_da_provider = MockServer::start().await;
+
+        // If CAS forwards, the mock will record the request — we assert
+        // below that it did NOT receive any.
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&mock_da_provider)
+            .await;
+
+        let addr: SocketAddr = "127.0.0.1:9968".parse().unwrap();
+        let _server = spawn_server(
+            addr,
+            vec![DaProviderConfig {
+                name: "anytrust".to_string(),
+                endpoint_url: mock_da_provider.uri(),
+                is_anytrust: true,
+            }],
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}/arb/anytrust"))
+            .unwrap();
+
+        let response: serde_json::Value = client
+            .request("daprovider_getSupportedHeaderBytes", rpc_params![])
+            .await
+            .expect("RPC call failed");
+
+        assert_eq!(response["headerBytes"], "0x70");
+        assert_eq!(
+            mock_da_provider.received_requests().await.unwrap().len(),
+            0,
+            "is_anytrust=true must not forward getSupportedHeaderBytes"
+        );
     }
 
     #[tokio::test]
@@ -505,6 +659,7 @@ mod tests {
             vec![DaProviderConfig {
                 name: "celestia".to_string(),
                 endpoint_url: mock_da_provider.uri(),
+                is_anytrust: false,
             }],
         );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -550,7 +705,7 @@ mod tests {
                 ResponseTemplate::new(200).set_body_json(json!({
                     "jsonrpc": "2.0",
                     "id":id,
-                    "result": { "header_bytes": "0xdeadbeef" }
+                    "result": { "headerBytes": "0xdeadbeef" }
                 }))
             })
             .mount(&mock_da_provider)
@@ -560,7 +715,10 @@ mod tests {
             .request("daprovider_getSupportedHeaderBytes", rpc_params![])
             .await
             .expect("RPC call failed");
-        assert!(response1["header_bytes"] == "0xdeadbeef");
+        // CAS prepends 0x70 (Espresso wrapper byte) to the downstream's
+        // reported header bytes, so the poster routes both wrapped and
+        // raw celestia certs to CAS.
+        assert!(response1["headerBytes"] == "0x70deadbeef");
 
         // Test all intercepting RPC calls
 
@@ -734,6 +892,7 @@ mod tests {
             vec![DaProviderConfig {
                 name: "celestia".to_string(),
                 endpoint_url: mock_da_provider.uri(),
+                is_anytrust: false,
             }],
         );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -784,6 +943,7 @@ mod tests {
             vec![DaProviderConfig {
                 name: "celestia".to_string(),
                 endpoint_url: mock_da_provider.uri(),
+                is_anytrust: false,
             }],
         );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -831,6 +991,7 @@ mod tests {
             vec![DaProviderConfig {
                 name: "celestia".to_string(),
                 endpoint_url: mock_da_provider.uri(),
+                is_anytrust: false,
             }],
         );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -866,6 +1027,7 @@ mod tests {
             vec![DaProviderConfig {
                 name: "celestia".to_string(),
                 endpoint_url: mock_da_provider.uri(),
+                is_anytrust: false,
             }],
         );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -914,6 +1076,7 @@ mod tests {
             vec![DaProviderConfig {
                 name: "celestia".to_string(),
                 endpoint_url: mock_da_provider.uri(),
+                is_anytrust: false,
             }],
         );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -927,6 +1090,28 @@ mod tests {
             .await;
 
         assert!(response.is_err(), "should fail with wrong field name");
+    }
+
+    #[tokio::test]
+    async fn test_calldata_max_size_is_configurable() {
+        // Use a non-default size to prove the configured value is what's
+        // returned (rather than any hard-coded constant).
+        const CUSTOM_MAX_SIZE: u64 = 123_456;
+
+        let addr: SocketAddr = "127.0.0.1:9966".parse().unwrap();
+        let km = Arc::new(test_utils::test_key_manager());
+        let _server = spawn_server_with(addr, vec![], CUSTOM_MAX_SIZE, km);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}/arb/calldata"))
+            .unwrap();
+
+        let response: serde_json::Value = client
+            .request("daprovider_getMaxMessageSize", rpc_params![])
+            .await
+            .expect("RPC call failed");
+        assert_eq!(response["maxSize"], CUSTOM_MAX_SIZE);
     }
 
     #[tokio::test]
@@ -952,6 +1137,7 @@ mod tests {
             vec![DaProviderConfig {
                 name: "celestia".to_string(),
                 endpoint_url: mock_da_provider.uri(),
+                is_anytrust: false,
             }],
         );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
