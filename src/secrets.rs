@@ -47,9 +47,7 @@ pub async fn fetch_secret_overrides() -> Result<Option<SecretOverrides>> {
             return Ok(None);
         }
         (Some(_), None) | (None, Some(_)) => {
-            bail!(
-                "{ENV_AWS_REGION} and {ENV_AWS_SECRET_ID} must both be set or both unset"
-            );
+            bail!("{ENV_AWS_REGION} and {ENV_AWS_SECRET_ID} must both be set or both unset");
         }
         (Some(r), Some(s)) => (r, s),
     };
