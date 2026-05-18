@@ -111,6 +111,7 @@ impl<R: Rollup> Streamer<R> {
                     self.finalized_idx = new_finalized_idx;
                     let split_at = self.queue.partition_point(|e| e.sequence_number() <= self.finalized_idx);
                     self.queue.drain(0..split_at);
+                    tracing::debug!("removed messages that are finalized {new_finalized_idx}");
                 },
                 batch_data = verification_receiver.recv() => {
                     let Some((batch_data, sender)) = batch_data else {

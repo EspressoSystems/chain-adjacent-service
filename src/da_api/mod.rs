@@ -25,7 +25,8 @@ pub async fn run(
                 verification_channel,
                 ARBITRUM_NITRO,
                 da_api_config.calldata_max_size,
-            )?;
+            )
+            .await?;
             let app = Router::new().nest("/cas", inner);
             let listener = tokio::net::TcpListener::bind(&da_api_config.listen_addr).await?;
 
