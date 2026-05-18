@@ -1,5 +1,5 @@
 [package]
-name = "chain-agnostic-service"
+name = "chain-adjacent-service"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,7 +7,7 @@ edition = "2024"
 e2e = []
 
 [lib]
-name = "chain_agnostic_service"
+name = "chain_adjacent_service"
 path = "src/lib.rs"
 
 [[test]]

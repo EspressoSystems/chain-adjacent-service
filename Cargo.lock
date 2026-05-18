@@ -2646,7 +2646,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "chain-agnostic-service"
+name = "chain-adjacent-service"
 version = "0.1.0"
 dependencies = [
  "alloy",
