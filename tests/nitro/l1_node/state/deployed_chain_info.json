@@ -38,13 +38,13 @@
       }
     },
     "rollup": {
-      "bridge": "0x7CdE78E363FaDb83BAe8b71D977F67316e565d2B",
-      "inbox": "0x3794A59eF66f519291Be9235c03F41c74f0d3412",
-      "sequencer-inbox": "0xE44f73d4e7b3C008b71CF273000703F5B6380119",
-      "deployed-at": 136,
-      "rollup": "0xed02d1F9611cE848B0b9767722F958303c68Df8a",
+      "bridge": "0xbe28923513c871F591e4E9f52Bba9D10372D27e1",
+      "inbox": "0x3Da4C250a3a3dc1AF6A18f249813F790d36CA105",
+      "sequencer-inbox": "0x2CB868244529eCbFE60c8854470C14B5bF2904b0",
+      "deployed-at": 144,
+      "rollup": "0x95981Fd40bd6fE9bE400D913C58f65C1C2F42097",
       "native-token": "0x0000000000000000000000000000000000000000",
-      "upgrade-executor": "0xbd38ba62Be469228277ED4dEA343360672d2c4eb",
+      "upgrade-executor": "0x4Ec50CB86f8faacd06A1AC3439398c294a66BEFC",
       "validator-wallet-creator": "0xB7FE37712e46F28C8f22Ec4bAA33A09fb8B52BD0",
       "stake-token": "0x217788c286797D56Cd59aF5e493f3699C39cbbe8"
     }
