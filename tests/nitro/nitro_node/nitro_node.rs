@@ -69,10 +69,15 @@ impl NitroNode {
         let _ = Command::new("docker")
             .args([
                 "compose",
-                "--profile", "poster",
-                "--profile", "deploy",
-                "--profile", "anytrust",
-                "down", "-v", "--remove-orphans",
+                "--profile",
+                "poster",
+                "--profile",
+                "deploy",
+                "--profile",
+                "anytrust",
+                "down",
+                "-v",
+                "--remove-orphans",
             ])
             .current_dir(COMPOSE_DIR)
             .stdout(Stdio::inherit())
@@ -84,8 +89,13 @@ impl NitroNode {
         if cached {
             println!("Using cached L1 deployment (skipping rollup-creator)");
             let mut args: Vec<&str> = vec![
-                "compose", "up", "-d", "--wait",
-                "l1-anvil", "espresso-dev-node", "sequencer",
+                "compose",
+                "up",
+                "-d",
+                "--wait",
+                "l1-anvil",
+                "espresso-dev-node",
+                "sequencer",
             ];
             if !config.no_l2_traffic {
                 args.push("tx-generator");
@@ -95,21 +105,19 @@ impl NitroNode {
             println!("Fresh deployment (will cache L1 state after)");
 
             run_compose(&[
-                "compose", "up", "-d", "--wait",
-                "l1-anvil", "espresso-dev-node",
+                "compose",
+                "up",
+                "-d",
+                "--wait",
+                "l1-anvil",
+                "espresso-dev-node",
             ]);
 
-            run_compose(&[
-                "compose", "--profile", "deploy",
-                "up", "rollup-creator",
-            ]);
+            run_compose(&["compose", "--profile", "deploy", "up", "rollup-creator"]);
 
             dump_l1_state();
 
-            let mut args: Vec<&str> = vec![
-                "compose", "up", "-d", "--wait",
-                "sequencer",
-            ];
+            let mut args: Vec<&str> = vec!["compose", "up", "-d", "--wait", "sequencer"];
             if !config.no_l2_traffic {
                 args.push("tx-generator");
             }
@@ -128,8 +136,13 @@ impl NitroNode {
         let _ = Command::new("docker")
             .args([
                 "compose",
-                "--profile", "poster",
-                "rm", "-f", "-s", "-v", "poster",
+                "--profile",
+                "poster",
+                "rm",
+                "-f",
+                "-s",
+                "-v",
+                "poster",
             ])
             .current_dir(COMPOSE_DIR)
             .stdout(Stdio::inherit())
@@ -139,8 +152,12 @@ impl NitroNode {
         let status = Command::new("docker")
             .args([
                 "compose",
-                "--profile", "poster",
-                "up", "-d", "--wait", "poster",
+                "--profile",
+                "poster",
+                "up",
+                "-d",
+                "--wait",
+                "poster",
             ])
             .env("CAS_FEED_URL", cas_feed_url)
             .env("CAS_CALLDATA_RPC_URL", cas_calldata_rpc_url)
@@ -155,9 +172,14 @@ impl NitroNode {
     pub fn start_das_committee(&self) {
         run_compose(&[
             "compose",
-            "--profile", "anytrust",
-            "up", "-d", "--wait",
-            "das-committee-a", "das-committee-b", "das-mirror",
+            "--profile",
+            "anytrust",
+            "up",
+            "-d",
+            "--wait",
+            "das-committee-a",
+            "das-committee-b",
+            "das-mirror",
         ]);
     }
 
@@ -165,8 +187,12 @@ impl NitroNode {
         let status = Command::new("docker")
             .args([
                 "compose",
-                "--profile", "anytrust",
-                "up", "-d", "--wait", "daprovider-anytrust",
+                "--profile",
+                "anytrust",
+                "up",
+                "-d",
+                "--wait",
+                "daprovider-anytrust",
             ])
             .env("SEQUENCER_INBOX_ADDRESS", sequencer_inbox_address)
             .current_dir(COMPOSE_DIR)
@@ -184,10 +210,15 @@ impl NitroNode {
         let status = Command::new("docker")
             .args([
                 "compose",
-                "--profile", "poster",
-                "--profile", "deploy",
-                "--profile", "anytrust",
-                "down", "-v", "--remove-orphans",
+                "--profile",
+                "poster",
+                "--profile",
+                "deploy",
+                "--profile",
+                "anytrust",
+                "down",
+                "-v",
+                "--remove-orphans",
             ])
             .current_dir(COMPOSE_DIR)
             .stdout(Stdio::inherit())

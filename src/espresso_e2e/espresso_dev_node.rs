@@ -122,7 +122,7 @@ impl EspressoDevNode {
             }
             match self.client.fetch_latest_hotshot_block_height().await {
                 Ok(height) if height > 0 => break,
-                _ => sleep(Duration::from_millis(500)).await,
+                _ => sleep(Duration::from_millis(100)).await,
             }
         }
     }

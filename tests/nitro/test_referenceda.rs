@@ -66,6 +66,8 @@ async fn test_nitro_reference_da() {
 
     let my_addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
 
+    // TODO: add referenceda-provider service to e2e/nitro/docker-compose.yml
+    // so this test has a live endpoint at localhost:9880 when un-ignored.
     let _server = spawn_server(my_addr, "http://localhost:9880".to_string());
     sleep(Duration::from_millis(100)).await;
 
