@@ -9,11 +9,10 @@ const COMPOSE_FILE: &str = concat!(
     "/src/espresso_e2e/docker-compose.yml"
 );
 
-/// EspressoDevNode runs a local Espresso node
-/// for testing purposes.
 pub struct EspressoDevNode {
     pub client: EspressoClient,
     _lifecycle_permit: Option<OwnedSemaphorePermit>,
+    manages_lifecycle: bool,
 }
 
 fn compose_lifecycle_semaphore() -> &'static std::sync::Arc<Semaphore> {
@@ -23,9 +22,9 @@ fn compose_lifecycle_semaphore() -> &'static std::sync::Arc<Semaphore> {
 
 impl Drop for EspressoDevNode {
     fn drop(&mut self) {
-        // Stop the container first, then release the permit.
-        // This ensures the old instance is fully stopped before another one is allowed to start.
-        self.stop();
+        if self.manages_lifecycle {
+            self.stop();
+        }
         self._lifecycle_permit.take();
     }
 }
@@ -35,9 +34,11 @@ impl EspressoDevNode {
         Self {
             client,
             _lifecycle_permit: None,
+            manages_lifecycle: false,
         }
     }
 
+    /// Used by unit tests that only need the Espresso node (not the full Nitro stack).
     pub async fn start() -> Self {
         let lifecycle_permit = compose_lifecycle_semaphore()
             .clone()
@@ -45,7 +46,6 @@ impl EspressoDevNode {
             .await
             .expect("compose lifecycle semaphore closed");
 
-        // Check if the dev node is already running
         let output = Command::new("docker")
             .args([
                 "compose",
@@ -63,8 +63,6 @@ impl EspressoDevNode {
             output.status.success() && !String::from_utf8_lossy(&output.stdout).trim().is_empty();
 
         if !already_running {
-            // Remove any stale containers and volumes from previous runs to avoid
-            // name conflicts and inherited state.
             let _ = Command::new("docker")
                 .args([
                     "compose",
@@ -92,22 +90,39 @@ impl EspressoDevNode {
         let node = Self {
             client,
             _lifecycle_permit: Some(lifecycle_permit),
+            manages_lifecycle: true,
         };
         node.wait_until_ready().await;
         node
     }
 
-    /// Polls `status/block-height` until the node reports a height > 0.
+    /// Connects to an already-running Espresso dev node (started by the e2e compose stack).
+    pub async fn connect() -> Self {
+        let client = EspressoClient::new(
+            format!("http://localhost:{ESPRESSO_SEQUENCER_API_PORT}/"),
+            30,
+        );
+        let node = Self {
+            client,
+            _lifecycle_permit: None,
+            manages_lifecycle: false,
+        };
+        node.wait_until_ready().await;
+        node
+    }
+
     async fn wait_until_ready(&self) {
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = Instant::now() + Duration::from_secs(120);
         loop {
             if Instant::now() >= deadline {
-                self.stop();
-                panic!("timed out waiting for node to be ready");
+                if self.manages_lifecycle {
+                    self.stop();
+                }
+                panic!("timed out waiting for Espresso dev node to be ready");
             }
             match self.client.fetch_latest_hotshot_block_height().await {
                 Ok(height) if height > 0 => break,
-                _ => sleep(Duration::from_millis(100)).await,
+                _ => sleep(Duration::from_millis(500)).await,
             }
         }
     }

@@ -1,0 +1,292 @@
+services:
+  l1-anvil:
+    image: ghcr.io/foundry-rs/foundry:latest
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        if [ -f /data/l1-state.json ]; then
+          echo "Loading cached L1 state..."
+          anvil --host 0.0.0.0 --block-time 1 --chain-id 1337 --load-state /data/l1-state.json
+        else
+          echo "Starting fresh L1 (state will be dumped on exit)..."
+          anvil --host 0.0.0.0 --block-time 1 --chain-id 1337 --dump-state /data/l1-state.json
+        fi
+    volumes:
+      - "./generated-config:/data"
+    ports:
+      - "8545:8545"
+    healthcheck:
+      test: ["CMD", "cast", "block-number", "--rpc-url", "http://localhost:8545"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
+  # ── Espresso sequencer dev node ─────────────────────────────────────────────
+  espresso-dev-node:
+    image: ${ESPRESSO_DEV_NODE_IMAGE}
+    ports:
+      - "${ESPRESSO_SEQUENCER_API_PORT}:${ESPRESSO_SEQUENCER_API_PORT}"
+      - "${ESPRESSO_DEV_NODE_PORT}:${ESPRESSO_DEV_NODE_PORT}"
+      - "${ESPRESSO_BUILDER_PORT}:${ESPRESSO_BUILDER_PORT}"
+    volumes:
+      - espresso-data:/data
+    environment:
+      ESPRESSO_BUILDER_PORT: ${ESPRESSO_BUILDER_PORT}
+      ESPRESSO_DEPLOYER_ACCOUNT_INDEX: ${ESPRESSO_DEPLOYER_ACCOUNT_INDEX}
+      ESPRESSO_DEV_NODE_PORT: ${ESPRESSO_DEV_NODE_PORT}
+      ESPRESSO_SEQUENCER_API_PORT: ${ESPRESSO_SEQUENCER_API_PORT}
+      ESPRESSO_SEQUENCER_ETH_MNEMONIC: ${ESPRESSO_SEQUENCER_ETH_MNEMONIC}
+      ESPRESSO_SEQUENCER_DATABASE_MAX_CONNECTIONS: 25
+      ESPRESSO_DEV_NODE_EPOCH_HEIGHT: ${ESPRESSO_DEV_NODE_EPOCH_HEIGHT}
+      ESPRESSO_SEQUENCER_STORAGE_PATH: /data/espresso
+      ESPRESSO_DEV_NODE_L1_DEPLOYMENT: skip
+      ESPRESSO_SEQUENCER_LIGHT_CLIENT_PROXY_ADDRESS: "0x0f1f89aaf1c6fdb7ff9d361e4388f5f3997f12a8"
+      ESPRESSO_SEQUENCER_STAKE_TABLE_ADDRESS: "0x63e6dde6763c3466c7b45be880f7ee5dc2ca3e25"
+      ESPRESSO_SEQUENCER_STAKE_TABLE_PROXY_ADDRESS: "0x9f5eac3d8e082f47631f1551f1343f23cd427162"
+      RUST_LOG: warn
+      ESPRESSO_DEV_NODE_VERSION: "0.4"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "-sf",
+          "http://localhost:${ESPRESSO_SEQUENCER_API_PORT}/healthcheck",
+        ]
+      interval: 3s
+      timeout: 2s
+      retries: 30
+
+  rollup-creator:
+    build:
+      context: .
+      dockerfile: rollup-creator.Dockerfile
+    volumes:
+      - "./generated-config:/config"
+      - "./nitro-config:/nitro-config"
+    environment:
+      DEPLOYER_PRIVKEY: ${DEPLOYER_PRIVATE_KEY}
+      PARENT_CHAIN_RPC: "http://l1-anvil:8545"
+      PARENT_CHAIN_ID: 1337
+      CHILD_CHAIN_NAME: "arb-dev-test"
+      CHILD_CHAIN_CONFIG_PATH: "/nitro-config/l2_chain_config.json"
+      CHAIN_DEPLOYMENT_INFO: "/config/deployment.json"
+      CHILD_CHAIN_INFO: "/config/deployed_chain_info.json"
+      OWNER_ADDRESS: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+      SEQUENCER_ADDRESS: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+      AUTHORIZE_VALIDATORS: 10
+      MAX_DATA_SIZE: 117964
+      WASM_MODULE_ROOT: "0xc2c02df561d4afaf9a1d6785f70098ec3874765c638e3cb6dbe8d3c83333e14c"
+    depends_on:
+      l1-anvil:
+        condition: service_healthy
+    profiles:
+      - deploy
+
+  sequencer:
+    image: ${NITRO_IMAGE}
+    entrypoint: /usr/local/bin/nitro
+    ports:
+      - "8547:8547"
+      - "8548:8548"
+      - "9642:9642"
+    volumes:
+      - "nitro-sequencer:/home/user/.arbitrum/local/nitro"
+      - "l1keystore:/home/user/l1keystore"
+      - "./generated-config:/config"
+      - "./nitro-config:/nitro-config"
+    command:
+      - --conf.file=/nitro-config/sequencer_config.json
+      - --node.batch-poster.enable=false
+      - --node.batch-poster.parent-chain-wallet.private-key=${BATCH_POSTER_PRIVATE_KEY}
+      - --node.staker.enable=false
+      - --execution.sequencer.enable=true
+      - --node.feed.output.signed=true
+      - --http.api=net,web3,eth,txpool,debug
+      - --node.seq-coordinator.my-url=http://sequencer:8547
+    depends_on:
+      l1-anvil:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "-sf",
+          "-X",
+          "POST",
+          "--data",
+          '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}',
+          "-H",
+          "Content-Type: application/json",
+          "http://localhost:8547",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  poster:
+    image: ${NITRO_IMAGE}
+    entrypoint: /usr/local/bin/nitro
+    volumes:
+      - "nitro-poster:/home/user/.arbitrum/local/nitro"
+      - "l1keystore:/home/user/l1keystore"
+      - "./generated-config:/config"
+      - "./nitro-config:/nitro-config"
+    command:
+      - --conf.file=/nitro-config/poster_config.json
+      - --node.batch-poster.parent-chain-wallet.private-key=${BATCH_POSTER_PRIVATE_KEY}
+      - --node.da.external-provider.enable=true
+      - --node.da.external-provider.with-writer=true
+      - --node.da.external-provider.rpc.url=${CAS_CALLDATA_RPC_URL}
+      - --node.feed.input.url=${CAS_FEED_URL}
+      - --node.dangerous.no-sequencer-coordinator=true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      sequencer:
+        condition: service_healthy
+    profiles:
+      - poster
+
+  tx-generator:
+    image: ghcr.io/foundry-rs/foundry:v1.5.1
+    depends_on:
+      sequencer:
+        condition: service_healthy
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        while true; do
+          cast send \
+            --rpc-url http://sequencer:8547 \
+            --private-key ${BATCH_POSTER_PRIVATE_KEY} \
+            0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 \
+            --value 1 2>&1 || true
+          sleep 2
+        done
+
+  # ── AnyTrust DAS committee ──────────────────────────────────────────────────
+  das-committee-a:
+    image: ${NITRO_IMAGE}
+    entrypoint: ["/usr/local/bin/anytrustserver"]
+    volumes:
+      - "./das-keys/a:/das-keys:ro"
+      - "das-a-data:/tmp/das-store"
+    command:
+      - --conf.file=/das-keys/das-committee.json
+      - --data-availability.key.key-dir=/das-keys
+      - --data-availability.local-db-storage.enable
+      - --data-availability.local-db-storage.data-dir=/tmp/das-store
+      - --data-availability.disable-signature-checking
+      - --enable-rpc
+      - --rpc-addr=0.0.0.0
+      - --rpc-port=9876
+      - --enable-rest
+      - --rest-addr=0.0.0.0
+      - --rest-port=9877
+      - --log-level=debug
+    profiles:
+      - anytrust
+
+  das-committee-b:
+    image: ${NITRO_IMAGE}
+    entrypoint: ["/usr/local/bin/anytrustserver"]
+    volumes:
+      - "./das-keys/b:/das-keys:ro"
+      - "das-b-data:/tmp/das-store"
+    command:
+      - --conf.file=/das-keys/das-committee.json
+      - --data-availability.key.key-dir=/das-keys
+      - --data-availability.local-db-storage.enable
+      - --data-availability.local-db-storage.data-dir=/tmp/das-store
+      - --data-availability.disable-signature-checking
+      - --enable-rpc
+      - --rpc-addr=0.0.0.0
+      - --rpc-port=9876
+      - --enable-rest
+      - --rest-addr=0.0.0.0
+      - --rest-port=9877
+      - --log-level=debug
+    profiles:
+      - anytrust
+
+  das-mirror:
+    image: ${NITRO_IMAGE}
+    entrypoint: ["/usr/local/bin/anytrustserver"]
+    command:
+      - --enable-rest
+      - --rest-addr=0.0.0.0
+      - --rest-port=9877
+      - --data-availability.rest-aggregator.enable
+      - --data-availability.rest-aggregator.urls=http://das-committee-a:9877,http://das-committee-b:9877
+      - --log-level=debug
+    depends_on:
+      - das-committee-a
+      - das-committee-b
+    profiles:
+      - anytrust
+
+  daprovider-anytrust:
+    image: ${NITRO_IMAGE}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        BLS_A=$$(cat /das-keys/a/das_bls.pub | tr -d '\n')
+        BLS_B=$$(cat /das-keys/b/das_bls.pub | tr -d '\n')
+        cat > /tmp/daprovider.json << DEOF
+        {
+          "mode": "anytrust",
+          "parent-chain": {
+            "node-url": "ws://l1-anvil:8545",
+            "sequencer-inbox-address": "${SEQUENCER_INBOX_ADDRESS}"
+          },
+          "anytrust": {
+            "enable": true,
+            "max-batch-size": 1000000,
+            "request-timeout": "30s",
+            "rpc-aggregator": {
+              "enable": true,
+              "assumed-honest": 1,
+              "backends": [
+                {"url": "http://das-committee-a:9876", "pubkey": "$$BLS_A"},
+                {"url": "http://das-committee-b:9876", "pubkey": "$$BLS_B"}
+              ]
+            },
+            "rest-aggregator": {
+              "enable": true,
+              "urls": ["http://das-mirror:9877"]
+            }
+          },
+          "with-data-signer": true,
+          "data-signer-wallet": {
+            "private-key": "b6b15c8cb491557369f3c7d2c287b053eb229daa9c22138887752191c9520659"
+          },
+          "provider-server": {
+            "addr": "0.0.0.0",
+            "port": 9881,
+            "enable-da-writer": true
+          },
+          "log-level": "DEBUG"
+        }
+        DEOF
+        exec /usr/local/bin/daprovider --conf.file=/tmp/daprovider.json
+    volumes:
+      - "./das-keys:/das-keys:ro"
+    ports:
+      - "127.0.0.1:9881:9881"
+    depends_on:
+      - das-committee-a
+      - das-committee-b
+      - das-mirror
+      - l1-anvil
+    profiles:
+      - anytrust
+
+volumes:
+  l1keystore:
+  espresso-data:
+  nitro-sequencer:
+  nitro-poster:
+  das-a-data:
+  das-b-data:

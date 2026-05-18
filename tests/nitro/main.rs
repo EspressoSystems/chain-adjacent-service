@@ -1,4 +1,3 @@
-mod cas_harness;
 mod celestia_node;
 mod nitro_node;
 mod test_celestia;
