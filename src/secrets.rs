@@ -8,6 +8,10 @@ use crate::config::ServiceConfig;
 use crate::rollups::nitro::config::NitroConfig;
 
 pub const PLACEHOLDER_STR: &str = "PLACEHOLDER";
+/// Sentinel value used for `espresso_client.base_url` in the on-disk config.
+/// Distinct from `PLACEHOLDER_STR` because that field is typed as `Url` and
+/// must deserialize from a parseable URL.
+pub const PLACEHOLDER_URL: &str = "http://placeholder.invalid/";
 
 pub const ENV_AWS_REGION: &str = "AWS_REGION";
 pub const ENV_AWS_SECRET_ID: &str = "AWS_SECRET_ID";
@@ -105,7 +109,7 @@ pub fn apply_overrides_nitro(
 }
 
 pub fn assert_no_placeholders_nitro(cfg: &ServiceConfig<NitroConfig>) -> Result<()> {
-    if cfg.espresso_client.base_url.as_str() == PLACEHOLDER_STR {
+    if cfg.espresso_client.base_url.as_str() == PLACEHOLDER_URL {
         bail!("espresso_client.base_url was not overridden — still placeholder sentinel");
     }
     if cfg.rollup.stack.feed.web_socket_url == PLACEHOLDER_STR {
