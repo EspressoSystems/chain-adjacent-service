@@ -247,7 +247,7 @@ fn write_cas_config(
                     }
                 },
                 "l1_ws_url": "ws://localhost:8546",
-                "sequencer_inbox_address": "0xE44f73d4e7b3C008b71CF273000703F5B6380119"
+                "sequencer_inbox_address": "0x2CB868244529eCbFE60c8854470C14B5bF2904b0"
             }
         },
         "da_server": da_server,
