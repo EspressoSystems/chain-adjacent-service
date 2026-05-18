@@ -37,4 +37,4 @@ USER cas
 WORKDIR /home/cas
 
 ENTRYPOINT ["chain-adjacent-service"]
-CMD ["--config", "/config/cas.json"]
+CMD ["--config", "/etc/cas/config.json"]
