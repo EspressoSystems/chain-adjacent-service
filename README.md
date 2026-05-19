@@ -22,7 +22,7 @@ nix develop
 ### Initial setup
 
 
-The E2E tests require Go, Docker, and the Celestia binaries. The Celestia binaries (`celestia-appd`, `celestia`) are provided by the nix devshell. On a fresh machine:
+The E2E tests require Go, Docker. On a fresh machine:
 
 ```bash
 just setup       # initialize git submodules

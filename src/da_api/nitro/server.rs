@@ -669,7 +669,7 @@ mod tests {
         let _server = spawn_server(
             addr,
             vec![DaProviderConfig {
-                name: "celestia".to_string(),
+                name: "anytrust".to_string(),
                 endpoint_url: mock_da_provider.uri(),
                 is_anytrust: false,
             }],
@@ -677,7 +677,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
-            .build(format!("http://{addr}/arb/celestia"))
+            .build(format!("http://{addr}/arb/anytrust"))
             .unwrap();
 
         // Test all pass through RPC calls
@@ -729,7 +729,7 @@ mod tests {
             .expect("RPC call failed");
         // CAS prepends 0x70 (Espresso wrapper byte) to the downstream's
         // reported header bytes, so the poster routes both wrapped and
-        // raw celestia certs to CAS.
+        // raw anytrust certs to CAS.
         assert!(response1["headerBytes"] == "0x70deadbeef");
 
         // Test all intercepting RPC calls
@@ -902,7 +902,7 @@ mod tests {
         let _server = spawn_server(
             addr,
             vec![DaProviderConfig {
-                name: "celestia".to_string(),
+                name: "anytrust".to_string(),
                 endpoint_url: mock_da_provider.uri(),
                 is_anytrust: false,
             }],
@@ -910,7 +910,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
-            .build(format!("http://{addr}/arb/celestia"))
+            .build(format!("http://{addr}/arb/anytrust"))
             .unwrap();
 
         // 50 bytes: > SEQUENCER_HEADER_LEN (40) so the length precheck passes,
@@ -953,7 +953,7 @@ mod tests {
         let _server = spawn_server(
             addr,
             vec![DaProviderConfig {
-                name: "celestia".to_string(),
+                name: "anytrust".to_string(),
                 endpoint_url: mock_da_provider.uri(),
                 is_anytrust: false,
             }],
@@ -961,7 +961,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
-            .build(format!("http://{addr}/arb/celestia"))
+            .build(format!("http://{addr}/arb/anytrust"))
             .unwrap();
 
         let short_msg = Bytes::from(vec![0u8; 10]);
@@ -1001,7 +1001,7 @@ mod tests {
         let _server = spawn_server(
             addr,
             vec![DaProviderConfig {
-                name: "celestia".to_string(),
+                name: "anytrust".to_string(),
                 endpoint_url: mock_da_provider.uri(),
                 is_anytrust: false,
             }],
@@ -1009,7 +1009,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
-            .build(format!("http://{addr}/arb/celestia"))
+            .build(format!("http://{addr}/arb/anytrust"))
             .unwrap();
 
         let response: Result<DAStoreResponse, _> = client
@@ -1037,7 +1037,7 @@ mod tests {
         let _server = spawn_server(
             addr,
             vec![DaProviderConfig {
-                name: "celestia".to_string(),
+                name: "anytrust".to_string(),
                 endpoint_url: mock_da_provider.uri(),
                 is_anytrust: false,
             }],
@@ -1045,7 +1045,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
-            .build(format!("http://{addr}/arb/celestia"))
+            .build(format!("http://{addr}/arb/anytrust"))
             .unwrap();
 
         let response: Result<DAStoreResponse, _> = client
@@ -1086,7 +1086,7 @@ mod tests {
         let _server = spawn_server(
             addr,
             vec![DaProviderConfig {
-                name: "celestia".to_string(),
+                name: "anytrust".to_string(),
                 endpoint_url: mock_da_provider.uri(),
                 is_anytrust: false,
             }],
@@ -1094,7 +1094,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
-            .build(format!("http://{addr}/arb/celestia"))
+            .build(format!("http://{addr}/arb/anytrust"))
             .unwrap();
 
         let response: Result<DAStoreResponse, _> = client
@@ -1147,7 +1147,7 @@ mod tests {
         let _server = spawn_server(
             addr,
             vec![DaProviderConfig {
-                name: "celestia".to_string(),
+                name: "anytrust".to_string(),
                 endpoint_url: mock_da_provider.uri(),
                 is_anytrust: false,
             }],
@@ -1155,7 +1155,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
-            .build(format!("http://{addr}/arb/celestia"))
+            .build(format!("http://{addr}/arb/anytrust"))
             .unwrap();
 
         let response: Result<DAStoreResponse, _> = client

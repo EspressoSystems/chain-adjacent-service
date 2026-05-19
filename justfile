@@ -1,5 +1,5 @@
 # E2E test setup and execution for CAS (Chain Agnostic Service)
-# Prerequisites: just, Rust, Go, Docker (Celestia binaries provided by the nix devshell)
+# Prerequisites: just, Rust, Go, Docker
 # First time on a fresh machine: just setup && just test-e2e
 
 # List available recipes
@@ -39,8 +39,6 @@ check:
     require cargo
     require go
     require docker
-    require celestia-appd
-    require celestia
 
     echo ""
     echo "Checking Docker daemon..."
@@ -87,7 +85,7 @@ test:
 
 # ─── Cleanup ──────────────────────────────────────────────────────────────────
 
-# Tear down leftover E2E state (containers, Celestia processes) after a crash or Ctrl-C
+# Tear down leftover E2E state (containers) after a crash or Ctrl-C
 clean:
     #!/usr/bin/env bash
     set -u
@@ -96,13 +94,5 @@ clean:
 
     echo "Stopping espresso dev-node containers..."
     docker compose -f src/espresso_e2e/docker-compose.yml down -v --remove-orphans || true
-
-    echo "Killing Celestia processes..."
-    pkill -9 -f celestia-server || true
-    pkill -f celestia-appd || true
-    pkill -f "celestia bridge" || true
-
-    echo "Removing celestia-das container..."
-    docker rm -f celestia-das >/dev/null 2>&1 || true
 
     echo "Done."
