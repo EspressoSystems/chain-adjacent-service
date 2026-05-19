@@ -20,6 +20,7 @@ use chain_adjacent_service::submitter::submitter::Submitter;
 use clap::Parser;
 use espresso_types::NamespaceId;
 use tokio::sync::{mpsc, watch};
+use tracing::info;
 
 #[derive(Parser)]
 struct Cli {
@@ -86,6 +87,7 @@ async fn run<R: Rollup>(
     key_manager: KeyManager,
 ) -> Result<()> {
     let l1_monitor = R::create_l1_monitor(&config.rollup.stack).await?;
+    info!("L1 monitor created");
 
     let (batch_cursor, hotshot_height) = if !config.is_fresh_deployment {
         let checkpoint = l1_monitor.fetch_latest_checkpoint_on_startup().await?;
@@ -158,6 +160,7 @@ async fn run<R: Rollup>(
         verification_sender,
         Arc::new(key_manager),
     );
+    info!("DA API server started");
 
     let l1_monitor_task = l1_monitor.start(l1_finalized_msg_idx_sender, batch_cursor_sender);
 
