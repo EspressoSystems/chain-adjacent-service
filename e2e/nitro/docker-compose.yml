@@ -58,9 +58,9 @@ services:
       retries: 30
 
   rollup-creator:
-    build:
-      context: .
-      dockerfile: rollup-creator.Dockerfile
+    image: ghcr.io/espressosystems/rollup-creator:63429ba
+    platform: linux/amd64
+    command: ["create-rollup-testnode"]
     volumes:
       - "./generated-config:/config"
       - "./nitro-config:/nitro-config"

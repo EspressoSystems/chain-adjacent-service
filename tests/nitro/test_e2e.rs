@@ -348,8 +348,12 @@ async fn run_e2e(route: CasRoute) {
         + 1;
     let tee_verifier_address = read_tee_verifier_address();
     println!("Using TEE verifier mock at {tee_verifier_address}");
-    let cas_config_path =
-        write_cas_config(starting_hotshot_height, route, &sequencer_inbox, tee_verifier_address);
+    let cas_config_path = write_cas_config(
+        starting_hotshot_height,
+        route,
+        &sequencer_inbox,
+        tee_verifier_address,
+    );
     println!(
         "CAS config written to {} (starting_hotshot_height={starting_hotshot_height})",
         cas_config_path.display()

@@ -13,7 +13,7 @@ RUN git clone --depth 1 --branch ${NITRO_CONTRACTS_REF} ${NITRO_CONTRACTS_REPO} 
     && git submodule update --init --recursive --depth 1
 
 RUN yarn install --frozen-lockfile
-RUN cp scripts/config.ts.example scripts/config.ts
+RUN cp scripts/config.example.ts scripts/config.ts
 RUN yarn build:all
 
 ENTRYPOINT ["yarn", "create-rollup-testnode"]
