@@ -1,7 +1,5 @@
 mod cas_harness;
-mod celestia_node;
 mod nitro_node;
-mod test_celestia;
 mod test_e2e;
 mod test_referenceda;
 
