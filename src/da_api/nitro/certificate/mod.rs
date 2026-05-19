@@ -305,9 +305,11 @@ fn build_payload(
     min_hotshot_block_still_in_streamer_queue: u64,
     downstream_cert: &[u8],
 ) -> Vec<u8> {
+    let prev_message_count = start_message_pos;
+    let new_message_count = end_message_pos + 1;
     let mut enc = Encoder::new(CONTEXT_FIELDS_SIZE + downstream_cert.len());
-    enc.push_bytes(&start_message_pos.to_be_bytes());
-    enc.push_bytes(&end_message_pos.to_be_bytes());
+    enc.push_bytes(&prev_message_count.to_be_bytes());
+    enc.push_bytes(&new_message_count.to_be_bytes());
     enc.push_bytes(&start_hotshot_block.to_be_bytes());
     enc.push_bytes(&after_delayed_messages_read.to_be_bytes());
     enc.push_bytes(&min_hotshot_block_still_in_streamer_queue.to_be_bytes());

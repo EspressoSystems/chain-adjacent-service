@@ -3,7 +3,7 @@ RUN apt-get update && \
     apt-get install -y git docker.io python3 make gcc g++ curl jq
 WORKDIR /workspace
 RUN git clone --no-checkout https://github.com/EspressoSystems/nitro-contracts.git ./
-RUN git checkout espresso-v3.2.0
+RUN git checkout fix-start-block
 RUN git submodule update --init --recursive
 RUN yarn install && yarn cache clean
 RUN curl -L https://foundry.paradigm.xyz | bash

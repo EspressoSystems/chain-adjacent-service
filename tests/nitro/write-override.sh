@@ -47,7 +47,7 @@ ANYTRUST_DAPROVIDER_PORT=9881
 
 # Sequencer inbox address from the saved L1 state (matches the constant in
 # tests/nitro/test_e2e.rs).
-SEQUENCER_INBOX_ADDRESS="0x2CB868244529eCbFE60c8854470C14B5bF2904b0"
+SEQUENCER_INBOX_ADDRESS="0xB7b68cb0E3ca9400Ff085514c0f4D021969B9Dc1"
 
 MODE="${1:-}"
 
