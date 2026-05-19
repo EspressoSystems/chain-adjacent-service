@@ -71,6 +71,43 @@ test-e2e:
 test:
     RUST_BACKTRACE=1 cargo test --all-features -- --test-threads=1
 
+# ─── L1 state generation ──────────────────────────────────────────────────────
+
+# (Re)generate the pre-deployed L1 state used by e2e tests.
+# Run this after updating nitro-contracts or the rollup-creator image.
+generate-l1-state:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    BASE="e2e/nitro/docker-compose.yml"
+    OVERRIDE="e2e/nitro/docker-compose.generate.yml"
+    CONFIG_DIR="e2e/nitro/generated-config"
+    DC="docker compose -f $BASE -f $OVERRIDE"
+
+    echo "==> Tearing down any leftover containers..."
+    $DC --profile deploy down -v --remove-orphans 2>/dev/null || true
+
+    rm -rf "$CONFIG_DIR"
+    mkdir -p "$CONFIG_DIR"
+
+    echo "==> Starting fresh Anvil L1..."
+    $DC up -d --wait l1-anvil
+
+    echo "==> Deploying rollup contracts via rollup-creator..."
+    $DC --profile deploy up rollup-creator
+
+    echo "==> Stopping Anvil (triggers state dump)..."
+    $DC stop l1-anvil
+
+    echo "==> Cleaning up containers..."
+    $DC --profile deploy down -v --remove-orphans
+
+    echo ""
+    echo "Generated files:"
+    ls -lh "$CONFIG_DIR"
+    echo ""
+    echo "Done. Commit the files in $CONFIG_DIR to the repo."
+
 # ─── Docker compose helpers ───────────────────────────────────────────────────
 
 # Bring up the e2e Nitro stack (without poster)

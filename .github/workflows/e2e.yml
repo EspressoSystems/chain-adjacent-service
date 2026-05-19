@@ -37,7 +37,6 @@ jobs:
           source .env
           docker pull "$NITRO_IMAGE"
           docker pull "$ESPRESSO_DEV_NODE_IMAGE"
-          docker pull ghcr.io/espressosystems/rollup-creator:63429ba
           docker pull ghcr.io/foundry-rs/foundry:latest
           docker pull ghcr.io/foundry-rs/foundry:v1.5.1
 

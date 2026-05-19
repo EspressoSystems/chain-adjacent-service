@@ -77,7 +77,7 @@ impl NitroNode {
         let _ = compose_down_status();
 
         let startup = (|| -> Result<(), String> {
-            println!("Fresh deployment — deploying rollup contracts to L1");
+            println!("Loading pre-deployed L1 state (run `just generate-l1-state` to regenerate)");
 
             run_compose_result(&[
                 "compose",
@@ -87,8 +87,6 @@ impl NitroNode {
                 "l1-anvil",
                 "espresso-dev-node",
             ])?;
-
-            run_compose_result(&["compose", "--profile", "deploy", "up", "rollup-creator"])?;
 
             let mut args: Vec<&str> = vec!["compose", "up", "-d", "--wait", "sequencer"];
             if !config.no_l2_traffic {
