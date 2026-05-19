@@ -8,8 +8,8 @@ use tokio::{
 };
 
 use crate::{EXPECTED_RECOVER_PAYLOAD_RESPONSE, STORE_REQUEST_DATA, celestia_node::CelestiaNode};
+use chain_adjacent_service::da_api::nitro::certificate::CasCertificate;
 use chain_adjacent_service::da_api::nitro::utils::SEQUENCER_HEADER_LEN;
-use chain_adjacent_service::da_api::nitro::utils::try_extract_da_sequencer_msg_from_espresso_da_cert;
 use chain_adjacent_service::{
     VerificationResult,
     config::RollupType,
@@ -17,7 +17,9 @@ use chain_adjacent_service::{
         config::{DaApiConfig, DaProviderConfig},
         run,
     },
+    key_manager::key_manager::KeyManager,
 };
+use std::sync::Arc;
 
 pub const _CELESTIA_DA_IDENTIFIER: &str = "0x63";
 pub const CELESTIA_DA_MAX_SIZE: usize = 33554432;
@@ -45,15 +47,21 @@ fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
                 start_message_position: 0,
                 end_message_position: 0,
                 start_espresso_block: 0,
+                after_delayed_messages_read: 0,
                 min_espresso_block_still_in_queue: 0,
             });
         }
     });
 
     tokio::spawn(async move {
-        run(config, RollupType::Nitro, verification_channel)
-            .await
-            .expect("server should start");
+        run(
+            config,
+            RollupType::Nitro,
+            verification_channel,
+            Arc::new(KeyManager::new_signing_only()),
+        )
+        .await
+        .expect("server should start");
     })
 }
 
@@ -205,11 +213,8 @@ async fn test_celestia_da_store_and_recover(my_addr: String) {
 
     assert_eq!(recover_payload, expected);
 
-    let da_cert =
-        try_extract_da_sequencer_msg_from_espresso_da_cert(&Bytes::from(sequencer_msg.clone()))
-            .unwrap()
-            .slice(SEQUENCER_HEADER_LEN..);
-    let keccak_hash_da_cert = keccak256(&da_cert).to_string();
+    let cas_cert = CasCertificate::from_bytes(&sequencer_msg[SEQUENCER_HEADER_LEN..]).unwrap();
+    let keccak_hash_da_cert = keccak256(&cas_cert.downstream_certificate).to_string();
 
     // daprovider_collectPreimages
     let collect_preimages: Result<Value, _> = client

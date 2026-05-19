@@ -2,7 +2,7 @@
   "mode": "anytrust",
   "parent-chain": {
     "node-url": "ws://geth:8546",
-    "sequencer-inbox-address": "0x18d19C5d3E685f5be5b9C86E097f0E439285D216"
+    "sequencer-inbox-address": "0xB7b68cb0E3ca9400Ff085514c0f4D021969B9Dc1"
   },
   "anytrust": {
     "enable": true,
@@ -12,8 +12,8 @@
       "enable": true,
       "assumed-honest": 1,
       "backends": [
-        {"url": "http://das-committee-a:9876", "pubkey": "YATVDzQ+bvWdhVvuBCxuLynoNi/aDJdgE01ZoKSmixhcA7dZzHWLmYGIH1BCpUB7KA/J4JzijoY9ijZe5wB4erM8hJWBXESnsnxalU71Kqp96EPriSY8Vr+ibZMFbIDrXgfvKE2r4YGCLOjIDWL+PdYCOkwvLQnA9b08QE3kvnx5x7igi+q2Y1ZiVT+nxGlS+AeMip01YWF9jh+L8kb3iXmg9lwsRfzM1/0De3Lk4EA4vCs8/MpOiAKWcEDb1SMo6ADZ2Y+6gtnmU3BRwWByDVEUZ5ZjZFeacKZWG/u7LLhAC+/+a6h9HvYEIEFVOaz+ZA6dDCEZIvxpa6U53uv1IPri0Gs+NZXz6YbF54ANpsRHgWfIV5qmb/wqg8zX+JkcYA=="},
-        {"url": "http://das-committee-b:9876", "pubkey": "YAbFZoq7q2ubE6DPsnj/3hUiI32m+Z2opCMhtPNaQlBQzpEF069XrtWGt/fDOnefJgM99CljK1Mz5j8maY8rwO2hNgWB7bUdPgwxugOj4O7SKWNH/Shd0HCq1FLoA0F2jwpXiSvmktW9A2gbrxMrXWXH/ddVLjAcundMoQl+9nsvknlS3pcKnOKHwBtVguzzbwMYHi0eA5HOIX4xkSPWkkUAxGsteQhBAkrcrdxXabEOLjf9+Yjr1AKO+0IMOJvaQhd2oSI8GVKZibfisSIZKQZ7cNnKNk8N0Uvb+bzOALeK++SPn7P1rVuZSqX9Hurt7QTYQ7AZhikx9yS/O1PvwAcV5XPG1S+4/r+F8PuYpQEHTHOGgIhPgN+EH90rLiJHdg=="}
+        {"url": "http://das-committee-a:9876", "pubkey": "YA0iF7eQb8KWQ8eQ14Yb2OQpCLcXZDU7L9rJiHAgWuB6htUM/iB8R1wlrnQ1i52NnA+DXxehPlXdmtNOk9GJYcJ5BHhy7NRL/HXtH07q5cuQfHCE/5EodkvWf/uKwCIx5BlC33CzCEtqSdPP4IaDsu6Ec4ldIBtu5ooh1IMLahgCz87OEGdnSFLOqul2NiUmjQa/Ks/1G9PYc+PiMc5xSpfoMIMukFnwCGgCS0irH28ZjpzQCm8Scljh08cXf69RNRkn+GGiaQzovfsXfI8ZUn4beOftkzWrKH5VxgTy6TPc0xz9QvwWLHHwk4F0zmTeKwIEKXn8OuOpWZERWCakdEHXRrQSxOuInp/jWCUhxGNyqSzf4zcn15OAwAMRliiG1A=="},
+        {"url": "http://das-committee-b:9876", "pubkey": "YBLV+I6lIorHmaZVs9NEEnuzOdLvvgUy1v0Nlm16T+d29H40BqmzyeJ994Jdf1XKQA5WoqXIx53qVQgEptUjbjQ7AwgmBZhAei4e7mQDD6fObXEDHM9DOchc0DUgmaG1sgJLvQ8a6Qtoh41Kl1QNnGiExO6R4p7qBeTFdbdjGaFI727oOPO8Nv/gSTcekUXbzgjog0dfizHLjo6lZNsk4HAWEdegHczmrcjb4NFZmsO5qGxAgP2JKgRNWjq2nOxftQHBTkztX9G9QLWHSKGe+pJlKv8Qktsr8S4UDO59SWmMGvXGHU0vo+h6FVaJjBM4LRMI/qeNgua8KYzBBhE0bRefAkp5c1pPCiM3/IaqNSWmBai4sLvuJYjgLuy/9AtC0A=="}
       ]
     },
     "rest-aggregator": {

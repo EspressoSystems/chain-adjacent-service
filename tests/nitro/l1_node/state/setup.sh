@@ -9,6 +9,7 @@ STATE_DIR="$SCRIPT_DIR"
 STATE_FILE="$STATE_DIR/anvil-state.json"
 CHAIN_INFO_FILE="$STATE_DIR/deployed_chain_info.json"
 DEPLOYMENT_FILE="$STATE_DIR/deployment.json"
+TEE_VERIFIER_FILE="$STATE_DIR/tee_verifier_address.txt"
 DAS_KEYS_DIR="$STATE_DIR/das-keys"
 WRITE_OVERRIDE="$L1_NODE_DIR/../write-override.sh"
 OVERRIDE_FILE="$NITRO_TESTNODE_DIR/docker-compose.override.yml"
@@ -52,7 +53,7 @@ fi
 
 if $FORCE_REBOOTSTRAP; then
     echo "== --init-force: removing saved state files"
-    rm -f "$STATE_FILE" "$CHAIN_INFO_FILE" "$DEPLOYMENT_FILE"
+    rm -f "$STATE_FILE" "$CHAIN_INFO_FILE" "$DEPLOYMENT_FILE" "$TEE_VERIFIER_FILE"
     rm -rf "$DAS_KEYS_DIR"
 fi
 
@@ -96,9 +97,10 @@ if ! $STATE_AVAILABLE; then
     echo "== Dumping anvil L1 state"
     cast rpc anvil_dumpState --rpc-url http://localhost:8545 > "$STATE_FILE"
 
-    echo "== Saving deployed_chain_info.json and deployment.json"
+    echo "== Saving deployed_chain_info.json, deployment.json and tee_verifier_address.txt"
     docker compose run --rm --entrypoint sh rollupcreator -c 'cat /config/deployed_chain_info.json' > "$CHAIN_INFO_FILE"
     docker compose run --rm --entrypoint sh rollupcreator -c 'cat /config/deployment.json' > "$DEPLOYMENT_FILE"
+    docker compose run --rm --entrypoint sh rollupcreator -c 'cat /config/tee_verifier_address.txt' > "$TEE_VERIFIER_FILE"
 
     echo "== Saving AnyTrust BLS keys"
     mkdir -p "$DAS_KEYS_DIR/a" "$DAS_KEYS_DIR/b"

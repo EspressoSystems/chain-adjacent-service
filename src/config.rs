@@ -4,7 +4,7 @@ use url::Url;
 
 use crate::{
     da_api::config::DaApiConfig, espresso_client::client::Config as EspressoClientConfig,
-    submitter::submitter::SubmitterConfig,
+    key_manager::key_manager::TeeType as KmTeeType, submitter::submitter::SubmitterConfig,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -19,7 +19,7 @@ pub struct ServiceConfig<C> {
     pub submitter: SubmitterConfig,
     #[serde(default)]
     pub advanced: AdvancedConfig,
-    pub key_manager: Option<KeyManagerConfig>,
+    pub key_manager: KeyManagerConfig,
     /// Indicates whether this is a fresh deployment without any existing state.
     /// Should be set to `false` when restarting the service with existing state,
     /// so that the service can properly initialize from the latest checkpoint.
@@ -86,6 +86,23 @@ pub enum RollupType {
     Nitro,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TeeType {
+    #[default]
+    Nitro,
+    Test,
+}
+
+impl From<TeeType> for KmTeeType {
+    fn from(val: TeeType) -> Self {
+        match val {
+            TeeType::Nitro => KmTeeType::Nitro,
+            TeeType::Test => KmTeeType::Test,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct KeyManagerConfig {
     pub rpc_url: Url,
@@ -95,6 +112,8 @@ pub struct KeyManagerConfig {
     pub max_register_attempts: u8,
     #[serde(default = "default_attestation_client_timeout_secs")]
     pub attestation_client_timeout_secs: u64,
+    #[serde(default)]
+    pub tee_type: TeeType,
 }
 
 fn default_max_register_attempts() -> u8 {
