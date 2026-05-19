@@ -31,15 +31,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Restore L1 deployment state cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            e2e/nitro/generated-config/l1-state.json
-            e2e/nitro/generated-config/deployment.json
-            e2e/nitro/generated-config/deployed_chain_info.json
-          key: l1-deploy-${{ hashFiles('e2e/nitro/nitro-config/l2_chain_config.json', 'e2e/nitro/docker-compose.yml') }}
-
       - name: Pull Docker images
         working-directory: e2e/nitro
         run: |

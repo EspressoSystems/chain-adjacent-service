@@ -1,5 +1,4 @@
 use std::{
-    fs,
     path::Path,
     process::{Command, Stdio},
     sync::OnceLock,
@@ -7,6 +6,7 @@ use std::{
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 const COMPOSE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/e2e/nitro");
+const DAS_KEYS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/e2e/nitro/das-keys");
 const GENERATED_CONFIG_DIR: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/e2e/nitro/generated-config");
 
@@ -25,125 +25,6 @@ fn compose_lifecycle_semaphore() -> &'static std::sync::Arc<Semaphore> {
     SEMAPHORE.get_or_init(|| std::sync::Arc::new(Semaphore::new(2)))
 }
 
-enum DeploymentCacheStatus {
-    Missing,
-    Valid,
-    Invalid(String),
-}
-
-fn parse_u64(value: &serde_json::Value) -> Option<u64> {
-    match value {
-        serde_json::Value::Number(num) => num.as_u64(),
-        serde_json::Value::String(s) => {
-            let trimmed = s.trim();
-            if let Some(hex) = trimmed
-                .strip_prefix("0x")
-                .or_else(|| trimmed.strip_prefix("0X"))
-            {
-                u64::from_str_radix(hex, 16).ok()
-            } else {
-                trimmed.parse().ok()
-            }
-        }
-        _ => None,
-    }
-}
-
-fn deployment_cache_status() -> DeploymentCacheStatus {
-    let dir = Path::new(GENERATED_CONFIG_DIR);
-    let l1_state_path = dir.join("l1-state.json");
-    let deployment_path = dir.join("deployment.json");
-    let chain_info_path = dir.join("deployed_chain_info.json");
-
-    if !l1_state_path.exists() || !deployment_path.exists() || !chain_info_path.exists() {
-        return DeploymentCacheStatus::Missing;
-    }
-
-    let l1_state: serde_json::Value = match fs::read_to_string(&l1_state_path)
-        .ok()
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-    {
-        Some(value) => value,
-        None => {
-            return DeploymentCacheStatus::Invalid(format!(
-                "failed to parse {}",
-                l1_state_path.display()
-            ));
-        }
-    };
-    let deployment: serde_json::Value = match fs::read_to_string(&deployment_path)
-        .ok()
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-    {
-        Some(value) => value,
-        None => {
-            return DeploymentCacheStatus::Invalid(format!(
-                "failed to parse {}",
-                deployment_path.display()
-            ));
-        }
-    };
-
-    let l1_block = match l1_state.get("block").and_then(|block| block.get("number")) {
-        Some(value) => match parse_u64(value) {
-            Some(block) => block,
-            None => {
-                return DeploymentCacheStatus::Invalid(format!(
-                    "invalid block number in {}",
-                    l1_state_path.display()
-                ));
-            }
-        },
-        None => {
-            return DeploymentCacheStatus::Invalid(format!(
-                "missing block.number in {}",
-                l1_state_path.display()
-            ));
-        }
-    };
-    let deployed_at = match deployment.get("deployed-at") {
-        Some(value) => match parse_u64(value) {
-            Some(block) => block,
-            None => {
-                return DeploymentCacheStatus::Invalid(format!(
-                    "invalid deployed-at in {}",
-                    deployment_path.display()
-                ));
-            }
-        },
-        None => {
-            return DeploymentCacheStatus::Invalid(format!(
-                "missing deployed-at in {}",
-                deployment_path.display()
-            ));
-        }
-    };
-
-    if l1_block < deployed_at {
-        return DeploymentCacheStatus::Invalid(format!(
-            "cached L1 state only reaches block {l1_block}, but deployment metadata needs block {deployed_at}"
-        ));
-    }
-
-    DeploymentCacheStatus::Valid
-}
-
-fn clear_generated_config_cache() {
-    for file in [
-        "l1-state.json",
-        "deployment.json",
-        "deployed_chain_info.json",
-        "tee_verifier_address.txt",
-    ] {
-        let path = Path::new(GENERATED_CONFIG_DIR).join(file);
-        if let Err(err) = fs::remove_file(&path) {
-            if err.kind() != std::io::ErrorKind::NotFound {
-                panic!("failed to remove {}: {err}", path.display());
-            }
-        }
-    }
-}
-
 fn run_compose_result(args: &[&str]) -> Result<(), String> {
     let status = Command::new("docker")
         .args(args)
@@ -151,11 +32,11 @@ fn run_compose_result(args: &[&str]) -> Result<(), String> {
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .status()
-        .map_err(|err| format!("failed to run docker compose {:?}: {err}", args))?;
+        .map_err(|err| format!("failed to run docker compose {args:?}: {err}"))?;
     if status.success() {
         Ok(())
     } else {
-        Err(format!("docker compose failed: {:?}", args))
+        Err(format!("docker compose failed: {args:?}"))
     }
 }
 
@@ -195,52 +76,25 @@ impl NitroNode {
 
         let _ = compose_down_status();
 
-        let cached = match deployment_cache_status() {
-            DeploymentCacheStatus::Missing => false,
-            DeploymentCacheStatus::Valid => true,
-            DeploymentCacheStatus::Invalid(reason) => {
-                println!("Discarding stale Nitro deployment cache: {reason}");
-                clear_generated_config_cache();
-                false
-            }
-        };
-
         let startup = (|| -> Result<(), String> {
-            if cached {
-                println!("Using cached L1 deployment (skipping rollup-creator)");
-                let mut args: Vec<&str> = vec![
-                    "compose",
-                    "up",
-                    "-d",
-                    "--wait",
-                    "l1-anvil",
-                    "espresso-dev-node",
-                    "sequencer",
-                ];
-                if !config.no_l2_traffic {
-                    args.push("tx-generator");
-                }
-                run_compose_result(&args)
-            } else {
-                println!("Fresh deployment (L1 state will be cached when Anvil stops)");
+            println!("Fresh deployment — deploying rollup contracts to L1");
 
-                run_compose_result(&[
-                    "compose",
-                    "up",
-                    "-d",
-                    "--wait",
-                    "l1-anvil",
-                    "espresso-dev-node",
-                ])?;
+            run_compose_result(&[
+                "compose",
+                "up",
+                "-d",
+                "--wait",
+                "l1-anvil",
+                "espresso-dev-node",
+            ])?;
 
-                run_compose_result(&["compose", "--profile", "deploy", "up", "rollup-creator"])?;
+            run_compose_result(&["compose", "--profile", "deploy", "up", "rollup-creator"])?;
 
-                let mut args: Vec<&str> = vec!["compose", "up", "-d", "--wait", "sequencer"];
-                if !config.no_l2_traffic {
-                    args.push("tx-generator");
-                }
-                run_compose_result(&args)
+            let mut args: Vec<&str> = vec!["compose", "up", "-d", "--wait", "sequencer"];
+            if !config.no_l2_traffic {
+                args.push("tx-generator");
             }
+            run_compose_result(&args)
         })();
 
         if let Err(err) = startup {
@@ -328,6 +182,121 @@ impl NitroNode {
             status.success(),
             "`docker compose up --wait daprovider-anytrust` failed"
         );
+    }
+
+    /// Registers the DAS committee keyset on the L1 SequencerInbox so that AnyTrust
+    /// batches are accepted. Uses `anytrusttool dumpkeyset` to produce the exact
+    /// serialized keyset that the daprovider will embed in DAS certificates.
+    pub fn register_das_keyset(&self, private_key: &str) {
+        let key_a = std::fs::read_to_string(Path::new(DAS_KEYS_DIR).join("a/das_bls.pub"))
+            .expect("read das_bls.pub for committee-a");
+        let key_b = std::fs::read_to_string(Path::new(DAS_KEYS_DIR).join("b/das_bls.pub"))
+            .expect("read das_bls.pub for committee-b");
+
+        let config = serde_json::json!({
+            "keyset": {
+                "assumed-honest": 1,
+                "backends": [
+                    {"url": "http://das-committee-a:9876", "pubkey": key_a.trim()},
+                    {"url": "http://das-committee-b:9876", "pubkey": key_b.trim()},
+                ]
+            }
+        });
+        let config_path = std::env::temp_dir().join("das-dumpkeyset.json");
+        std::fs::write(&config_path, config.to_string()).expect("write dumpkeyset config");
+
+        let dump_output = Command::new("docker")
+            .args([
+                "run",
+                "--rm",
+                "--entrypoint",
+                "/usr/local/bin/anytrusttool",
+                "-v",
+                &format!("{}:/config.json:ro", config_path.display()),
+                "offchainlabs/nitro-node:v3.10.0-b1cf6db",
+                "dumpkeyset",
+                "--conf.file",
+                "/config.json",
+            ])
+            .output()
+            .expect("failed to run anytrusttool dumpkeyset");
+        assert!(
+            dump_output.status.success(),
+            "anytrusttool dumpkeyset failed: {}",
+            String::from_utf8_lossy(&dump_output.stderr)
+        );
+        let stdout = String::from_utf8(dump_output.stdout).expect("invalid utf8");
+        let keyset_hex = stdout
+            .lines()
+            .find(|l| l.starts_with("Keyset: "))
+            .expect("missing Keyset line in dumpkeyset output")
+            .strip_prefix("Keyset: ")
+            .expect("strip prefix")
+            .trim()
+            .to_string();
+
+        let deployment: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(Path::new(GENERATED_CONFIG_DIR).join("deployment.json"))
+                .expect("read deployment.json"),
+        )
+        .expect("parse deployment.json");
+        let sequencer_inbox = deployment["sequencer-inbox"]
+            .as_str()
+            .expect("missing sequencer-inbox");
+        let upgrade_executor = deployment["upgrade-executor"]
+            .as_str()
+            .expect("missing upgrade-executor");
+
+        let inner_calldata_output = Command::new("docker")
+            .args([
+                "run",
+                "--rm",
+                "--entrypoint",
+                "cast",
+                "ghcr.io/foundry-rs/foundry:latest",
+                "calldata",
+                "setValidKeyset(bytes)",
+                &keyset_hex,
+            ])
+            .output()
+            .expect("failed to encode setValidKeyset calldata");
+        assert!(
+            inner_calldata_output.status.success(),
+            "cast calldata for setValidKeyset failed"
+        );
+        let inner_calldata = String::from_utf8(inner_calldata_output.stdout)
+            .expect("invalid utf8")
+            .trim()
+            .to_string();
+
+        let status = Command::new("docker")
+            .args([
+                "run",
+                "--rm",
+                "--network",
+                "nitro_default",
+                "--entrypoint",
+                "cast",
+                "ghcr.io/foundry-rs/foundry:latest",
+                "send",
+                "--rpc-url",
+                "http://l1-anvil:8545",
+                "--private-key",
+                private_key,
+                upgrade_executor,
+                "executeCall(address,bytes)",
+                sequencer_inbox,
+                &inner_calldata,
+            ])
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .expect("failed to run cast send for keyset registration");
+        assert!(
+            status.success(),
+            "DAS keyset registration failed (cast send exited with {status})"
+        );
+        println!("DAS keyset registered on SequencerInbox {sequencer_inbox}");
     }
 
     pub fn stop(&self) {

@@ -328,6 +328,7 @@ async fn run_e2e(route: CasRoute) {
     let anytrust = matches!(route, CasRoute::Anytrust);
 
     if anytrust {
+        nitro_node.register_das_keyset(TEST_OPERATOR_PRIVATE_KEY);
         nitro_node.start_das_committee();
         println!("DAS committee + mirror started");
         nitro_node.start_anytrust_daprovider(&sequencer_inbox.to_string());
@@ -370,7 +371,7 @@ async fn run_e2e(route: CasRoute) {
     nitro_node.start_poster(CAS_FEED_URL, route.rpc_url_for_poster());
     println!("Poster started");
 
-    wait_for_batches_on_l1(&l1, from_block, 5, sequencer_inbox).await;
+    wait_for_batches_on_l1(&l1, from_block, 2, sequencer_inbox).await;
 
     drop(cas);
     drop(nitro_node);

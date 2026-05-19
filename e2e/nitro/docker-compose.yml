@@ -1,18 +1,8 @@
 services:
   l1-anvil:
     image: ghcr.io/foundry-rs/foundry:latest
-    entrypoint: ["sh", "-c"]
-    command:
-      - |
-        if [ -f /data/l1-state.json ]; then
-          echo "Loading cached L1 state..."
-          anvil --host 0.0.0.0 --block-time 1 --chain-id 1337 --load-state /data/l1-state.json
-        else
-          echo "Starting fresh L1 (state will be dumped on exit)..."
-          anvil --host 0.0.0.0 --block-time 1 --chain-id 1337 --dump-state /data/l1-state.json
-        fi
-    volumes:
-      - "./generated-config:/data"
+    entrypoint: ["anvil"]
+    command: ["--host", "0.0.0.0", "--block-time", "1", "--chain-id", "1337"]
     ports:
       - "8545:8545"
     healthcheck:
@@ -174,12 +164,13 @@ services:
     entrypoint: ["/usr/local/bin/anytrustserver"]
     volumes:
       - "./das-keys/a:/das-keys:ro"
-      - "das-a-data:/tmp/das-store"
+    tmpfs:
+      - /home/user/das-store
     command:
-      - --conf.file=/das-keys/das-committee.json
+      - --parent-chain.sequencer-inbox-address=none
       - --data-availability.key.key-dir=/das-keys
-      - --data-availability.local-db-storage.enable
-      - --data-availability.local-db-storage.data-dir=/tmp/das-store
+      - --data-availability.local-file-storage.enable
+      - --data-availability.local-file-storage.data-dir=/home/user/das-store
       - --data-availability.disable-signature-checking
       - --enable-rpc
       - --rpc-addr=0.0.0.0
@@ -196,12 +187,13 @@ services:
     entrypoint: ["/usr/local/bin/anytrustserver"]
     volumes:
       - "./das-keys/b:/das-keys:ro"
-      - "das-b-data:/tmp/das-store"
+    tmpfs:
+      - /home/user/das-store
     command:
-      - --conf.file=/das-keys/das-committee.json
+      - --parent-chain.sequencer-inbox-address=none
       - --data-availability.key.key-dir=/das-keys
-      - --data-availability.local-db-storage.enable
-      - --data-availability.local-db-storage.data-dir=/tmp/das-store
+      - --data-availability.local-file-storage.enable
+      - --data-availability.local-file-storage.data-dir=/home/user/das-store
       - --data-availability.disable-signature-checking
       - --enable-rpc
       - --rpc-addr=0.0.0.0
@@ -216,7 +208,12 @@ services:
   das-mirror:
     image: ${NITRO_IMAGE}
     entrypoint: ["/usr/local/bin/anytrustserver"]
+    tmpfs:
+      - /home/user/das-store
     command:
+      - --parent-chain.sequencer-inbox-address=none
+      - --data-availability.local-file-storage.enable
+      - --data-availability.local-file-storage.data-dir=/home/user/das-store
       - --enable-rest
       - --rest-addr=0.0.0.0
       - --rest-port=9877
@@ -290,5 +287,3 @@ volumes:
   espresso-data:
   nitro-sequencer:
   nitro-poster:
-  das-a-data:
-  das-b-data:
