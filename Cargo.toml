@@ -79,9 +79,9 @@ tracing = "0.1.43"
 tracing-subscriber = { version = "0.3.22", features = ["fmt", "json"] }
 url = "2"
 yawc = "0.3"
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 [dev-dependencies]
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
 wiremock = "0.6.5"
 hex = "0.4.3"
 k256 = { version = "0.13", features = ["ecdsa"] }
