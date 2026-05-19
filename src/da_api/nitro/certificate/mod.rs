@@ -1,34 +1,42 @@
 // Certificate byte layout (0-indexed)
 // [0..31]     : Header (32 bytes)
+//   [0]       : version (0x70 = V0)
+//   [1..31]   : reserved (zeros)
 //
-// [32..35]    : min_hotshot_block_still_in_streamer_queue
-// [36..100]   : CAS ECDSA signature (65 bytes)
+// [32..39]    : start_message_pos (u64, big-endian)
+// [40..47]    : end_message_pos (u64, big-endian)
+// [48..55]    : start_hotshot_block (u64, big-endian)
+// [56..63]    : after_delayed_messages_read (u64, big-endian)
+// [64..71]    : min_hotshot_block_still_in_streamer_queue (u64, big-endian)
+// [72..136]   : CAS ECDSA signature (65 bytes)
 //
-// [101-...]   : downstream DA certificate
+// [137-...]   : downstream DA certificate
 
-use crate::da_api::{
-    error::{DaApiError, DaApiResult},
-    nitro::types::DAStoreResponse,
+use crate::{
+    da_api::{
+        error::{DaApiError, DaApiResult},
+        nitro::types::DAStoreResponse,
+    },
+    key_manager::key_manager::{KeyManager, compute_cas_signing_hash},
 };
+use alloy::primitives::{Address, Signature};
 use serde::{Deserialize, Serialize};
 mod utils;
 use utils::{Decoder, Encoder};
 
-// ── DA type bytes ──────────────────────────────────────────────────────────────
-// pub const MESSAGE_POS_SIZE: usize = 4; // u32
-pub const HOTSHOT_BLOCK_SIZE: usize = 4; // u32
-
+pub const MESSAGE_POS_SIZE: usize = 8; // u64
+pub const HOTSHOT_BLOCK_SIZE: usize = 8; // u64
+pub const AFTER_DELAYED_SIZE: usize = 8; // u64
 pub const CAS_SIG_SIZE: usize = 65; // ECDSA (r,s,v)
-//DA header position calculation:
-// CERT_DA_HEADER_FLAG_POS = CERT_HEADER_SIZE + HOTSHOT_BLOCK_SIZE + CAS_SIG_SIZE
-
-// Certificate minimum size:
-//CERT_MINIMUM_SIZE = CERT_HEADER_SIZE + HOTSHOT_BLOCK_SIZE  + CAS_SIG_SIZE + 2
-
-/// Expected header size for CAS V0 (32 bytes as per certificate layout)
 pub const CERT_HEADER_SIZE_V0: usize = 32;
 
-pub const ESPRESSO_CERT_SIZE: usize = CERT_HEADER_SIZE_V0 + HOTSHOT_BLOCK_SIZE + CAS_SIG_SIZE; // 101
+pub const CONTEXT_FIELDS_SIZE: usize = MESSAGE_POS_SIZE
+    + MESSAGE_POS_SIZE
+    + HOTSHOT_BLOCK_SIZE
+    + AFTER_DELAYED_SIZE
+    + HOTSHOT_BLOCK_SIZE;
+
+pub const ESPRESSO_CERT_SIZE: usize = CERT_HEADER_SIZE_V0 + CONTEXT_FIELDS_SIZE + CAS_SIG_SIZE; // 137
 
 /// CAS certificate version
 /// This versioning will also allow us to parse future versions even if CAS header size changes
@@ -62,7 +70,11 @@ impl TryFrom<u8> for CASCertificateVersion {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CasCertificate {
     pub header: Vec<u8>,
-    pub min_hotshot_block_still_in_streamer_queue: u32,
+    pub start_message_pos: u64,
+    pub end_message_pos: u64,
+    pub start_hotshot_block: u64,
+    pub after_delayed_messages_read: u64,
+    pub min_hotshot_block_still_in_streamer_queue: u64,
     #[serde(with = "serde_bytes")]
     pub cas_signature: [u8; 65],
     pub downstream_certificate: Vec<u8>,
@@ -83,6 +95,10 @@ impl CasCertificate {
 
     pub fn is_empty(&self) -> bool {
         self.header.is_empty()
+            && self.start_message_pos == 0
+            && self.end_message_pos == 0
+            && self.start_hotshot_block == 0
+            && self.after_delayed_messages_read == 0
             && self.min_hotshot_block_still_in_streamer_queue == 0
             && self.cas_signature == [0; 65]
             && self.downstream_certificate.is_empty()
@@ -126,6 +142,10 @@ impl CasCertificate {
         }
         enc.push_bytes(&self.header);
 
+        enc.push_bytes(&self.start_message_pos.to_be_bytes());
+        enc.push_bytes(&self.end_message_pos.to_be_bytes());
+        enc.push_bytes(&self.start_hotshot_block.to_be_bytes());
+        enc.push_bytes(&self.after_delayed_messages_read.to_be_bytes());
         enc.push_bytes(&self.min_hotshot_block_still_in_streamer_queue.to_be_bytes());
 
         enc.push_bytes(&self.cas_signature);
@@ -154,7 +174,11 @@ impl CasCertificate {
 
         let header = dec.read_bytes(header_size)?.to_vec();
 
-        let min_hotshot_block_still_in_streamer_queue = dec.read_u32()?;
+        let start_message_pos = dec.read_u64()?;
+        let end_message_pos = dec.read_u64()?;
+        let start_hotshot_block = dec.read_u64()?;
+        let after_delayed_messages_read = dec.read_u64()?;
+        let min_hotshot_block_still_in_streamer_queue = dec.read_u64()?;
 
         let cas_signature = dec.read_fixed::<CAS_SIG_SIZE>()?;
 
@@ -162,51 +186,56 @@ impl CasCertificate {
 
         Ok(Self {
             header,
+            start_message_pos,
+            end_message_pos,
+            start_hotshot_block,
+            after_delayed_messages_read,
             min_hotshot_block_still_in_streamer_queue,
             cas_signature,
             downstream_certificate,
         })
     }
 
-    /// Public facing function to build and sign the payload using CAS signer
-    ///
-    /// Returns the CAS signature
     pub fn build_espresso_certificate(
-        start_message_pos: u32,
-        end_message_pos: u32,
-        start_hotshot_block: u32,
-        min_hotshot_block_still_in_streamer_queue: u32,
+        key_manager: &KeyManager,
+        start_message_pos: u64,
+        end_message_pos: u64,
+        start_hotshot_block: u64,
+        after_delayed_messages_read: u64,
+        min_hotshot_block_still_in_streamer_queue: u64,
         downstream_cert: &[u8],
     ) -> DaApiResult<Self> {
         if downstream_cert.len() < 2 {
             return Err(DaApiError::InvalidCertificateLength(downstream_cert.len()));
         }
 
-        //TODO: hardcoded size here
         let mut header = vec![0u8; 32];
         header[0] = CASCertificateVersion::V0 as u8;
 
-        let cas_signature = Self::build_and_sign_payload(
+        let payload = build_payload(
             start_message_pos,
             end_message_pos,
             start_hotshot_block,
+            after_delayed_messages_read,
             min_hotshot_block_still_in_streamer_queue,
             downstream_cert,
         );
+        let cas_signature = sign_payload(&payload, key_manager)?;
 
         Ok(Self {
             header,
+            start_message_pos,
+            end_message_pos,
+            start_hotshot_block,
+            after_delayed_messages_read,
             min_hotshot_block_still_in_streamer_queue,
             cas_signature,
-
             downstream_certificate: downstream_cert.to_vec(),
         })
     }
 
-    /// Validate the certificate.
-    ///
-    /// TODO: verify the CAS signature over the canonical payload.
-    pub fn validate(&self) -> DaApiResult<()> {
+    /// Validate certificate structure (header, version, downstream cert length).
+    pub fn validate_structure(&self) -> DaApiResult<()> {
         let version_byte = *self
             .header
             .first()
@@ -230,21 +259,68 @@ impl CasCertificate {
         Ok(())
     }
 
-    /// Inner logic to build and sign the payload
-    ///
-    /// Build and sign the payload using CAS signer
-    /// keccak256(start_message_pos || end_message_pos ||
-    ///           start_hotshot_block || min_hotshot_block ||
-    ///           batchData || downstreamCert)
-    fn build_and_sign_payload(
-        _start_message_pos: u32,
-        _end_message_pos: u32,
-        _start_hotshot_block: u32,
-        _min_hotshot_block_still_in_streamer_queue: u32,
-        _downstream_cert: &[u8],
-    ) -> [u8; 65] {
-        [0u8; 65] // TODO: implement signing logic
+    pub fn validate(
+        &self,
+        expected_signer: Address,
+        parent_chain_id: u64,
+        tee_verifier_address: Address,
+    ) -> DaApiResult<()> {
+        self.validate_structure()?;
+
+        if self.cas_signature == [0u8; 65] {
+            return Err(DaApiError::InvalidCasSignature);
+        }
+
+        let payload = build_payload(
+            self.start_message_pos,
+            self.end_message_pos,
+            self.start_hotshot_block,
+            self.after_delayed_messages_read,
+            self.min_hotshot_block_still_in_streamer_queue,
+            &self.downstream_certificate,
+        );
+        let signing_hash =
+            compute_cas_signing_hash(&payload, parent_chain_id, tee_verifier_address);
+
+        let sig = Signature::try_from(self.cas_signature.as_slice()).map_err(|err| {
+            DaApiError::CertificateValidation(format!("invalid CAS signature: {err}"))
+        })?;
+        let recovered = sig
+            .recover_address_from_prehash(&signing_hash)
+            .map_err(|_| DaApiError::InvalidCasSignature)?;
+
+        if recovered != expected_signer {
+            return Err(DaApiError::InvalidCasSignature);
+        }
+
+        Ok(())
     }
+}
+
+fn build_payload(
+    start_message_pos: u64,
+    end_message_pos: u64,
+    start_hotshot_block: u64,
+    after_delayed_messages_read: u64,
+    min_hotshot_block_still_in_streamer_queue: u64,
+    downstream_cert: &[u8],
+) -> Vec<u8> {
+    let prev_message_count = start_message_pos;
+    let new_message_count = end_message_pos + 1;
+    let mut enc = Encoder::new(CONTEXT_FIELDS_SIZE + downstream_cert.len());
+    enc.push_bytes(&prev_message_count.to_be_bytes());
+    enc.push_bytes(&new_message_count.to_be_bytes());
+    enc.push_bytes(&start_hotshot_block.to_be_bytes());
+    enc.push_bytes(&after_delayed_messages_read.to_be_bytes());
+    enc.push_bytes(&min_hotshot_block_still_in_streamer_queue.to_be_bytes());
+    enc.push_bytes(downstream_cert);
+    enc.finish()
+}
+
+fn sign_payload(payload: &[u8], key_manager: &KeyManager) -> DaApiResult<[u8; 65]> {
+    key_manager
+        .sign_message(payload)
+        .map_err(|e| DaApiError::Signing(e.to_string()))
 }
 
 #[cfg(test)]
@@ -252,16 +328,20 @@ mod tests {
     use std::str::FromStr;
 
     use crate::da_api::nitro::utils::SEQUENCER_HEADER_LEN;
+    use crate::key_manager::test_utils::test_key_manager;
 
     use super::*;
-    use alloy::primitives::Bytes;
+    use alloy::primitives::{Address, Bytes};
 
-    // Helper to create a dummy certificate
     fn create_mock_cert() -> CasCertificate {
         let mut header = vec![0x00; 32];
         header[0] = CASCertificateVersion::V0 as u8;
         CasCertificate {
             header,
+            start_message_pos: 1,
+            end_message_pos: 2,
+            start_hotshot_block: 3,
+            after_delayed_messages_read: 4,
             min_hotshot_block_still_in_streamer_queue: 5,
             cas_signature: [0xCC; 65],
             downstream_certificate: vec![0xDD; 10],
@@ -277,6 +357,13 @@ mod tests {
         let recovered = CasCertificate::from_bytes(&bytes).unwrap();
 
         assert_eq!(original.header, recovered.header);
+        assert_eq!(original.start_message_pos, recovered.start_message_pos);
+        assert_eq!(original.end_message_pos, recovered.end_message_pos);
+        assert_eq!(original.start_hotshot_block, recovered.start_hotshot_block);
+        assert_eq!(
+            original.after_delayed_messages_read,
+            recovered.after_delayed_messages_read
+        );
         assert_eq!(
             original.min_hotshot_block_still_in_streamer_queue,
             recovered.min_hotshot_block_still_in_streamer_queue
@@ -290,19 +377,15 @@ mod tests {
 
     #[test]
     fn test_reference_da_cert() {
+        let km = test_key_manager();
         let da_cert=Bytes::from_str("0x01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1cb94dcff2136dfab4d1d4506cc5160a3b58c9481a87513c71882526ae8ac6e30e3f4a9d56da07893bf5245fd0ff0c50e2a66b52067d8e8b23beb3c8e4f8230743").unwrap();
         assert_eq!(da_cert.len(), 99);
 
         let espresso_da_cert =
-            CasCertificate::build_espresso_certificate(0, 0, 0, 0, &da_cert).unwrap();
-        // cas certificate created: "0x010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1cb94dcff2136dfab4d1d4506cc5160a3b58c9481a87513c71882526ae8ac6e30e3f4a9d56da07893bf5245fd0ff0c50e2a66b52067d8e8b23beb3c8e4f8230743"
+            CasCertificate::build_espresso_certificate(&km, 0, 0, 0, 0, 0, &da_cert).unwrap();
 
         let mut sequencer_msg = vec![0u8; SEQUENCER_HEADER_LEN];
-
-        // append certificate
         sequencer_msg.extend_from_slice(&espresso_da_cert.to_bytes().unwrap());
-
-        // convert back to Bytes
         let sequencer_msg = Bytes::from(sequencer_msg);
 
         assert_eq!(
@@ -313,5 +396,33 @@ mod tests {
             sequencer_msg.len(),
             ESPRESSO_CERT_SIZE + da_cert.len() + SEQUENCER_HEADER_LEN
         );
+    }
+
+    #[test]
+    fn test_build_espresso_certificate() {
+        let km = test_key_manager();
+        let downstream = vec![1; 20];
+
+        let cert =
+            CasCertificate::build_espresso_certificate(&km, 10, 20, 5, 7, 3, &downstream).unwrap();
+
+        assert_ne!(cert.cas_signature, [0u8; 65]);
+        assert!(cert.cas_signature[64] == 27 || cert.cas_signature[64] == 28);
+        assert_eq!(cert.downstream_certificate, downstream);
+        assert_eq!(cert.start_message_pos, 10);
+        assert_eq!(cert.end_message_pos, 20);
+        assert_eq!(cert.start_hotshot_block, 5);
+        assert_eq!(cert.after_delayed_messages_read, 7);
+        assert_eq!(cert.min_hotshot_block_still_in_streamer_queue, 3);
+
+        let expected_signer = km.signer.address();
+        cert.validate(expected_signer, 0, Address::ZERO).unwrap();
+
+        let bytes = cert.to_bytes().unwrap();
+        let recovered = CasCertificate::from_bytes(&bytes).unwrap();
+        recovered
+            .validate(expected_signer, 0, Address::ZERO)
+            .unwrap();
+        assert_eq!(recovered.cas_signature, cert.cas_signature);
     }
 }

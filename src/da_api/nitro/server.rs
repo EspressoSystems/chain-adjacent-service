@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::{
     Router,
     body::Bytes,
@@ -22,6 +24,7 @@ use crate::{
             utils::{SEQUENCER_HEADER_LEN, try_extract_da_sequencer_msg_from_espresso_da_cert},
         },
     },
+    key_manager::key_manager::KeyManager,
 };
 
 const HEADER_CONTENT_TYPE: &str = "application/json";
@@ -40,6 +43,7 @@ pub struct ServerState {
     pub da_config: DaProviderConfig,
     pub client: reqwest::Client,
     pub verification_channel: VerificationSender,
+    pub key_manager: Arc<KeyManager>,
     /// `daprovider_getMaxMessageSize` is answered locally with this value
     /// when set. `None` means the route forwards the call downstream (used
     /// for forwarded providers like Celestia or AnyTrust where the
@@ -52,11 +56,13 @@ impl ServerState {
         da_config: DaProviderConfig,
         client: reqwest::Client,
         verification_channel: VerificationSender,
+        key_manager: Arc<KeyManager>,
     ) -> Self {
         Self {
             da_config,
             client,
             verification_channel,
+            key_manager,
             max_message_size: None,
         }
     }
@@ -75,6 +81,7 @@ pub fn build_app(
     mut providers: Vec<DaProviderConfig>,
     verification_channel: VerificationSender,
     rollup_prefix: &str,
+    key_manager: Arc<KeyManager>,
     calldata_max_size: u64,
 ) -> Result<Router, DaApiError> {
     let http = reqwest::Client::new();
@@ -83,7 +90,12 @@ pub fn build_app(
     providers.push(DaProviderConfig::calldata());
     for provider in providers {
         let name = provider.name.clone();
-        let mut state = ServerState::new(provider, http.clone(), verification_channel.clone());
+        let mut state = ServerState::new(
+            provider,
+            http.clone(),
+            verification_channel.clone(),
+            key_manager.clone(),
+        );
         // Calldata is the only built-in provider that owns its own size
         // limit; everything else forwards getMaxMessageSize downstream.
         if name == "calldata" {
@@ -256,6 +268,7 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
         start_message_position,
         end_message_position,
         start_espresso_block,
+        after_delayed_messages_read,
         min_espresso_block_still_in_queue,
     } = rx
         .await
@@ -320,10 +333,14 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
         downstream_cert = raw_cert.serialized_da_certificate;
     }
 
+    let key_manager = &state.key_manager;
+
     let final_cert = CasCertificate::build_espresso_certificate(
+        key_manager,
         start_message_position,
         end_message_position,
         start_espresso_block,
+        after_delayed_messages_read,
         min_espresso_block_still_in_queue,
         &downstream_cert,
     )?;
@@ -384,10 +401,16 @@ async fn handle_recover_inner(
     //      `[seq header | batch data]` (the espresso cert is stripped
     //      before the batch hits L1).
     //
-    // try_extract parses+validates the CAS cert in case #1; case #2 errors
-    // out and we fall back to forwarding the raw msg.
-    let da_certificate =
-        try_extract_da_sequencer_msg_from_espresso_da_cert(&sequencer_msg).unwrap_or(sequencer_msg);
+    // try_extract parses and fully validates the CAS cert (including TEE
+    // signature verification) in case #1; case #2 errors out and we fall
+    // back to forwarding the raw msg.
+    let da_certificate = try_extract_da_sequencer_msg_from_espresso_da_cert(
+        &sequencer_msg,
+        state.key_manager.signer().address(),
+        state.key_manager.parent_chain_id(),
+        state.key_manager.tee_verifier_address(),
+    )
+    .unwrap_or(sequencer_msg);
 
     if state.da_config.name == "calldata" {
         // Calldata returns the inner batch payload with the seq header stripped.
@@ -444,7 +467,7 @@ mod tests {
     use alloy::primitives::{Bytes, FixedBytes, b256};
     use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder, rpc_params};
     use serde_json::json;
-    use std::{net::SocketAddr, str::FromStr};
+    use std::{net::SocketAddr, str::FromStr, sync::Arc};
     use tokio::{sync::oneshot, task::JoinHandle};
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
@@ -459,8 +482,10 @@ mod tests {
                 certificate::CasCertificate,
                 server::build_app,
                 types::{DAStoreResponse, PreImagesResult, RecoverPayloadResult},
+                utils::SEQUENCER_HEADER_LEN,
             },
         },
+        key_manager::{key_manager::KeyManager, test_utils},
     };
 
     fn valid_message() -> Bytes {
@@ -474,19 +499,20 @@ mod tests {
     const TEST_CALLDATA_MAX_SIZE: u64 = 50_000;
 
     fn spawn_server(addr: SocketAddr, config: Vec<DaProviderConfig>) -> JoinHandle<()> {
-        spawn_server_with(addr, config, TEST_CALLDATA_MAX_SIZE)
+        let km = Arc::new(test_utils::test_key_manager());
+        spawn_server_with(addr, config, TEST_CALLDATA_MAX_SIZE, km)
     }
 
     fn spawn_server_with(
         addr: SocketAddr,
         config: Vec<DaProviderConfig>,
         calldata_max_size: u64,
+        key_manager: Arc<KeyManager>,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let (verification_channel, mut verify_receiver) =
                 tokio::sync::mpsc::channel::<(Bytes, oneshot::Sender<VerificationResult>)>(1);
 
-            // Spawn a mock verification handler that always succeeds
             tokio::spawn(async move {
                 while let Some((_, reply)) = verify_receiver.recv().await {
                     let _ = reply.send(VerificationResult {
@@ -494,12 +520,20 @@ mod tests {
                         start_message_position: 0,
                         end_message_position: 0,
                         start_espresso_block: 0,
+                        after_delayed_messages_read: 0,
                         min_espresso_block_still_in_queue: 0,
                     });
                 }
             });
 
-            let app = build_app(config, verification_channel, "arb", calldata_max_size).unwrap();
+            let app = build_app(
+                config,
+                verification_channel,
+                "arb",
+                key_manager,
+                calldata_max_size,
+            )
+            .unwrap();
             let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
             axum::serve(listener, app).await.unwrap();
         })
@@ -746,8 +780,11 @@ mod tests {
         .mount(&mock_da_provider)
         .await;
 
-        // Full sequencer_msg containing espresso wrapper + inner DA certificate
-        let sequencer_msg = Bytes::from_str("0x000000000000000000000000000000000000000000000000000000000000000000000000000000007000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d6f4495acb1e8e0c5583a2357178fffd13f0cec5b216542b40027999633d72f000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001ff01ffa2f5868a6c1f36e948ade0eaf093983af330a1ec8183a61955e4fd8d67313fbd1bc5981b980a01a85bb7c5299545170e1126a6a84b1c9e83719562fbe022d24ae126266b22c4717b69f9b4771a8b0c1d28681ddd0582a55b9fd76286be70cf54dc").unwrap();
+        // Build sequencer_msg from the STORE response so the CAS cert is
+        // signed by the test key_manager and passes full signature validation.
+        let mut seq_msg_bytes = vec![0u8; SEQUENCER_HEADER_LEN];
+        seq_msg_bytes.extend_from_slice(&cas_cert.to_bytes().unwrap());
+        let sequencer_msg = Bytes::from(seq_msg_bytes);
 
         let response3: Result<RecoverPayloadResult, _> = client
             .request(
@@ -1074,7 +1111,8 @@ mod tests {
         const CUSTOM_MAX_SIZE: u64 = 123_456;
 
         let addr: SocketAddr = "127.0.0.1:9966".parse().unwrap();
-        let _server = spawn_server_with(addr, vec![], CUSTOM_MAX_SIZE);
+        let km = Arc::new(test_utils::test_key_manager());
+        let _server = spawn_server_with(addr, vec![], CUSTOM_MAX_SIZE, km);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()

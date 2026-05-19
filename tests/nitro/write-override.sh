@@ -47,7 +47,7 @@ ANYTRUST_DAPROVIDER_PORT=9881
 
 # Sequencer inbox address from the saved L1 state (matches the constant in
 # tests/nitro/test_e2e.rs).
-SEQUENCER_INBOX_ADDRESS="0x18d19C5d3E685f5be5b9C86E097f0E439285D216"
+SEQUENCER_INBOX_ADDRESS="0xB7b68cb0E3ca9400Ff085514c0f4D021969B9Dc1"
 
 MODE="${1:-}"
 
@@ -71,6 +71,9 @@ services:
     build:
       context: $L1_NODE_DIR
       dockerfile: rollupcreator.Dockerfile
+    environment:
+      - ENABLE_ESPRESSO_CAS=1
+      - TEE_VERIFIER_INFO=/config/tee_verifier_address.txt
 EOF
         ;;
     reuse)

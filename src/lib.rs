@@ -15,24 +15,27 @@ use tokio::sync::{mpsc, oneshot};
 #[derive(Debug)]
 pub struct VerificationResult {
     pub success: bool,
-    pub start_message_position: u32,
-    pub end_message_position: u32,
-    pub start_espresso_block: u32,
-    pub min_espresso_block_still_in_queue: u32,
+    pub start_message_position: u64,
+    pub end_message_position: u64,
+    pub start_espresso_block: u64,
+    pub after_delayed_messages_read: u64,
+    pub min_espresso_block_still_in_queue: u64,
 }
 
 impl VerificationResult {
     pub fn success(
-        start_message_position: u32,
-        end_message_position: u32,
-        start_espresso_block: u32,
-        min_espresso_block_still_in_queue: u32,
+        start_message_position: u64,
+        end_message_position: u64,
+        start_espresso_block: u64,
+        after_delayed_messages_read: u64,
+        min_espresso_block_still_in_queue: u64,
     ) -> Self {
         Self {
             success: true,
             start_message_position,
             end_message_position,
             start_espresso_block,
+            after_delayed_messages_read,
             min_espresso_block_still_in_queue,
         }
     }
@@ -43,6 +46,7 @@ impl VerificationResult {
             start_message_position: 0,
             end_message_position: 0,
             start_espresso_block: 0,
+            after_delayed_messages_read: 0,
             min_espresso_block_still_in_queue: 0,
         }
     }
