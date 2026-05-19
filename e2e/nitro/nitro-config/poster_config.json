@@ -44,8 +44,18 @@
                 "enable": false
             }
         },
-        "data-availability": {
-            "enable": false
+        "da": {
+            "anytrust": {
+                "enable": true,
+                "rpc-aggregator": {
+                    "enable": true,
+                    "assumed-honest": 1
+                },
+                "rest-aggregator": {
+                    "enable": true,
+                    "urls": ["http://das-mirror:9877"]
+                }
+            }
         }
     },
     "execution": {

@@ -328,7 +328,6 @@ async fn run_e2e(route: CasRoute) {
     let anytrust = matches!(route, CasRoute::Anytrust);
 
     if anytrust {
-        nitro_node.register_das_keyset(TEST_OPERATOR_PRIVATE_KEY);
         nitro_node.start_das_committee();
         println!("DAS committee + mirror started");
         nitro_node.start_anytrust_daprovider(&sequencer_inbox.to_string());

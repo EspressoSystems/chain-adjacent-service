@@ -25,7 +25,7 @@
     "arbitrum": {
         "EnableArbOS": true,
         "AllowDebugPrecompiles": true,
-        "DataAvailabilityCommittee": false,
+        "DataAvailabilityCommittee": true,
         "InitialArbOSVersion": 40,
         "InitialChainOwner": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
         "GenesisBlockNum": 0

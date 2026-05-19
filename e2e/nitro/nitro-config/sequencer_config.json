@@ -40,8 +40,14 @@
                 "port": 9642
             }
         },
-        "data-availability": {
-            "enable": false
+        "da": {
+            "anytrust": {
+                "enable": true,
+                "rest-aggregator": {
+                    "enable": true,
+                    "urls": ["http://das-mirror:9877"]
+                }
+            }
         }
     },
     "execution": {

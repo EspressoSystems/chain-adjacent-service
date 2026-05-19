@@ -18,12 +18,12 @@ services:
     ports:
       - "8545:8545"
     healthcheck:
-      test: ["CMD", "cast", "block-number", "--rpc-url", "http://localhost:8545"]
+      test:
+        ["CMD", "cast", "block-number", "--rpc-url", "http://localhost:8545"]
       interval: 2s
       timeout: 2s
       retries: 10
 
-  # ── Espresso sequencer dev node ─────────────────────────────────────────────
   espresso-dev-node:
     image: ${ESPRESSO_DEV_NODE_IMAGE}
     ports:
@@ -170,7 +170,6 @@ services:
           sleep 2
         done
 
-  # ── AnyTrust DAS committee ──────────────────────────────────────────────────
   das-committee-a:
     image: ${NITRO_IMAGE}
     entrypoint: ["/usr/local/bin/anytrustserver"]
@@ -243,6 +242,7 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
+        set -e
         BLS_A=$$(cat /das-keys/a/das_bls.pub | tr -d '\n')
         BLS_B=$$(cat /das-keys/b/das_bls.pub | tr -d '\n')
         cat > /tmp/daprovider.json << DEOF
@@ -271,7 +271,7 @@ services:
           },
           "with-data-signer": true,
           "data-signer-wallet": {
-            "private-key": "b6b15c8cb491557369f3c7d2c287b053eb229daa9c22138887752191c9520659"
+            "private-key": "${DATA_SIGNER_PRIVATE_KEY}"
           },
           "provider-server": {
             "addr": "0.0.0.0",
