@@ -6,7 +6,7 @@ RUN curl -L https://foundry.paradigm.xyz | bash && /root/.foundry/bin/foundryup
 ENV PATH="/root/.foundry/bin:${PATH}"
 
 ARG NITRO_CONTRACTS_REPO=https://github.com/EspressoSystems/nitro-contracts.git
-ARG NITRO_CONTRACTS_REF=jh/cas-2.1.3-contracts
+ARG NITRO_CONTRACTS_REF=fix-start-block
 
 WORKDIR /nitro-contracts
 RUN git clone --depth 1 --branch ${NITRO_CONTRACTS_REF} ${NITRO_CONTRACTS_REPO} . \

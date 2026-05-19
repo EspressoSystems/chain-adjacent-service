@@ -171,24 +171,32 @@ impl Rollup for Nitro {
             }
         }
 
-        let start_message_position = context.next_batch_start_pos as u32;
-        // end index
-        let end_message_position = start_message_position + batch_messages.len() as u32 - 1;
+        if batch_messages.is_empty() {
+            return VerificationResult::failure();
+        }
+
+        let start_message_position = context.next_batch_start_pos;
+        let end_message_position = start_message_position + batch_messages.len() as u64 - 1;
         let start_espresso_block = queue[0..batch_messages.len()]
             .iter()
             .map(|e| e.hotshot_height())
             .min()
-            .unwrap_or(0) as u32;
+            .unwrap_or(0);
+        let after_delayed_messages_read = queue[batch_messages.len() - 1]
+            .feed_message
+            .message
+            .delayed_messages_read;
         let min_espresso_block_still_in_queue = queue[batch_messages.len()..]
             .iter()
             .map(|e| e.hotshot_height())
             .min()
-            .unwrap_or(0) as u32;
+            .unwrap_or(0);
         VerificationResult {
             success: true,
             start_message_position,
             end_message_position,
             start_espresso_block,
+            after_delayed_messages_read,
             min_espresso_block_still_in_queue,
         }
     }
@@ -936,7 +944,7 @@ pub mod testing {
 
     #[test]
     fn test_resolve_config_with_latest_batch_info() {
-        use crate::config::{ServiceConfig, StreamerConfig};
+        use crate::config::{KeyManagerConfig, ServiceConfig, StreamerConfig};
         use crate::da_api::config::DaApiConfig;
         use crate::espresso_client::client::Config as EspressoClientConfig;
         use crate::rollups::nitro::config::NitroConfig;
@@ -944,6 +952,7 @@ pub mod testing {
         use crate::rollups::nitro::feed::client::BroadcasterClientConfig;
         use crate::rollups::nitro::feed::relay::FeedConfig;
         use crate::submitter::submitter::SubmitterConfig;
+        use alloy::primitives::Address as VerifierAddress;
         use reqwest::Url;
 
         // Create initial config with minimal valid values
@@ -979,7 +988,14 @@ pub mod testing {
             submitter: SubmitterConfig::default(),
             da_server: DaApiConfig::default(),
             advanced: crate::config::AdvancedConfig::default(),
-            key_manager: None,
+            key_manager: KeyManagerConfig {
+                rpc_url: Url::parse("http://localhost:8545").unwrap(),
+                tee_verifier_address: VerifierAddress::ZERO,
+                attestation_verifier_url: Url::parse("http://localhost:9000").unwrap(),
+                max_register_attempts: 3,
+                attestation_client_timeout_secs: 30,
+                tee_type: Default::default(),
+            },
             is_fresh_deployment: false,
         };
 

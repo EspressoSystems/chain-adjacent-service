@@ -59,10 +59,15 @@ impl Drop for CasProcess {
     }
 }
 
+/// Anvil/Hardhat account 0 from the "test test ... junk" mnemonic.
+const TEST_OPERATOR_PRIVATE_KEY: &str =
+    "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+
 fn spawn_cas(config_path: &Path) -> CasProcess {
     let child = Command::new(CAS_BIN)
         .arg("--config")
         .arg(config_path)
+        .env("OPERATOR_PRIVATE_KEY", TEST_OPERATOR_PRIVATE_KEY)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()
@@ -146,10 +151,39 @@ async fn connect_l1_ws_with_retries() -> RootProvider {
     );
 }
 
+fn read_tee_verifier_address() -> Address {
+    let path = Path::new(GENERATED_CONFIG_DIR).join("tee_verifier_address.txt");
+    let content = std::fs::read_to_string(&path).unwrap_or_else(|_| {
+        panic!(
+            "missing {} — run docker compose with deploy profile first",
+            path.display()
+        )
+    });
+    content
+        .trim()
+        .parse()
+        .unwrap_or_else(|e| panic!("bad address in {}: {e}", path.display()))
+}
+
+/// Builds the CAS config inline and writes it to a runtime path so each
+/// test can inject the right `streamer.starting_hotshot_height` (the
+/// Espresso dev node container is reused across runs and accumulates
+/// hotshot blocks; without this, CAS would replay stale messages from a
+/// prior test against a freshly reset L1).
+///
+/// For the anytrust route, anytrust is just another entry in
+/// `da_providers` — CAS treats it like any other forwarded provider, and
+/// the daprovider sidecar handles all of the BLS aggregation / payload
+/// recovery work.
+///
+/// Sets `is_fresh_deployment: true` so `resolve_config_with_checkpoint`
+/// preserves the `starting_hotshot_height` we wrote here instead of
+/// overwriting it with whatever it scans off L1.
 fn write_cas_config(
     starting_hotshot_height: u64,
     route: CasRoute,
     sequencer_inbox: &Address,
+    tee_verifier_address: Address,
 ) -> PathBuf {
     let da_server = match route {
         CasRoute::Calldata => json!({"listen_addr": "0.0.0.0:8000"}),
@@ -199,6 +233,12 @@ fn write_cas_config(
         "da_server": da_server,
         "submitter": {
             "max_in_flight": 1000
+        },
+        "key_manager": {
+            "rpc_url": "http://localhost:8545",
+            "tee_verifier_address": format!("{tee_verifier_address}"),
+            "attestation_verifier_url": "http://localhost:9000",
+            "tee_type": "test"
         },
         "is_fresh_deployment": true,
     });
@@ -306,7 +346,10 @@ async fn run_e2e(route: CasRoute) {
         .await
         .expect("failed to fetch latest hotshot block height")
         + 1;
-    let cas_config_path = write_cas_config(starting_hotshot_height, route, &sequencer_inbox);
+    let tee_verifier_address = read_tee_verifier_address();
+    println!("Using TEE verifier mock at {tee_verifier_address}");
+    let cas_config_path =
+        write_cas_config(starting_hotshot_height, route, &sequencer_inbox, tee_verifier_address);
     println!(
         "CAS config written to {} (starting_hotshot_height={starting_hotshot_height})",
         cas_config_path.display()

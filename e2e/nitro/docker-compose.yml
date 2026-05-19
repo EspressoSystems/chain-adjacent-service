@@ -74,6 +74,8 @@ services:
       CHILD_CHAIN_INFO: "/config/deployed_chain_info.json"
       OWNER_ADDRESS: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
       SEQUENCER_ADDRESS: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+      ENABLE_ESPRESSO_CAS: 1
+      TEE_VERIFIER_INFO: "/config/tee_verifier_address.txt"
       AUTHORIZE_VALIDATORS: 10
       MAX_DATA_SIZE: 117964
       WASM_MODULE_ROOT: "0xc2c02df561d4afaf9a1d6785f70098ec3874765c638e3cb6dbe8d3c83333e14c"

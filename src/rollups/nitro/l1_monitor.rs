@@ -38,7 +38,7 @@ sol! {
             IBridge.BatchDataLocation dataLocation
         );
 
-        event BatchVerified(
+        event EspressoCertificateVerified(
             uint256 hotshotBlock,
             uint256 delayedMessageRead,
             uint256 messageCount
@@ -68,7 +68,7 @@ sol! {
 pub struct L1MonitorConfig {
     pub ws_url: String,
     pub sequencer_inbox_address: Address,
-    /// Number of blocks to step back when scanning for the latest `BatchVerified`
+    /// Number of blocks to step back when scanning for the latest `EspressoCertificateVerified`
     /// event. The monitor walks backwards from the current block in chunks of
     /// this size until it finds an event.
     pub log_scan_step: u64,
@@ -248,7 +248,7 @@ impl L1Monitor<BatchCursor, nitro::Error> for NitroL1Monitor {
         };
 
         // Walk backwards in chunks of `log_scan_step` until we find a
-        // BatchVerified event.
+        // EspressoCertificateVerified event.
         loop {
             let from_block = to_block
                 .saturating_sub(self.log_scan_step)
@@ -256,7 +256,7 @@ impl L1Monitor<BatchCursor, nitro::Error> for NitroL1Monitor {
 
             let filter = Filter::new()
                 .address(self.sequencer_inbox_address)
-                .event_signature(ISequencerInbox::BatchVerified::SIGNATURE_HASH)
+                .event_signature(ISequencerInbox::EspressoCertificateVerified::SIGNATURE_HASH)
                 .from_block(from_block)
                 .to_block(to_block);
 
@@ -268,7 +268,7 @@ impl L1Monitor<BatchCursor, nitro::Error> for NitroL1Monitor {
 
             // Take the most recent event (last in the returned list).
             if let Some(log) = logs.last() {
-                let event = ISequencerInbox::BatchVerified::decode_log(&log.inner)
+                let event = ISequencerInbox::EspressoCertificateVerified::decode_log(&log.inner)
                     .map_err(|e| L1MonitorError::Contract(e.to_string()))?;
 
                 let hotshot_height = event.data.hotshotBlock.to::<u64>();
@@ -279,7 +279,7 @@ impl L1Monitor<BatchCursor, nitro::Error> for NitroL1Monitor {
                     hotshot_height,
                     delayed_message_read,
                     message_count,
-                    "found latest BatchVerified event"
+                    "found latest EspressoCertificateVerified event"
                 );
 
                 return Ok(CasCheckpoint::new(
@@ -299,7 +299,7 @@ impl L1Monitor<BatchCursor, nitro::Error> for NitroL1Monitor {
                     .into());
                 }
                 // Scanned the entire chain — no event found.
-                tracing::warn!("no BatchVerified event found on-chain");
+                tracing::warn!("no EspressoCertificateVerified event found on-chain");
                 return Ok(CasCheckpoint::new(BatchCursor::default(), 0));
             }
 
