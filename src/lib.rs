@@ -56,6 +56,9 @@ pub type VerificationSender = mpsc::Sender<(Bytes, oneshot::Sender<VerificationR
 pub type VerificationReceiver = mpsc::Receiver<(Bytes, oneshot::Sender<VerificationResult>)>;
 
 pub async fn cas_init() -> Result<()> {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
     tracing_subscriber::fmt()
         .json()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
