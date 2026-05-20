@@ -30,13 +30,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd --gid 1000 cas && \
-    useradd --uid 1000 --gid cas --create-home cas
+RUN groupadd --gid 1000 user && \
+    useradd --uid 1000 --gid user --create-home user
 
 COPY --from=builder /build/target/release/chain-adjacent-service /usr/local/bin/
 
-USER cas
-WORKDIR /home/cas
+USER user
+WORKDIR /home/user
 
 ENTRYPOINT ["chain-adjacent-service"]
 CMD ["--config", "/etc/cas/config.json"]
