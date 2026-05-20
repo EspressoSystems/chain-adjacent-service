@@ -38,7 +38,9 @@ alloy = { version = "1.6.3", default-features = false, features = [
 ] }
 alloy-rlp = { version = "0.3.13", features = ["derive"] }
 anyhow = "1.0.101"
+aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-nitro-enclaves-nsm-api = "0.4"
+aws-sdk-secretsmanager = "1"
 async-trait = "0.1.89"
 axum = "0.8.8"
 base64 = "0.22.1"
@@ -82,6 +84,7 @@ yawc = "0.3"
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 [dev-dependencies]
+dotenvy = "0.15"
 wiremock = "0.6.5"
 hex = "0.4.3"
 k256 = { version = "0.13", features = ["ecdsa"] }

@@ -74,8 +74,8 @@ services:
       CHILD_CHAIN_CONFIG_PATH: "/nitro-config/l2_chain_config.json"
       CHAIN_DEPLOYMENT_INFO: "/config/deployment.json"
       CHILD_CHAIN_INFO: "/config/deployed_chain_info.json"
-      OWNER_ADDRESS: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
-      SEQUENCER_ADDRESS: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+      OWNER_ADDRESS: ${DEPLOYER_ADDRESS}
+      SEQUENCER_ADDRESS: ${DEPLOYER_ADDRESS}
       ENABLE_ESPRESSO_CAS: 1
       TEE_VERIFIER_INFO: "/config/tee_verifier_address.txt"
       AUTHORIZE_VALIDATORS: 10
@@ -165,7 +165,7 @@ services:
           cast send \
             --rpc-url http://sequencer:8547 \
             --private-key ${BATCH_POSTER_PRIVATE_KEY} \
-            0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 \
+            ${DEPLOYER_ADDRESS} \
             --value 1 2>&1 || true
           sleep 2
         done

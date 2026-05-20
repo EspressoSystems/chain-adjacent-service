@@ -68,8 +68,8 @@ if [ -z "$KEYSET_HEX" ]; then
 fi
 
 # Read contract addresses from deployment.json
-SEQ_INBOX=$(python3 -c "import json; print(json.load(open('$CONFIG_DIR/deployment.json'))['sequencer-inbox'])")
-UPGRADE_EXEC=$(python3 -c "import json; print(json.load(open('$CONFIG_DIR/deployment.json'))['upgrade-executor'])")
+SEQ_INBOX=$(jq -r '.["sequencer-inbox"]' "$CONFIG_DIR/deployment.json")
+UPGRADE_EXEC=$(jq -r '.["upgrade-executor"]' "$CONFIG_DIR/deployment.json")
 
 # Encode setValidKeyset(bytes) and send via upgrade-executor
 INNER_CALLDATA=$(docker run --rm \
@@ -93,6 +93,9 @@ echo "DAS keyset registered on SequencerInbox $SEQ_INBOX"
 
 # ── Snapshot & cleanup ────────────────────────────────────────────────────────
 
+# The generate override starts Anvil with `--dump-state /state/l1-state.json`.
+# When Anvil receives SIGTERM (via `docker compose stop`), it writes the
+# full chain state to that path before exiting.
 echo "==> Stopping Anvil (triggers state dump)..."
 $DC stop l1-anvil
 
