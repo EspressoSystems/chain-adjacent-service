@@ -12,7 +12,6 @@ const COMPOSE_FILE: &str = concat!(
 pub struct EspressoDevNode {
     pub client: EspressoClient,
     _lifecycle_permit: Option<OwnedSemaphorePermit>,
-    manages_lifecycle: bool,
 }
 
 fn compose_lifecycle_semaphore() -> &'static std::sync::Arc<Semaphore> {
@@ -22,7 +21,7 @@ fn compose_lifecycle_semaphore() -> &'static std::sync::Arc<Semaphore> {
 
 impl Drop for EspressoDevNode {
     fn drop(&mut self) {
-        if self.manages_lifecycle {
+        if self._lifecycle_permit.is_some() {
             self.stop();
         }
         self._lifecycle_permit.take();
@@ -34,7 +33,6 @@ impl EspressoDevNode {
         Self {
             client,
             _lifecycle_permit: None,
-            manages_lifecycle: false,
         }
     }
 
@@ -90,7 +88,6 @@ impl EspressoDevNode {
         let node = Self {
             client,
             _lifecycle_permit: Some(lifecycle_permit),
-            manages_lifecycle: true,
         };
         node.wait_until_ready().await;
         node
@@ -105,7 +102,6 @@ impl EspressoDevNode {
         let node = Self {
             client,
             _lifecycle_permit: None,
-            manages_lifecycle: false,
         };
         node.wait_until_ready().await;
         node
@@ -115,7 +111,7 @@ impl EspressoDevNode {
         let deadline = Instant::now() + Duration::from_secs(120);
         loop {
             if Instant::now() >= deadline {
-                if self.manages_lifecycle {
+                if self._lifecycle_permit.is_some() {
                     self.stop();
                 }
                 panic!("timed out waiting for Espresso dev node to be ready");
