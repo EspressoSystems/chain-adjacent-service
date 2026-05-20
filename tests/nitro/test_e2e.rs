@@ -247,8 +247,8 @@ fn write_cas_config(
                         }
                     }
                 },
-                "l1_https_url": "https://localhost:8546",
-                "l1_ws_url": "ws://localhost:8546",
+                "l1_https_url": L1_HTTPS_URL,
+                "l1_ws_url": L1_WS_URL,
                 "sequencer_inbox_address": "0xB7b68cb0E3ca9400Ff085514c0f4D021969B9Dc1"
             }
         },
