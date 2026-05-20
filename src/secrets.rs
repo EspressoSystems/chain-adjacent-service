@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail};
 use aws_config::{BehaviorVersion, Region};
 use serde::Deserialize;
 
-use crate::config::ServiceConfig;
+use crate::config::{ServiceConfig, TeeType};
 use crate::rollups::nitro::config::NitroConfig;
 
 pub const PLACEHOLDER_STR: &str = "PLACEHOLDER";
@@ -35,16 +35,20 @@ pub struct SecretOverrides {
 /// runs unconditionally after the (optional) merge: an operator who forgets
 /// the env vars but ships a placeholder-laden config will still fail at
 /// startup.
-pub async fn fetch_secret_overrides() -> Result<Option<SecretOverrides>> {
+pub async fn fetch_secret_overrides(tee_type: TeeType) -> Result<Option<SecretOverrides>> {
     let region = env::var(ENV_AWS_REGION).ok();
     let secret_id = env::var(ENV_AWS_SECRET_ID).ok();
 
     let (region, secret_id) = match (region, secret_id) {
         (None, None) => {
-            tracing::info!(
-                "{ENV_AWS_REGION} and {ENV_AWS_SECRET_ID} not set; skipping AWS secret fetch"
-            );
-            return Ok(None);
+            if tee_type == TeeType::Nitro {
+                bail!("{ENV_AWS_REGION} and {ENV_AWS_SECRET_ID} not set but Tee type is Nitro");
+            } else {
+                tracing::info!(
+                    "{ENV_AWS_REGION} and {ENV_AWS_SECRET_ID} not set; skipping AWS secret fetch"
+                );
+                return Ok(None);
+            }
         }
         (Some(_), None) | (None, Some(_)) => {
             bail!("{ENV_AWS_REGION} and {ENV_AWS_SECRET_ID} must both be set or both unset");
@@ -188,6 +192,12 @@ mod tests {
                     }
                 ]
             },
+            "key_manager": {
+                "rpc_url": "http://localhost:8545",
+                "tee_verifier_address": "0x0000000000000000000000000000000000000000",
+                "attestation_verifier_url": "http://localhost:9000",
+                "tee_type": "test"
+            },
             "is_fresh_deployment": true
         }"#
     }
@@ -310,7 +320,7 @@ mod tests {
     async fn live_fetch_against_aws_secrets_manager() {
         let _ = dotenvy::dotenv();
 
-        let overrides = fetch_secret_overrides()
+        let overrides = fetch_secret_overrides(TeeType::Nitro)
             .await
             .expect("fetch_secret_overrides failed — check AWS_REGION, AWS_SECRET_ID, credentials, and secret JSON shape")
             .expect("AWS_REGION and AWS_SECRET_ID must both be set to run the live integration test");

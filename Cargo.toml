@@ -84,6 +84,7 @@ yawc = "0.3"
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 [dev-dependencies]
+dotenvy = "0.15"
 wiremock = "0.6.5"
 hex = "0.4.3"
 k256 = { version = "0.13", features = ["ecdsa"] }

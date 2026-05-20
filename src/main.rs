@@ -45,7 +45,7 @@ async fn main() -> Result<()> {
             let mut config: ServiceConfig<<Nitro as Rollup>::StackConfig> =
                 serde_json::from_str(&config_contents)?;
 
-            if let Some(overrides) = fetch_secret_overrides().await? {
+            if let Some(overrides) = fetch_secret_overrides(config.key_manager.tee_type).await? {
                 apply_overrides_nitro(&mut config, &overrides)?;
             }
             assert_no_placeholders_nitro(&config)?;
