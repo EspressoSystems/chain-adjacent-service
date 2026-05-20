@@ -15,7 +15,7 @@ use crate::{
 pub trait BatchCursorFetcher: Send + Sync {
     /// Read the current batch cursor from L1.
     /// Returns (next_batch_start_pos, last_batch_delayed_messages_read).
-    async fn fetch_batch_cursor(&self) -> anyhow::Result<(u64, u64)>;
+    async fn fetch_batch_cursor(&self) -> Result<(u64, u64)>;
 }
 
 pub trait RollupQueueEntry: Clone {

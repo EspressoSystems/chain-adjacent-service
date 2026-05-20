@@ -1,9 +1,7 @@
 use alloy::primitives::{Address, B256, FixedBytes, Signature};
+use anyhow::Result;
 
-pub fn recover_signer_address(
-    message_hash: FixedBytes<32>,
-    signature: &[u8],
-) -> anyhow::Result<Address> {
+pub fn recover_signer_address(message_hash: FixedBytes<32>, signature: &[u8]) -> Result<Address> {
     // Signature should always be 65 bytes length
     if signature.len() != 65 {
         tracing::warn!("invalid signature length: {}", signature.len());

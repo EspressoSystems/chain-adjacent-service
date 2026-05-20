@@ -89,12 +89,12 @@ async fn main() -> Result<()> {
             let cursor_fetcher: Option<Arc<dyn BatchCursorFetcher>> =
                 Some(l1_monitor.create_cursor_fetcher());
 
-            run_with_monitor::<Nitro>(config, key_manager, l1_monitor, cursor_fetcher).await
+            run::<Nitro>(config, key_manager, l1_monitor, cursor_fetcher).await
         }
     }
 }
 
-async fn run_with_monitor<R: Rollup>(
+async fn run<R: Rollup>(
     config: ServiceConfig<R::StackConfig>,
     key_manager: KeyManager,
     l1_monitor: R::L1Monitor,

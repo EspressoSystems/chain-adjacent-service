@@ -8,6 +8,7 @@ use alloy::{
     sol,
     sol_types::SolEvent,
 };
+use anyhow::Result;
 use tokio::sync::watch;
 
 use async_trait::async_trait;
@@ -179,14 +180,11 @@ pub struct NitroBatchCursorFetcher {
 }
 
 impl NitroBatchCursorFetcher {
-    async fn fetch_message_count(&self, block_tag: BlockNumberOrTag) -> anyhow::Result<u64> {
+    async fn fetch_message_count(&self, block_tag: BlockNumberOrTag) -> Result<u64> {
         Ok(fetch_message_count(&self.provider, self.bridge_address, block_tag).await?)
     }
 
-    async fn fetch_delayed_messages_read(
-        &self,
-        block_tag: BlockNumberOrTag,
-    ) -> anyhow::Result<u64> {
+    async fn fetch_delayed_messages_read(&self, block_tag: BlockNumberOrTag) -> Result<u64> {
         Ok(
             fetch_delayed_messages_read(&self.provider, self.sequencer_inbox_address, block_tag)
                 .await?,
@@ -196,7 +194,7 @@ impl NitroBatchCursorFetcher {
 
 #[async_trait]
 impl BatchCursorFetcher for NitroBatchCursorFetcher {
-    async fn fetch_batch_cursor(&self) -> anyhow::Result<(u64, u64)> {
+    async fn fetch_batch_cursor(&self) -> Result<(u64, u64)> {
         let (msg_count, delayed_read) = tokio::try_join!(
             self.fetch_message_count(BlockNumberOrTag::Latest),
             self.fetch_delayed_messages_read(BlockNumberOrTag::Latest),
@@ -304,6 +302,7 @@ impl L1Monitor<BatchCursor, nitro::Error> for NitroL1Monitor {
         let mut interval = tokio::time::interval(poll_interval);
         let mut last_finalized_block: u64 = 0;
 
+        // Periodically poll the finalized block and update the finalized message count
         loop {
             interval.tick().await;
 

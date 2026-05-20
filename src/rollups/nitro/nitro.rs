@@ -419,7 +419,7 @@ impl Nitro {
 // The current approach is a temporary simplification to avoid plumbing signature verification
 // through all call sites, which would significantly increase PR complexity.
 // In the long term, verification logic should be decoupled and testable without conditional compilation.
-#[cfg(any(test, feature = "e2e"))]
+#[cfg(test)]
 pub fn verify_broadcast_feed_message_signature(
     _chain_id: u64,
     _sequencer_addresses: &[Address],
@@ -429,7 +429,7 @@ pub fn verify_broadcast_feed_message_signature(
     Ok(())
 }
 
-#[cfg(not(any(test, feature = "e2e")))]
+#[cfg(not(test))]
 pub fn verify_broadcast_feed_message_signature(
     chain_id: u64,
     sequencer_addresses: &[Address],
