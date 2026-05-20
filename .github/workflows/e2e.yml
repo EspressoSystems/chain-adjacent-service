@@ -35,10 +35,11 @@ jobs:
         working-directory: e2e/nitro
         run: |
           source .env
-          docker pull "$NITRO_IMAGE"
-          docker pull "$ESPRESSO_DEV_NODE_IMAGE"
-          docker pull ghcr.io/foundry-rs/foundry:latest
-          docker pull ghcr.io/foundry-rs/foundry:v1.5.1
+          docker pull "$NITRO_IMAGE" &
+          docker pull "$ESPRESSO_DEV_NODE_IMAGE" &
+          docker pull ghcr.io/foundry-rs/foundry:latest &
+          docker pull ghcr.io/foundry-rs/foundry:v1.5.1 &
+          wait
 
       - uses: extractions/setup-just@v3
 
