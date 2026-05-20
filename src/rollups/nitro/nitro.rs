@@ -414,7 +414,7 @@ pub fn verify_broadcast_feed_message_signature(
     _sequencer_addresses: &[Address],
     _msg: &BroadcastFeedMessage,
 ) -> Result<()> {
-    // Skip signature verification in tests for simplicity, as test messages may not have valid signatures
+    // Skip signature verification in unit tests for simplicity, as test messages may not have valid signatures
     Ok(())
 }
 

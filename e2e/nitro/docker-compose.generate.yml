@@ -1,0 +1,20 @@
+# Override for `just generate-l1-state`.
+# Starts a fresh Anvil (no --load-state) and dumps state on exit.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.generate.yml ...
+services:
+  l1-anvil:
+    command:
+      [
+        "--host",
+        "0.0.0.0",
+        "--block-time",
+        "1",
+        "--chain-id",
+        "1337",
+        "--dump-state",
+        "/state/l1-state.json",
+      ]
+    volumes:
+      - "./generated-config:/state"

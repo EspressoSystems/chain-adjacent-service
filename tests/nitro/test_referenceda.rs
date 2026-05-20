@@ -21,7 +21,6 @@ use std::sync::Arc;
 
 use crate::{
     EXPECTED_RECOVER_PAYLOAD_RESPONSE, STORE_REQUEST_DATA,
-    cas_harness::setup_l1_reuse_mode,
     nitro_node::nitro_node::{NitroNode, NitroNodeConfig},
 };
 
@@ -69,23 +68,15 @@ fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
 #[ignore]
 #[tokio::test]
 async fn test_nitro_reference_da() {
-    setup_l1_reuse_mode();
-
-    let config = NitroNodeConfig::default_reference_da();
-    let nitro_node = NitroNode::start(config).await;
+    let config = NitroNodeConfig::default();
+    let _nitro_node = NitroNode::start(config).await;
     println!("Nitro node started");
 
     let my_addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
 
-    let _server = spawn_server(
-        my_addr,
-        nitro_node
-            .config
-            .reference_da_url
-            .as_ref()
-            .unwrap()
-            .to_string(),
-    );
+    // TODO: add referenceda-provider service to e2e/nitro/docker-compose.yml
+    // so this test has a live endpoint at localhost:9880 when un-ignored.
+    let _server = spawn_server(my_addr, "http://localhost:9880".to_string());
     sleep(Duration::from_millis(100)).await;
 
     println!("running test_nitro_reference_da_supported_header_bytes");

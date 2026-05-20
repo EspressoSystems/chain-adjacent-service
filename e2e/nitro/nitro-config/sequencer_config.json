@@ -1,0 +1,71 @@
+{
+    "ensure-rollup-deployment": false,
+    "parent-chain": {
+        "connection": {
+            "url": "http://l1-anvil:8545"
+        }
+    },
+    "chain": {
+        "id": 412346,
+        "info-files": [
+            "/config/deployed_chain_info.json"
+        ]
+    },
+    "node": {
+        "staker": {
+            "enable": false
+        },
+        "sequencer": true,
+        "dangerous": {
+            "no-sequencer-coordinator": true,
+            "disable-blob-reader": true
+        },
+        "delayed-sequencer": {
+            "enable": true
+        },
+        "seq-coordinator": {
+            "enable": false
+        },
+        "batch-poster": {
+            "enable": false
+        },
+        "feed": {
+            "input": {
+                "url": []
+            },
+            "output": {
+                "enable": true,
+                "signed": false,
+                "addr": "0.0.0.0",
+                "port": 9642
+            }
+        },
+        "da": {
+            "anytrust": {
+                "enable": true,
+                "rest-aggregator": {
+                    "enable": true,
+                    "urls": ["http://das-mirror:9877"]
+                }
+            }
+        }
+    },
+    "execution": {
+        "sequencer": {
+            "enable": true
+        },
+        "forwarding-target": "null"
+    },
+    "persistent": {
+        "chain": "local"
+    },
+    "ws": {
+        "addr": "0.0.0.0"
+    },
+    "http": {
+        "addr": "0.0.0.0",
+        "vhosts": "*",
+        "corsdomain": "*"
+    },
+    "log-level": "INFO"
+}

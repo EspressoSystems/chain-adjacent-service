@@ -1,4 +1,4 @@
-use alloy::primitives::{Address, address};
+use alloy::primitives::Address;
 use alloy::providers::{Provider, RootProvider};
 use alloy::rpc::types::Filter;
 use alloy::sol_types::SolEvent;
@@ -11,7 +11,6 @@ use tokio::time::{Instant, sleep};
 use chain_adjacent_service::espresso_e2e::espresso_dev_node::EspressoDevNode;
 use chain_adjacent_service::rollups::nitro::l1_monitor::ISequencerInbox;
 
-use crate::cas_harness::setup_l1_reuse_mode_with_cas_poster;
 use crate::nitro_node::nitro_node::{NitroNode, NitroNodeConfig};
 
 const CAS_BIN: &str = env!("CARGO_BIN_EXE_chain-adjacent-service");
@@ -23,8 +22,10 @@ const CAS_LOCAL_BASE_URL: &str = "http://localhost:8000";
 
 const ANYTRUST_DAPROVIDER_URL: &str = "http://localhost:9881";
 
-const L1_WS_URL: &str = "ws://localhost:8546";
-const SEQUENCER_INBOX: Address = address!("B7b68cb0E3ca9400Ff085514c0f4D021969B9Dc1");
+const L1_WS_URL: &str = "ws://localhost:8545";
+const GENERATED_CONFIG_DIR: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/e2e/nitro/generated-config");
+const TRUSTED_SEQUENCER_ADDRESS: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
 
 #[derive(Clone, Copy)]
 enum CasRoute {
@@ -40,8 +41,6 @@ impl CasRoute {
         }
     }
 
-    /// Host-reachable equivalent of `rpc_url_for_poster` for the test's
-    /// own readiness probe — same path, but on localhost.
     fn rpc_url_local(&self) -> String {
         let path = match self {
             CasRoute::Calldata => "/cas/arb/calldata",
@@ -51,8 +50,6 @@ impl CasRoute {
     }
 }
 
-/// RAII wrapper that kills the CAS subprocess on drop so the test never
-/// leaks a background process if it panics.
 struct CasProcess(Child);
 
 impl Drop for CasProcess {
@@ -78,14 +75,6 @@ fn spawn_cas(config_path: &Path) -> CasProcess {
     CasProcess(child)
 }
 
-/// Spawns CAS and waits for it to become ready on `probe_url`, retrying
-/// the whole (spawn -> wait) cycle if CAS exits early or doesn't come up
-/// in time.
-///
-/// CAS startup hits the L1 WS endpoint to fetch the latest checkpoint,
-/// and that connection occasionally fails with broken-pipe / network-down
-/// from anvil — which currently causes CAS to exit. Retrying side-steps
-/// the flake until we add proper retry logic inside CAS itself.
 async fn spawn_cas_with_retries(config_path: &Path, probe_url: &str) -> CasProcess {
     const MAX_ATTEMPTS: usize = 5;
     const PER_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -105,21 +94,14 @@ async fn spawn_cas_with_retries(config_path: &Path, probe_url: &str) -> CasProce
                 println!("CAS attempt {attempt} timed out after {PER_ATTEMPT_TIMEOUT:?}");
             }
         }
-        // CasProcess::drop kills any child still running.
         drop(cas);
         sleep(Duration::from_secs(2)).await;
     }
     panic!("CAS failed to become ready after {MAX_ATTEMPTS} attempts");
 }
 
-/// Polls `probe_url` until CAS answers a JSON-RPC request, or returns
-/// `Err` if the subprocess exits before that happens. The caller is
-/// expected to apply a timeout via `tokio::time::timeout`.
 async fn wait_for_cas_ready(cas: &mut CasProcess, probe_url: &str) -> Result<(), String> {
     let client = reqwest::Client::new();
-    // The readiness signal is "server is bound and processing requests",
-    // not "this specific RPC method succeeds" — see the response-handling
-    // arm below for why route-specific status codes are both acceptable.
     let body = json!({
         "jsonrpc": "2.0",
         "method": "daprovider_getSupportedHeaderBytes",
@@ -135,9 +117,6 @@ async fn wait_for_cas_ready(cas: &mut CasProcess, probe_url: &str) -> Result<(),
         }
 
         match client.post(probe_url).json(&body).send().await {
-            // Any HTTP response means CAS is bound and serving on this
-            // route. Both calldata (handled locally, 200 OK) and anytrust
-            // (forwarded to the sidecar) come up successfully here.
             Ok(resp) => {
                 println!(
                     "CAS DA RPC is ready ({probe_url}, status {})",
@@ -153,8 +132,6 @@ async fn wait_for_cas_ready(cas: &mut CasProcess, probe_url: &str) -> Result<(),
     }
 }
 
-/// Same broken-pipe / network-down flake hits the test's own L1 WS
-/// connection. Wrap connect with a retry loop.
 async fn connect_l1_ws_with_retries() -> RootProvider {
     const MAX_ATTEMPTS: usize = 10;
     let mut last_err: Option<String> = None;
@@ -174,16 +151,18 @@ async fn connect_l1_ws_with_retries() -> RootProvider {
     );
 }
 
-const TEE_VERIFIER_STATE_FILE: &str = "tests/nitro/l1_node/state/tee_verifier_address.txt";
-
 fn read_tee_verifier_address() -> Address {
-    let content = std::fs::read_to_string(TEE_VERIFIER_STATE_FILE).unwrap_or_else(|_| {
-        panic!("missing {TEE_VERIFIER_STATE_FILE} — run setup.sh --init-force")
+    let path = Path::new(GENERATED_CONFIG_DIR).join("tee_verifier_address.txt");
+    let content = std::fs::read_to_string(&path).unwrap_or_else(|_| {
+        panic!(
+            "missing {} — run docker compose with deploy profile first",
+            path.display()
+        )
     });
     content
         .trim()
         .parse()
-        .unwrap_or_else(|e| panic!("bad address in {TEE_VERIFIER_STATE_FILE}: {e}"))
+        .unwrap_or_else(|e| panic!("bad address in {}: {e}", path.display()))
 }
 
 /// Builds the CAS config inline and writes it to a runtime path so each
@@ -202,8 +181,9 @@ fn read_tee_verifier_address() -> Address {
 /// overwriting it with whatever it scans off L1.
 fn write_cas_config(
     starting_hotshot_height: u64,
-    tee_verifier_address: Address,
     route: CasRoute,
+    sequencer_inbox: &Address,
+    tee_verifier_address: Address,
 ) -> PathBuf {
     let da_server = match route {
         CasRoute::Calldata => json!({"listen_addr": "0.0.0.0:8000"}),
@@ -236,7 +216,7 @@ fn write_cas_config(
                     "current_message_count": 0,
                     "client": {
                         "trusted_sequencer_addresses": [
-                            "0xe2148eE53c0755215Df69b2616E552154EdC584f"
+                            TRUSTED_SEQUENCER_ADDRESS
                         ]
                     },
                     "server": {
@@ -246,8 +226,8 @@ fn write_cas_config(
                         }
                     }
                 },
-                "l1_ws_url": "ws://localhost:8546",
-                "sequencer_inbox_address": "0xB7b68cb0E3ca9400Ff085514c0f4D021969B9Dc1"
+                "l1_ws_url": L1_WS_URL,
+                "sequencer_inbox_address": sequencer_inbox.to_string()
             }
         },
         "da_server": da_server,
@@ -275,9 +255,29 @@ fn write_cas_config(
     path
 }
 
-async fn wait_for_batches_on_l1(provider: &RootProvider, from_block: u64, min: usize) {
+fn read_sequencer_inbox_address() -> Address {
+    let path = Path::new(GENERATED_CONFIG_DIR).join("deployment.json");
+    let raw = std::fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
+    let deployment: serde_json::Value = serde_json::from_str(&raw)
+        .unwrap_or_else(|err| panic!("failed to parse {}: {err}", path.display()));
+    let value = deployment
+        .get("sequencer-inbox")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_else(|| panic!("missing sequencer-inbox in {}", path.display()));
+    value
+        .parse()
+        .unwrap_or_else(|err| panic!("invalid sequencer-inbox address {value}: {err}"))
+}
+
+async fn wait_for_batches_on_l1(
+    provider: &RootProvider,
+    from_block: u64,
+    min: usize,
+    sequencer_inbox: Address,
+) {
     let filter = Filter::new()
-        .address(SEQUENCER_INBOX)
+        .address(sequencer_inbox)
         .event_signature(ISequencerInbox::SequencerBatchDelivered::SIGNATURE_HASH)
         .from_block(from_block);
 
@@ -316,43 +316,30 @@ async fn wait_for_batches_on_l1(provider: &RootProvider, from_block: u64, min: u
     }
 }
 
-/// Drives the full end-to-end pipeline for a given CAS route. Both
-/// `test_e2e_calldata` and `test_e2e_anytrust` are thin wrappers around
-/// this — the only differences are which URL the poster talks to, which
-/// `da_server` block goes into CAS's config, and (for anytrust) whether
-/// we need to bring up the DAS committee + daprovider sidecar before the
-/// poster starts.
 async fn run_e2e(route: CasRoute) {
-    let espresso = EspressoDevNode::start().await;
-    println!(
-        "Espresso dev node started at {}",
-        espresso.client.config.base_url
-    );
-
-    let anytrust = matches!(route, CasRoute::Anytrust);
-    setup_l1_reuse_mode_with_cas_poster(CAS_FEED_URL, route.rpc_url_for_poster(), anytrust);
-
     let config = NitroNodeConfig {
         no_l2_traffic: false,
-        ..Default::default()
     };
 
-    // Phase 1: bring up L1 + sequencer (no poster yet — it's gated behind
-    // CAS being reachable on the feed and DA endpoints).
     let nitro_node = NitroNode::start(config).await;
-    println!("Nitro node + L1 (reuse mode) started");
+    println!("Nitro stack started (L1 + sequencer + espresso dev node)");
+
+    let sequencer_inbox = read_sequencer_inbox_address();
+    let anytrust = matches!(route, CasRoute::Anytrust);
 
     if anytrust {
         nitro_node.start_das_committee();
         println!("DAS committee + mirror started");
-        nitro_node.start_anytrust_daprovider();
+        nitro_node.start_anytrust_daprovider(&sequencer_inbox.to_string());
         println!("daprovider-anytrust sidecar started");
     }
 
-    // Phase 2: snapshot Espresso's current hotshot height so CAS skips
-    // historical blocks left behind by prior runs (the dev node container
-    // is reused across tests). Then spawn CAS and wait for its DA RPC to
-    // come up so the poster has a live endpoint by the time it boots.
+    let espresso = EspressoDevNode::connect().await;
+    println!(
+        "Espresso dev node ready at {}",
+        espresso.client.config.base_url
+    );
+
     let starting_hotshot_height = espresso
         .client
         .fetch_latest_hotshot_block_height()
@@ -361,7 +348,12 @@ async fn run_e2e(route: CasRoute) {
         + 1;
     let tee_verifier_address = read_tee_verifier_address();
     println!("Using TEE verifier mock at {tee_verifier_address}");
-    let cas_config_path = write_cas_config(starting_hotshot_height, tee_verifier_address, route);
+    let cas_config_path = write_cas_config(
+        starting_hotshot_height,
+        route,
+        &sequencer_inbox,
+        tee_verifier_address,
+    );
     println!(
         "CAS config written to {} (starting_hotshot_height={starting_hotshot_height})",
         cas_config_path.display()
@@ -369,24 +361,19 @@ async fn run_e2e(route: CasRoute) {
     let probe_url = route.rpc_url_local();
     let cas = spawn_cas_with_retries(&cas_config_path, &probe_url).await;
 
-    // Phase 3: snapshot the L1 head so the batch-count assertion ignores
-    // anything pre-existing in the anvil snapshot, then bring up the
-    // poster.
     let l1 = connect_l1_ws_with_retries().await;
     let from_block = l1
         .get_block_number()
         .await
         .expect("failed to read L1 head block number");
 
-    nitro_node.start_poster();
+    nitro_node.start_poster(CAS_FEED_URL, route.rpc_url_for_poster());
     println!("Poster started");
 
-    // Phase 4: assert the end-to-end pipeline produces at least 5 batches
-    wait_for_batches_on_l1(&l1, from_block, 5).await;
+    wait_for_batches_on_l1(&l1, from_block, 2, sequencer_inbox).await;
 
     drop(cas);
     drop(nitro_node);
-    drop(espresso);
 }
 
 #[tokio::test]

@@ -1,0 +1,79 @@
+{
+    "ensure-rollup-deployment": false,
+    "parent-chain": {
+        "connection": {
+            "url": "http://l1-anvil:8545"
+        }
+    },
+    "chain": {
+        "id": 412346,
+        "info-files": [
+            "/config/deployed_chain_info.json"
+        ]
+    },
+    "node": {
+        "staker": {
+            "enable": false
+        },
+        "sequencer": false,
+        "dangerous": {
+            "no-sequencer-coordinator": true,
+            "disable-blob-reader": true
+        },
+        "delayed-sequencer": {
+            "enable": false
+        },
+        "seq-coordinator": {
+            "enable": false
+        },
+        "batch-poster": {
+            "enable": true,
+            "max-delay": "1m",
+            "wait-for-max-delay": false,
+            "l1-block-bound": "ignore",
+            "data-poster": {
+                "wait-for-l1-finality": false
+            },
+            "poll-interval": "5s"
+        },
+        "feed": {
+            "input": {
+                "url": ["ws://sequencer:9642"]
+            },
+            "output": {
+                "enable": false
+            }
+        },
+        "da": {
+            "anytrust": {
+                "enable": true,
+                "rpc-aggregator": {
+                    "enable": true,
+                    "assumed-honest": 1
+                },
+                "rest-aggregator": {
+                    "enable": true,
+                    "urls": ["http://das-mirror:9877"]
+                }
+            }
+        }
+    },
+    "execution": {
+        "sequencer": {
+            "enable": false
+        },
+        "forwarding-target": "null"
+    },
+    "persistent": {
+        "chain": "local"
+    },
+    "ws": {
+        "addr": "0.0.0.0"
+    },
+    "http": {
+        "addr": "0.0.0.0",
+        "vhosts": "*",
+        "corsdomain": "*"
+    },
+    "log-level": "INFO"
+}
