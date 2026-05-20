@@ -1,3 +1,4 @@
+use alloy::eips::BlockNumberOrTag;
 use alloy::primitives::Address;
 use alloy::providers::{Provider, RootProvider};
 use alloy::rpc::types::Filter;
@@ -9,7 +10,7 @@ use std::time::Duration;
 use tokio::time::{Instant, sleep};
 
 use chain_adjacent_service::espresso_e2e::espresso_dev_node::EspressoDevNode;
-use chain_adjacent_service::rollups::nitro::l1_monitor::ISequencerInbox;
+use chain_adjacent_service::rollups::nitro::l1_monitor::{IBridge, ISequencerInbox};
 
 use crate::nitro_node::nitro_node::{NitroNode, NitroNodeConfig};
 
@@ -23,6 +24,7 @@ const CAS_LOCAL_BASE_URL: &str = "http://localhost:8000";
 const ANYTRUST_DAPROVIDER_URL: &str = "http://localhost:9881";
 
 const L1_WS_URL: &str = "ws://localhost:8545";
+const L1_HTTP_URL: &str = "http://localhost:8545";
 const GENERATED_CONFIG_DIR: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/e2e/nitro/generated-config");
 const TRUSTED_SEQUENCER_ADDRESS: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
@@ -68,6 +70,7 @@ fn spawn_cas(config_path: &Path) -> CasProcess {
         .arg("--config")
         .arg(config_path)
         .env("OPERATOR_PRIVATE_KEY", TEST_OPERATOR_PRIVATE_KEY)
+        .env("RUST_LOG", "warn")
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()
@@ -149,6 +152,104 @@ async fn connect_l1_ws_with_retries() -> RootProvider {
         "L1 connect failed after {MAX_ATTEMPTS} attempts: {}",
         last_err.unwrap_or_default()
     );
+}
+
+async fn evm_snapshot() -> String {
+    let client = reqwest::Client::new();
+    let body = json!({
+        "jsonrpc": "2.0",
+        "method": "evm_snapshot",
+        "params": [],
+        "id": 1,
+    });
+    let resp: serde_json::Value = client
+        .post(L1_HTTP_URL)
+        .json(&body)
+        .send()
+        .await
+        .expect("evm_snapshot RPC failed")
+        .json()
+        .await
+        .expect("evm_snapshot response parse failed");
+    resp["result"]
+        .as_str()
+        .expect("evm_snapshot result not a string")
+        .to_string()
+}
+
+/// Mine `count` empty blocks instantly on Anvil.
+///
+/// The loaded L1 state has `historical_states: null`, so Anvil cannot serve
+/// `eth_call` at blocks that existed only in the loaded snapshot. By mining
+/// enough blocks we push the "finalized" tag (≈ latest − 64) past the
+/// loaded-state boundary, ensuring the CAS L1 monitor can read contract
+/// state at the finalized block.
+async fn anvil_mine(count: u64) {
+    let client = reqwest::Client::new();
+    let body = json!({
+        "jsonrpc": "2.0",
+        "method": "anvil_mine",
+        "params": [count],
+        "id": 1,
+    });
+    let resp: serde_json::Value = client
+        .post(L1_HTTP_URL)
+        .json(&body)
+        .send()
+        .await
+        .expect("anvil_mine RPC failed")
+        .json()
+        .await
+        .expect("anvil_mine response parse failed");
+    assert!(
+        resp.get("error").is_none(),
+        "anvil_mine returned error: {resp}"
+    );
+}
+
+// Anvil consumes the snapshot on revert — it cannot be reused.
+async fn evm_revert(snapshot_id: &str) -> bool {
+    let client = reqwest::Client::new();
+    let body = json!({
+        "jsonrpc": "2.0",
+        "method": "evm_revert",
+        "params": [snapshot_id],
+        "id": 1,
+    });
+    let resp: serde_json::Value = client
+        .post(L1_HTTP_URL)
+        .json(&body)
+        .send()
+        .await
+        .expect("evm_revert RPC failed")
+        .json()
+        .await
+        .expect("evm_revert response parse failed");
+    resp["result"].as_bool().unwrap_or(false)
+}
+
+async fn read_bridge_address(provider: &RootProvider, sequencer_inbox: Address) -> Address {
+    let seq_inbox = ISequencerInbox::new(sequencer_inbox, provider);
+    seq_inbox
+        .bridge()
+        .call()
+        .await
+        .expect("bridge() call failed")
+}
+
+async fn fetch_message_count(
+    provider: &RootProvider,
+    bridge_address: Address,
+    block_tag: BlockNumberOrTag,
+) -> u64 {
+    let bridge = IBridge::new(bridge_address, provider);
+    bridge
+        .sequencerReportedSubMessageCount()
+        .block(alloy::eips::BlockId::from(block_tag))
+        .call()
+        .await
+        .expect("sequencerReportedSubMessageCount call failed")
+        .to::<u64>()
 }
 
 fn read_tee_verifier_address() -> Address {
@@ -384,4 +485,119 @@ async fn test_e2e_calldata() {
 #[tokio::test]
 async fn test_e2e_anytrust() {
     run_e2e(CasRoute::Anytrust).await;
+}
+
+#[tokio::test]
+async fn test_e2e_l1_reorg() {
+    let config = NitroNodeConfig {
+        no_l2_traffic: false,
+    };
+
+    let nitro_node = NitroNode::start(config).await;
+    let espresso = EspressoDevNode::connect().await;
+
+    let starting_hotshot_height = espresso
+        .client
+        .fetch_latest_hotshot_block_height()
+        .await
+        .expect("failed to fetch latest hotshot block height");
+
+    let sequencer_inbox = read_sequencer_inbox_address();
+
+    let tee_verifier_address = read_tee_verifier_address();
+
+    let cas_config_path = write_cas_config(
+        starting_hotshot_height,
+        CasRoute::Calldata,
+        &sequencer_inbox,
+        tee_verifier_address,
+    );
+
+    let probe_url = CasRoute::Calldata.rpc_url_local();
+    let cas = spawn_cas_with_retries(&cas_config_path, &probe_url).await;
+
+    let l1 = connect_l1_ws_with_retries().await;
+
+    let bridge = read_bridge_address(&l1, sequencer_inbox).await;
+
+    let initial_message_count = fetch_message_count(&l1, bridge, BlockNumberOrTag::Latest).await;
+
+    println!("Initial message count on bridge: {initial_message_count}");
+
+    // Anvil's loaded state (block 145) has no historical_states, so eth_call
+    // at historical blocks fails. Mine enough blocks so that the "finalized"
+    // tag (≈ latest − 64) lands inside Anvil's live-mined range.
+    let pre_mine_block = l1
+        .get_block_number()
+        .await
+        .expect("failed to read L1 block number");
+    let blocks_to_mine = 100u64.saturating_sub(pre_mine_block.saturating_sub(145));
+    if blocks_to_mine > 0 {
+        anvil_mine(blocks_to_mine).await;
+        let post_mine_block = l1
+            .get_block_number()
+            .await
+            .expect("failed to read L1 block number after mining");
+        println!("Mined {blocks_to_mine} empty blocks ({pre_mine_block} → {post_mine_block})");
+    }
+
+    // We create a snapshot of L1 state before any batch has been posted to L1
+    let snapshot_id = evm_snapshot().await;
+    println!("EVM snapshot taken: {snapshot_id}");
+
+    let from_block = l1
+        .get_block_number()
+        .await
+        .expect("failed to read L1 head block number");
+
+    // Now after taking the snapshot we start the batch poster
+    nitro_node.start_poster(CAS_FEED_URL, CasRoute::Calldata.rpc_url_for_poster());
+    println!("Poster started");
+
+    // We wait for at least 1 batch to be posted on L1
+    wait_for_batches_on_l1(&l1, from_block, 1, sequencer_inbox).await;
+
+    let pre_reorg_message_count = fetch_message_count(&l1, bridge, BlockNumberOrTag::Latest).await;
+    println!("Message count on bridge before reorg: {pre_reorg_message_count}");
+    assert!(
+        pre_reorg_message_count > initial_message_count,
+        "expected at least 1 new message on bridge after poster start"
+    );
+
+    // Now we revert to the snapshot, which should cause the batch posted above to be reorged out
+    let revert_success = evm_revert(&snapshot_id).await;
+    assert!(revert_success, "evm_revert failed");
+    println!("EVM reverted to snapshot {snapshot_id}");
+
+    let post_reorg_message_count = fetch_message_count(&l1, bridge, BlockNumberOrTag::Latest).await;
+    println!("Message count on bridge after reorg: {post_reorg_message_count}");
+    assert_eq!(
+        post_reorg_message_count, initial_message_count,
+        "message count did not revery: got={post_reorg_message_count}, expected={initial_message_count}"
+    );
+
+    let revert_block = l1
+        .get_block_number()
+        .await
+        .expect("failed to read L1 block number after revert");
+    println!("Waiting for batch resubmission from block {revert_block}...");
+
+    // Now we wait for the poster to resubmit the batch that got reorged out,
+    // which should cause the message count to go back up to at least
+    // what it was before the reorg or higher
+    wait_for_batches_on_l1(&l1, revert_block, 1, sequencer_inbox).await;
+
+    let post_resubmit_msg_count = fetch_message_count(&l1, bridge, BlockNumberOrTag::Latest).await;
+    assert!(
+        post_resubmit_msg_count >= pre_reorg_message_count,
+        "message count did not recover after resubmission: \
+         got={post_resubmit_msg_count}, pre_reorg={pre_reorg_message_count}"
+    );
+    println!(
+        "Post-resubmission message count: {post_resubmit_msg_count} \
+         (recovered from {initial_message_count})"
+    );
+
+    drop(cas);
+    drop(nitro_node);
 }
