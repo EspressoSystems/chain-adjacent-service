@@ -2,13 +2,11 @@ use alloy::primitives::Address;
 use anyhow::Result;
 use async_trait::async_trait;
 
-#[cfg(test)]
-use super::key_manager::KeyManager;
 use super::key_manager::{
     AttestationProvider, AttestationVerifierClient, EspressoTEEVerifier, TeeType,
 };
 
-pub(crate) struct NoOpTeeVerifier;
+pub struct NoOpTeeVerifier;
 
 #[async_trait]
 impl EspressoTEEVerifier for NoOpTeeVerifier {
@@ -43,6 +41,7 @@ impl AttestationProvider for NoOpAttestationProvider {
 }
 
 #[cfg(test)]
-pub(crate) fn test_key_manager() -> KeyManager {
-    KeyManager::new_signing_only()
+pub(crate) fn test_key_manager() -> super::key_manager::KeyManager {
+    super::key_manager::KeyManager::new_for_test(Box::new(NoOpTeeVerifier), 1, 0, Address::ZERO)
+        .expect("test key manager setup failed")
 }

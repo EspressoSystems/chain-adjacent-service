@@ -50,31 +50,35 @@ async fn main() -> Result<()> {
             }
             assert_no_placeholders_nitro(&config)?;
 
-            let key_manager = if config.key_manager.tee_type == TeeType::Test {
-                KeyManager::new_signing_only()
-            } else {
-                let operator_private_key = std::env::var("OPERATOR_PRIVATE_KEY").map_err(|_| {
-                    anyhow::anyhow!(
-                        "OPERATOR_PRIVATE_KEY env var must be set when key_manager is configured"
-                    )
-                })?;
-                let operator_signer: PrivateKeySigner = operator_private_key.parse()?;
-                let tee_verifier = TEEVerifier::new(
-                    config.key_manager.rpc_url.clone(),
+            let operator_private_key = std::env::var("OPERATOR_PRIVATE_KEY").map_err(|_| {
+                anyhow::anyhow!(
+                    "OPERATOR_PRIVATE_KEY env var must be set when key_manager is configured"
+                )
+            })?;
+            let operator_signer: PrivateKeySigner = operator_private_key.parse()?;
+            let tee_verifier = TEEVerifier::new(
+                config.key_manager.rpc_url.clone(),
+                config.key_manager.tee_verifier_address,
+                operator_signer,
+            );
+
+            let provider = ProviderBuilder::new().connect_http(config.key_manager.rpc_url.clone());
+            let parent_chain_id = provider.get_chain_id().await?;
+
+            let mut key_manager = if config.key_manager.tee_type == TeeType::Test {
+                KeyManager::new_for_test(
+                    Box::new(tee_verifier),
+                    config.key_manager.max_register_attempts,
+                    parent_chain_id,
                     config.key_manager.tee_verifier_address,
-                    operator_signer,
-                );
+                )?
+            } else {
                 let attestation_client = HttpAttestationVerifierClient::new(
                     config.key_manager.attestation_verifier_url.clone(),
                     config.key_manager.attestation_client_timeout_secs,
                 )?;
-
-                let provider =
-                    ProviderBuilder::new().connect_http(config.key_manager.rpc_url.clone());
-                let parent_chain_id = provider.get_chain_id().await?;
-
                 let signer = PrivateKeySigner::random();
-                let mut km = KeyManager::new(
+                KeyManager::new(
                     Box::new(tee_verifier),
                     Box::new(attestation_client),
                     config.key_manager.max_register_attempts,
@@ -82,10 +86,9 @@ async fn main() -> Result<()> {
                     parent_chain_id,
                     config.key_manager.tee_verifier_address,
                     signer,
-                )?;
-                km.initialize().await?;
-                km
+                )?
             };
+            key_manager.initialize().await?;
             tracing::info!(
                 tee_type = ?config.key_manager.tee_type,
                 signer_address = ?key_manager.signer().address(),
