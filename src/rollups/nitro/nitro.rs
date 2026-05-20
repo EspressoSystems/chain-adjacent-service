@@ -969,6 +969,7 @@ pub mod testing {
             legacy_signer_addresses: vec![Address::ZERO],
             chain_id: 1,
             feed: initial_feed_config.clone(),
+            l1_https_url: "https://example.com".to_string(),
             l1_ws_url: "wss://example.com".to_string(),
             sequencer_inbox_address: Address::ZERO,
             ..Default::default()
@@ -1025,6 +1026,7 @@ pub mod testing {
             legacy_signer_addresses: vec![],
             chain_id: 1,
             feed: Default::default(),
+            l1_https_url: "https://localhost:8546".to_string(),
             l1_ws_url: "wss://localhost".to_string(),
             sequencer_inbox_address: Address::ZERO,
             ..Default::default()

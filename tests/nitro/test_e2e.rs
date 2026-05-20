@@ -23,6 +23,7 @@ const CAS_LOCAL_BASE_URL: &str = "http://localhost:8000";
 
 const ANYTRUST_DAPROVIDER_URL: &str = "http://localhost:9881";
 
+const L1_HTTPS_URL: &str = "https://localhost:8546";
 const L1_WS_URL: &str = "ws://localhost:8546";
 const SEQUENCER_INBOX: Address = address!("B7b68cb0E3ca9400Ff085514c0f4D021969B9Dc1");
 
@@ -246,6 +247,7 @@ fn write_cas_config(
                         }
                     }
                 },
+                "l1_https_url": "https://localhost:8546",
                 "l1_ws_url": "ws://localhost:8546",
                 "sequencer_inbox_address": "0xB7b68cb0E3ca9400Ff085514c0f4D021969B9Dc1"
             }
