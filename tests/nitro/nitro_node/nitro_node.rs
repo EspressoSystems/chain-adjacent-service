@@ -178,6 +178,16 @@ impl NitroNode {
         );
     }
 
+    pub fn stop_poster(&self) {
+        run_compose(&[
+            "compose",
+            "--profile",
+            "poster",
+            "stop",
+            "poster",
+        ]);
+    }
+
     pub fn stop(&self) {
         let status = compose_down_status();
 

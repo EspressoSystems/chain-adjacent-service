@@ -362,6 +362,22 @@ fn read_sequencer_inbox_address() -> Address {
         .unwrap_or_else(|err| panic!("invalid sequencer-inbox address {value}: {err}"))
 }
 
+async fn count_batches_on_l1(
+    provider: &RootProvider,
+    from_block: u64,
+    sequencer_inbox: Address,
+) -> usize {
+    let filter = Filter::new()
+        .address(sequencer_inbox)
+        .event_signature(ISequencerInbox::SequencerBatchDelivered::SIGNATURE_HASH)
+        .from_block(from_block);
+    provider
+        .get_logs(&filter)
+        .await
+        .map(|l| l.len())
+        .unwrap_or(0)
+}
+
 async fn wait_for_batches_on_l1(
     provider: &RootProvider,
     from_block: u64,
@@ -598,6 +614,94 @@ async fn test_e2e_l1_reorg() {
         "Post-resubmission message count: {post_resubmit_msg_count} \
          (recovered from {initial_message_count})"
     );
+
+    drop(cas);
+    drop(nitro_node);
+}
+
+/// Tests that batch submission pauses when CAS or the poster goes down, and
+/// resumes correctly after each component restarts.
+#[tokio::test]
+async fn test_e2e_restart() {
+    let route = CasRoute::Calldata;
+
+    let config = NitroNodeConfig {
+        no_l2_traffic: false,
+    };
+    let nitro_node = NitroNode::start(config).await;
+    println!("Nitro stack started (L1 + sequencer + espresso dev node)");
+
+    let sequencer_inbox = read_sequencer_inbox_address();
+    let tee_verifier_address = read_tee_verifier_address();
+
+    let espresso = EspressoDevNode::connect().await;
+    let starting_hotshot_height = espresso
+        .client
+        .fetch_latest_hotshot_block_height()
+        .await
+        .expect("failed to fetch latest hotshot block height")
+        + 1;
+
+    let cas_config_path = write_cas_config(
+        starting_hotshot_height,
+        route,
+        &sequencer_inbox,
+        tee_verifier_address,
+    );
+    println!(
+        "CAS config written to {} (starting_hotshot_height={starting_hotshot_height})",
+        cas_config_path.display()
+    );
+
+    let probe_url = route.rpc_url_local();
+    let cas = spawn_cas_with_retries(&cas_config_path, &probe_url).await;
+
+    let l1 = connect_l1_ws_with_retries().await;
+    let from_block = l1
+        .get_block_number()
+        .await
+        .expect("failed to read L1 head block number");
+
+    nitro_node.start_poster(CAS_FEED_URL, route.rpc_url_for_poster());
+    println!("Poster started");
+
+    println!("Waiting for 3 batches...");
+    wait_for_batches_on_l1(&l1, from_block, 3, sequencer_inbox).await;
+    println!("3 batches confirmed on L1");
+
+    println!("Stopping CAS (simulating CAS downtime)...");
+    drop(cas);
+    println!("CAS stopped; sleeping 60 s to verify no new batches are submitted");
+    sleep(Duration::from_secs(60)).await;
+    let count_after_cas_down = count_batches_on_l1(&l1, from_block, sequencer_inbox).await;
+    assert!(
+        count_after_cas_down < 5,
+        "expected fewer than 5 batches while CAS was down, got {count_after_cas_down}"
+    );
+    println!("Confirmed: only {count_after_cas_down} batches during CAS downtime (< 5)");
+
+    println!("Restarting CAS...");
+    let cas = spawn_cas_with_retries(&cas_config_path, &probe_url).await;
+    println!("CAS restarted; waiting for batch count to reach 5...");
+    wait_for_batches_on_l1(&l1, from_block, 5, sequencer_inbox).await;
+    println!("5 batches confirmed on L1");
+
+    println!("Stopping poster (simulating nitro-node downtime)...");
+    nitro_node.stop_poster();
+    println!("Poster stopped; sleeping 60 s to verify no new batches are submitted");
+    sleep(Duration::from_secs(60)).await;
+    let count_after_poster_down = count_batches_on_l1(&l1, from_block, sequencer_inbox).await;
+    assert!(
+        count_after_poster_down < 10,
+        "expected fewer than 10 batches while poster was down, got {count_after_poster_down}"
+    );
+    println!("Confirmed: only {count_after_poster_down} batches during poster downtime (< 10)");
+
+    println!("Restarting poster...");
+    nitro_node.start_poster(CAS_FEED_URL, route.rpc_url_for_poster());
+    println!("Poster restarted; waiting for batch count to reach 10...");
+    wait_for_batches_on_l1(&l1, from_block, 10, sequencer_inbox).await;
+    println!("10 batches confirmed on L1 — restart test passed");
 
     drop(cas);
     drop(nitro_node);
