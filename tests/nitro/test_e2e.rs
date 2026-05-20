@@ -11,7 +11,9 @@ use std::time::Duration;
 use tokio::time::{Instant, sleep};
 
 use chain_adjacent_service::espresso_e2e::espresso_dev_node::EspressoDevNode;
-use chain_adjacent_service::rollups::nitro::l1_monitor::{IBridge, ISequencerInbox};
+use chain_adjacent_service::rollups::nitro::l1_monitor::{
+    fetch_message_count, read_bridge_address,
+};
 
 sol! {
     event SequencerBatchDelivered(
@@ -239,30 +241,6 @@ async fn evm_revert(snapshot_id: &str) -> bool {
         .await
         .expect("evm_revert response parse failed");
     resp["result"].as_bool().unwrap_or(false)
-}
-
-async fn read_bridge_address(provider: &RootProvider, sequencer_inbox: Address) -> Address {
-    let seq_inbox = ISequencerInbox::new(sequencer_inbox, provider);
-    seq_inbox
-        .bridge()
-        .call()
-        .await
-        .expect("bridge() call failed")
-}
-
-async fn fetch_message_count(
-    provider: &RootProvider,
-    bridge_address: Address,
-    block_tag: BlockNumberOrTag,
-) -> u64 {
-    let bridge = IBridge::new(bridge_address, provider);
-    bridge
-        .sequencerReportedSubMessageCount()
-        .block(alloy::eips::BlockId::from(block_tag))
-        .call()
-        .await
-        .expect("sequencerReportedSubMessageCount call failed")
-        .to::<u64>()
 }
 
 fn read_tee_verifier_address() -> Address {
@@ -531,9 +509,13 @@ async fn test_e2e_l1_reorg() {
 
     let l1 = connect_l1_ws_with_retries().await;
 
-    let bridge = read_bridge_address(&l1, sequencer_inbox).await;
+    let bridge = read_bridge_address(&l1, sequencer_inbox)
+        .await
+        .expect("bridge() call failed");
 
-    let initial_message_count = fetch_message_count(&l1, bridge, BlockNumberOrTag::Latest).await;
+    let initial_message_count = fetch_message_count(&l1, bridge, BlockNumberOrTag::Latest)
+        .await
+        .expect("fetch_message_count failed");
 
     println!("Initial message count on bridge: {initial_message_count}");
 
@@ -570,7 +552,9 @@ async fn test_e2e_l1_reorg() {
     // We wait for at least 1 batch to be posted on L1
     wait_for_batches_on_l1(&l1, from_block, 1, sequencer_inbox).await;
 
-    let pre_reorg_message_count = fetch_message_count(&l1, bridge, BlockNumberOrTag::Latest).await;
+    let pre_reorg_message_count = fetch_message_count(&l1, bridge, BlockNumberOrTag::Latest)
+        .await
+        .expect("fetch_message_count failed");
     println!("Message count on bridge before reorg: {pre_reorg_message_count}");
     assert!(
         pre_reorg_message_count > initial_message_count,
@@ -582,7 +566,9 @@ async fn test_e2e_l1_reorg() {
     assert!(revert_success, "evm_revert failed");
     println!("EVM reverted to snapshot {snapshot_id}");
 
-    let post_reorg_message_count = fetch_message_count(&l1, bridge, BlockNumberOrTag::Latest).await;
+    let post_reorg_message_count = fetch_message_count(&l1, bridge, BlockNumberOrTag::Latest)
+        .await
+        .expect("fetch_message_count failed");
     println!("Message count on bridge after reorg: {post_reorg_message_count}");
     assert_eq!(
         post_reorg_message_count, initial_message_count,
@@ -600,7 +586,9 @@ async fn test_e2e_l1_reorg() {
     // what it was before the reorg or higher
     wait_for_batches_on_l1(&l1, revert_block, 1, sequencer_inbox).await;
 
-    let post_resubmit_msg_count = fetch_message_count(&l1, bridge, BlockNumberOrTag::Latest).await;
+    let post_resubmit_msg_count = fetch_message_count(&l1, bridge, BlockNumberOrTag::Latest)
+        .await
+        .expect("fetch_message_count failed");
     assert!(
         post_resubmit_msg_count >= pre_reorg_message_count,
         "message count did not recover after resubmission: \

@@ -54,6 +54,35 @@ sol! {
     }
 }
 
+/// Reads the bridge address from the SequencerInbox contract.
+pub async fn read_bridge_address(
+    provider: &RootProvider,
+    sequencer_inbox: Address,
+) -> Result<Address, L1MonitorError> {
+    let seq_inbox = ISequencerInbox::new(sequencer_inbox, provider);
+    seq_inbox
+        .bridge()
+        .call()
+        .await
+        .map_err(|e| L1MonitorError::Contract(e.to_string()))
+}
+
+/// Reads `sequencerReportedSubMessageCount` from the Bridge contract.
+pub async fn fetch_message_count(
+    provider: &RootProvider,
+    bridge_address: Address,
+    block_tag: BlockNumberOrTag,
+) -> Result<u64, L1MonitorError> {
+    let bridge = IBridge::new(bridge_address, provider);
+    bridge
+        .sequencerReportedSubMessageCount()
+        .block(BlockId::from(block_tag))
+        .call()
+        .await
+        .map(|r| r.to::<u64>())
+        .map_err(|e| L1MonitorError::Contract(e.to_string()))
+}
+
 pub struct L1MonitorConfig {
     pub ws_url: String,
     pub sequencer_inbox_address: Address,
@@ -80,12 +109,7 @@ pub struct NitroL1Monitor {
 impl NitroL1Monitor {
     pub async fn new(config: &L1MonitorConfig) -> Result<Self, L1MonitorError> {
         let provider = RootProvider::connect(&config.ws_url).await?;
-        let seq_inbox = ISequencerInbox::new(config.sequencer_inbox_address, &provider);
-        let bridge_addr = seq_inbox
-            .bridge()
-            .call()
-            .await
-            .map_err(|e| L1MonitorError::Contract(e.to_string()))?;
+        let bridge_addr = read_bridge_address(&provider, config.sequencer_inbox_address).await?;
 
         Ok(Self {
             provider,
@@ -156,31 +180,39 @@ pub struct NitroBatchCursorFetcher {
     sequencer_inbox_address: Address,
 }
 
+impl NitroBatchCursorFetcher {
+    async fn fetch_message_count(&self, block_tag: BlockNumberOrTag) -> anyhow::Result<u64> {
+        let bridge = IBridge::new(self.bridge_address, &self.provider);
+        bridge
+            .sequencerReportedSubMessageCount()
+            .block(BlockId::from(block_tag))
+            .call()
+            .await
+            .map(|r| r.to::<u64>())
+            .map_err(|e| anyhow::anyhow!("sequencerReportedSubMessageCount: {e}"))
+    }
+
+    async fn fetch_delayed_messages_read(
+        &self,
+        block_tag: BlockNumberOrTag,
+    ) -> anyhow::Result<u64> {
+        let seq_inbox = ISequencerInbox::new(self.sequencer_inbox_address, &self.provider);
+        seq_inbox
+            .totalDelayedMessagesRead()
+            .block(BlockId::from(block_tag))
+            .call()
+            .await
+            .map(|r| r.to::<u64>())
+            .map_err(|e| anyhow::anyhow!("totalDelayedMessagesRead: {e}"))
+    }
+}
+
 #[async_trait]
 impl BatchCursorFetcher for NitroBatchCursorFetcher {
     async fn fetch_batch_cursor(&self) -> anyhow::Result<(u64, u64)> {
-        let bridge = IBridge::new(self.bridge_address, &self.provider);
-        let seq_inbox = ISequencerInbox::new(self.sequencer_inbox_address, &self.provider);
-
         let (msg_count, delayed_read) = tokio::try_join!(
-            async {
-                bridge
-                    .sequencerReportedSubMessageCount()
-                    .block(BlockId::from(BlockNumberOrTag::Latest))
-                    .call()
-                    .await
-                    .map(|r| r.to::<u64>())
-                    .map_err(|e| anyhow::anyhow!("sequencerReportedSubMessageCount: {e}"))
-            },
-            async {
-                seq_inbox
-                    .totalDelayedMessagesRead()
-                    .block(BlockId::from(BlockNumberOrTag::Latest))
-                    .call()
-                    .await
-                    .map(|r| r.to::<u64>())
-                    .map_err(|e| anyhow::anyhow!("totalDelayedMessagesRead: {e}"))
-            },
+            self.fetch_message_count(BlockNumberOrTag::Latest),
+            self.fetch_delayed_messages_read(BlockNumberOrTag::Latest),
         )?;
 
         Ok((msg_count, delayed_read))
