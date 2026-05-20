@@ -95,6 +95,13 @@ impl Rollup for MockRollup {
         todo!()
     }
 
+    fn batch_cursor_from_l1(
+        _next_batch_start_pos: u64,
+        _delayed_messages_read: u64,
+    ) -> Self::BatchCursor {
+        MockBatchCursor
+    }
+
     fn rollup_type() -> crate::config::RollupType {
         todo!()
     }
@@ -145,12 +152,7 @@ impl L1Monitor<MockBatchCursor, std::convert::Infallible> for MockL1Monitor {
         Ok(CasCheckpoint::new(MockBatchCursor, 0))
     }
 
-    async fn start(
-        &self,
-        _l1_finalized_msg_idx_sender: watch::Sender<u64>,
-        _latest_batch_info_sender: watch::Sender<MockBatchCursor>,
-    ) {
-    }
+    async fn start(&self, _l1_finalized_msg_idx_sender: watch::Sender<u64>) {}
 
     async fn fetch_latest_batch_cursor_on_fresh_deployment(
         &self,

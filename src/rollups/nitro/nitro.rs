@@ -226,6 +226,16 @@ impl Rollup for Nitro {
         build_espresso_tx_payload(messages)
     }
 
+    fn batch_cursor_from_l1(
+        next_batch_start_pos: u64,
+        delayed_messages_read: u64,
+    ) -> Self::BatchCursor {
+        BatchCursor {
+            next_batch_start_pos,
+            last_batch_delayed_messages_read: delayed_messages_read,
+        }
+    }
+
     fn rollup_type() -> RollupType {
         RollupType::Nitro
     }
@@ -240,6 +250,7 @@ impl Rollup for Nitro {
             sequencer_inbox_address: config.sequencer_inbox_address,
             log_scan_step: config.log_scan_step,
             max_l1_blocks_to_scan_on_startup: config.max_l1_blocks_to_scan_on_startup,
+            l1_finalized_poll_interval_ms: config.l1_finalized_poll_interval_ms,
         };
 
         NitroL1Monitor::new(&l1_config).await.map_err(Into::into)

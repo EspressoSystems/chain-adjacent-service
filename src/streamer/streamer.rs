@@ -3,11 +3,13 @@ use std::time::Duration;
 use espresso_types::NamespaceId;
 use tokio::sync::{mpsc, watch};
 
+use std::sync::Arc;
+
 use crate::VerificationReceiver;
 use crate::config::{AdvancedConfig, RollupConfig, StreamerConfig};
 use crate::espresso_client::client::EspressoClient;
 use crate::espresso_client::types::NamespaceTransactionsInRange;
-use crate::rollups::rollup::{Rollup, RollupQueueEntry};
+use crate::rollups::rollup::{BatchCursorFetcher, Rollup, RollupQueueEntry};
 use crate::utils::exponential_backoff;
 
 const HOTSHOT_RANGE_LIMIT: u64 = 100;
@@ -22,7 +24,7 @@ pub struct Streamer<R: Rollup> {
     rollup_config: RollupConfig<R::StackConfig>,
     advanced_config: AdvancedConfig,
 
-    latest_batch_cursor: R::BatchCursor,
+    cursor_fetcher: Option<Arc<dyn BatchCursorFetcher>>,
     finalized_idx: u64,
     last_broadcast_position: u64,
 
@@ -37,6 +39,7 @@ impl<R: Rollup> Streamer<R> {
         config: StreamerConfig,
         rollup_config: RollupConfig<R::StackConfig>,
         advanced_config: AdvancedConfig,
+        cursor_fetcher: Option<Arc<dyn BatchCursorFetcher>>,
     ) -> Self {
         Self {
             client,
@@ -44,7 +47,7 @@ impl<R: Rollup> Streamer<R> {
             config,
             rollup_config,
             advanced_config,
-            latest_batch_cursor: R::BatchCursor::default(),
+            cursor_fetcher,
             finalized_idx: 0,
             last_broadcast_position: 0,
 
@@ -57,7 +60,6 @@ impl<R: Rollup> Streamer<R> {
     pub async fn run(
         &mut self,
         mut l1_finalized_msg_idx: watch::Receiver<u64>,
-        mut latest_cursor_receiver: watch::Receiver<R::BatchCursor>,
         mut verification_receiver: VerificationReceiver,
         espresso_finalization_sender: mpsc::Sender<R::FeedMessage>,
     ) {
@@ -73,7 +75,6 @@ impl<R: Rollup> Streamer<R> {
         let config = self.config.clone();
         let client = self.client.clone();
         let namespace_id = NamespaceId::from(self.rollup_config.namespace_id);
-        self.latest_batch_cursor = latest_cursor_receiver.borrow().clone();
 
         tokio::spawn(async move {
             poll_hotshot_blocks(
@@ -125,16 +126,19 @@ impl<R: Rollup> Streamer<R> {
                             continue;
                         }
                     };
-                    let context = &self.latest_batch_cursor;
-                    let verification_result = R::verify_batch_messages(&entries, &self.queue, context);
+                    let context = match &self.cursor_fetcher {
+                        Some(fetcher) => match fetcher.fetch_batch_cursor().await {
+                            Ok((pos, delayed)) => R::batch_cursor_from_l1(pos, delayed),
+                            Err(e) => {
+                                tracing::error!("failed to fetch batch cursor from L1: {e}");
+                                R::BatchCursor::default()
+                            }
+                        },
+                        None => R::BatchCursor::default(),
+                    };
+                    let verification_result = R::verify_batch_messages(&entries, &self.queue, &context);
                     let _ = sender.send(verification_result);
 
-                },
-                info = latest_cursor_receiver.changed() => {
-                    if info.is_ok() {
-                        let batch_info = latest_cursor_receiver.borrow();
-                        self.latest_batch_cursor = batch_info.clone();
-                    }
                 },
                 // New hotshot transactions from the poller: parse and add to the queue,
                 // then attempt a broadcast
@@ -361,6 +365,7 @@ pub mod testing {
                 ty: Nitro,
             },
             AdvancedConfig::default(),
+            None,
         )
     }
 
@@ -456,6 +461,7 @@ pub mod testing {
                 ty: Nitro,
             },
             AdvancedConfig::default(),
+            None,
         );
 
         // Submit at least 10 transactions to the Espresso sequencer

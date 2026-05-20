@@ -2,6 +2,7 @@ use alloy::eips::BlockNumberOrTag;
 use alloy::primitives::Address;
 use alloy::providers::{Provider, RootProvider};
 use alloy::rpc::types::Filter;
+use alloy::sol;
 use alloy::sol_types::SolEvent;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -11,6 +12,18 @@ use tokio::time::{Instant, sleep};
 
 use chain_adjacent_service::espresso_e2e::espresso_dev_node::EspressoDevNode;
 use chain_adjacent_service::rollups::nitro::l1_monitor::{IBridge, ISequencerInbox};
+
+sol! {
+    event SequencerBatchDelivered(
+        uint256 indexed batchSequenceNumber,
+        bytes32 indexed beforeAcc,
+        bytes32 indexed afterAcc,
+        bytes32 delayedAcc,
+        uint256 afterDelayedMessagesRead,
+        (uint64, uint64, uint64, uint64) timeBounds,
+        uint8 dataLocation
+    );
+}
 
 use crate::nitro_node::nitro_node::{NitroNode, NitroNodeConfig};
 
@@ -379,7 +392,7 @@ async fn wait_for_batches_on_l1(
 ) {
     let filter = Filter::new()
         .address(sequencer_inbox)
-        .event_signature(ISequencerInbox::SequencerBatchDelivered::SIGNATURE_HASH)
+        .event_signature(SequencerBatchDelivered::SIGNATURE_HASH)
         .from_block(from_block);
 
     let deadline = Instant::now() + Duration::from_secs(5 * 60);
