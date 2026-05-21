@@ -247,21 +247,11 @@ impl<R: Rollup> Streamer<R> {
                 continue;
             }
 
-            if self.queue.len() < self.config.max_full_queue_entries {
-                self.queue.insert(pos, parsed_entry);
-            } else {
-                let last_seq = self.queue.last().map(|e| e.sequence_number()).unwrap_or(0);
-                if seq > last_seq {
-                    self.stubs.insert(seq, parsed_entry.hotshot_height());
-                } else {
-                    self.queue.insert(pos, parsed_entry);
-                    let evicted = self
-                        .queue
-                        .pop()
-                        .expect("queue must be non-empty after insert when at capacity");
-                    self.stubs
-                        .insert(evicted.sequence_number(), evicted.hotshot_height());
-                }
+            self.queue.insert(pos, parsed_entry);
+            if self.queue.len() > self.config.max_full_queue_entries {
+                let evicted = self.queue.pop().expect("queue is non-empty: just inserted");
+                self.stubs
+                    .insert(evicted.sequence_number(), evicted.hotshot_height());
             }
         }
     }
@@ -306,25 +296,24 @@ impl<R: Rollup> Streamer<R> {
             }
             let end = heights[j - 1] + 1;
 
-            match self
+            let txns = match self
                 .client
                 .fetch_namespace_transactions_in_range(namespace_id, start, end)
                 .await
             {
-                Ok(txns) => {
-                    let entries =
-                        R::parse_hotshot_transactions(&self.rollup_config.stack, txns, start);
-                    for entry in entries {
-                        let seq = entry.sequence_number();
-                        if expected.contains(&seq) {
-                            fetched.insert(seq, entry);
-                        }
-                    }
-                }
+                Ok(txns) => txns,
                 Err(err) => {
-                    tracing::warn!(
-                        "failed to re-fetch hotshot blocks [{start}, {end}) for stub promotion: {err}"
+                    tracing::error!(
+                        "failed to re-fetch hotshot blocks [{start}, {end}) for stub promotion; will retry on next L1 finalization tick: {err}"
                     );
+                    return;
+                }
+            };
+            let entries = R::parse_hotshot_transactions(&self.rollup_config.stack, txns, start);
+            for entry in entries {
+                let seq = entry.sequence_number();
+                if expected.contains(&seq) {
+                    fetched.insert(seq, entry);
                 }
             }
             i = j;
@@ -344,10 +333,10 @@ impl<R: Rollup> Streamer<R> {
                     self.stubs.remove(&seq);
                 }
                 None => {
+                    // should be impossible
                     tracing::error!(
-                        "stub promotion: expected seq {seq} at hotshot height {expected_height} not found in fetched data; dropping stub"
+                        "stub promotion: expected seq {seq} at hotshot height {expected_height} not found in fetched data; keeping stub"
                     );
-                    self.stubs.remove(&seq);
                 }
             }
         }
