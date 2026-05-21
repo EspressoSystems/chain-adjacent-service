@@ -10,7 +10,7 @@ use axum::{
 };
 use serde_json::Value;
 use tokio::sync::oneshot;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{
     VerificationResult,
@@ -20,7 +20,7 @@ use crate::{
         error::DaApiError,
         nitro::{
             certificate::CasCertificate,
-            types::DAStoreResponse,
+            types::{DAStoreResponse, JsonRpcError},
             utils::{SEQUENCER_HEADER_LEN, try_extract_da_sequencer_msg_from_espresso_da_cert},
         },
     },
@@ -318,19 +318,36 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
         let downstream_json: Value =
             serde_json::from_slice(&bytes).map_err(|e| DaApiError::ParsingError(e.to_string()))?;
 
-        if downstream_json.get("error").is_some() {
-            return Ok((
-                status,
-                [(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)],
-                bytes,
-            )
-                .into_response());
+        if let Some(err_val) = downstream_json.get("error") {
+            let da_err = serde_json::from_value::<JsonRpcError>(err_val.clone())
+                .map(DaApiError::from)
+                .unwrap_or_else(|_| DaApiError::DownstreamDa(err_val.to_string()));
+
+            match da_err {
+                DaApiError::FallbackRequested(ref msg) => {
+                    warn!(
+                        provider = %state.da_config.name,
+                        reason = %msg,
+                        "DA provider requested fallback; using calldata"
+                    );
+                    // downstream_cert remains as the original data (calldata path)
+                }
+                _ => {
+                    return Ok((
+                        status,
+                        [(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)],
+                        bytes,
+                    )
+                        .into_response());
+                }
+            }
+        } else {
+            let raw_cert: DAStoreResponse =
+                serde_json::from_value(downstream_json["result"].clone())
+                    .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
+
+            downstream_cert = raw_cert.serialized_da_certificate;
         }
-
-        let raw_cert: DAStoreResponse = serde_json::from_value(downstream_json["result"].clone())
-            .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
-
-        downstream_cert = raw_cert.serialized_da_certificate;
     }
 
     let key_manager = &state.key_manager;
@@ -1060,6 +1077,59 @@ mod tests {
                 || err.contains("Request rejected"),
             "unexpected error: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_store_fallback_to_calldata_on_fallback_error() {
+        let mock_da_provider = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "daprovider_store"})))
+            .respond_with(|req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                let id = body.get("id").cloned().unwrap_or(json!(1));
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {
+                        "code": -32000,
+                        "message": "DA provider requests fallback to next writer"
+                    }
+                }))
+            })
+            .mount(&mock_da_provider)
+            .await;
+
+        let addr: SocketAddr = "127.0.0.1:9967".parse().unwrap();
+        let _server = spawn_server(
+            addr,
+            vec![DaProviderConfig {
+                name: "celestia".to_string(),
+                endpoint_url: mock_da_provider.uri(),
+                is_anytrust: false,
+            }],
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}/arb/celestia"))
+            .unwrap();
+
+        let response: Result<DAStoreResponse, _> = client
+            .request("daprovider_store", rpc_params![valid_message(), 5000u64])
+            .await;
+
+        assert!(
+            response.is_ok(),
+            "store should succeed via calldata fallback: {:?}",
+            response.unwrap_err()
+        );
+
+        // The CAS cert must be valid and have an empty downstream cert (calldata path).
+        let cas_cert =
+            CasCertificate::try_from(response.unwrap()).expect("should convert to CasCertificate");
+        // In calldata fallback the downstream certificate is the raw batch data itself.
+        assert!(!cas_cert.downstream_certificate.is_empty());
     }
 
     #[tokio::test]
