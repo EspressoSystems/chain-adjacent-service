@@ -15,6 +15,7 @@ use chain_adjacent_service::rollups::nitro::types::Nitro;
 use chain_adjacent_service::rollups::rollup::L1Monitor;
 use chain_adjacent_service::secrets::{
     apply_overrides_nitro, assert_no_placeholders_nitro, fetch_secret_overrides,
+    resolve_operator_private_key,
 };
 use chain_adjacent_service::streamer::streamer::Streamer;
 use chain_adjacent_service::{cas_init, config::ServiceConfig, rollups::rollup::Rollup};
@@ -45,16 +46,14 @@ async fn main() -> Result<()> {
             let mut config: ServiceConfig<<Nitro as Rollup>::StackConfig> =
                 serde_json::from_str(&config_contents)?;
 
-            if let Some(overrides) = fetch_secret_overrides(config.key_manager.tee_type).await? {
-                apply_overrides_nitro(&mut config, &overrides)?;
+            let overrides = fetch_secret_overrides(config.key_manager.tee_type).await?;
+            if let Some(overrides) = overrides.as_ref() {
+                apply_overrides_nitro(&mut config, overrides)?;
             }
             assert_no_placeholders_nitro(&config)?;
+            info!("Configuration loaded and validated successfully");
 
-            let operator_private_key = std::env::var("OPERATOR_PRIVATE_KEY").map_err(|_| {
-                anyhow::anyhow!(
-                    "OPERATOR_PRIVATE_KEY env var must be set when key_manager is configured"
-                )
-            })?;
+            let operator_private_key = resolve_operator_private_key(overrides.as_ref())?;
             let operator_signer: PrivateKeySigner = operator_private_key.parse()?;
             let tee_verifier = TEEVerifier::new(
                 config.key_manager.rpc_url.clone(),
