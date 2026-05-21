@@ -3103,11 +3103,13 @@ dependencies = [
  "serde_with",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-rustls 0.26.4",
  "tokio-tungstenite",
  "tokio-util",
  "tracing",
  "tracing-subscriber 0.3.22",
  "url",
+ "webpki-roots 0.26.11",
  "wiremock",
  "yawc",
 ]

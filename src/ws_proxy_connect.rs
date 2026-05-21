@@ -16,16 +16,22 @@
 // backend task that mirrors alloy-transport-ws's WsBackend.
 
 use std::env;
+use std::sync::{Arc, OnceLock};
 
 use alloy::pubsub::{ConnectionHandle, ConnectionInterface, PubSubConnect};
 use alloy::rpc::json_rpc::PubSubItem;
 use alloy::transports::{TransportErrorKind, TransportResult};
+use anyhow::{Context, Result, bail};
 use async_http_proxy::http_connect_tokio;
 use futures::{SinkExt, StreamExt};
+use rustls::pki_types::ServerName;
+use rustls::{ClientConfig, RootCertStore};
 use tokio::net::TcpStream;
+use tokio_rustls::TlsConnector;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use url::Url;
+use yawc::{HttpRequestBuilder, MaybeTlsStream, Options, TcpWebSocket, WebSocket};
 
 #[derive(Debug, Clone)]
 pub struct ProxyWsConnect {
@@ -82,6 +88,59 @@ impl PubSubConnect for ProxyWsConnect {
         tokio::spawn(run_backend(ws, interface));
         Ok(handle)
     }
+}
+
+/// Connect a yawc WebSocket through the same `HTTPS_PROXY` egress path
+/// `ProxyWsConnect` uses. Equivalent to `WebSocket::connect(url)` but routed
+/// through the enclaver HTTP CONNECT proxy when the env var is set, so DNS
+/// is resolved by the proxy host rather than the enclave.
+///
+/// For `wss://` we perform the TLS handshake with `tokio-rustls` against
+/// the webpki roots, then hand the resulting stream to
+/// `yawc::WebSocket::handshake_with_request` — preserving yawc's
+/// permessage-deflate compression and custom upgrade headers.
+pub async fn connect_yawc(
+    url: Url,
+    request: HttpRequestBuilder,
+    options: Options,
+) -> Result<TcpWebSocket> {
+    let host = url.host_str().context("ws url missing host")?.to_string();
+    let port = url.port_or_known_default().context("ws url missing port")?;
+
+    let tcp = open_tcp(&host, port)
+        .await
+        .map_err(|e| anyhow::anyhow!("open_tcp failed: {e}"))?;
+
+    let stream: MaybeTlsStream<TcpStream> = match url.scheme() {
+        "ws" => MaybeTlsStream::Plain(tcp),
+        "wss" => {
+            let connector = shared_tls_connector();
+            let server_name = ServerName::try_from(host.clone())
+                .with_context(|| format!("invalid DNS name for SNI: {host}"))?;
+            let tls = connector
+                .connect(server_name, tcp)
+                .await
+                .with_context(|| format!("TLS handshake to {host}:{port} failed"))?;
+            MaybeTlsStream::Tls(tls)
+        }
+        other => bail!("unsupported scheme {other}"),
+    };
+
+    WebSocket::handshake_with_request(url, stream, options, request)
+        .await
+        .context("yawc handshake failed")
+}
+
+fn shared_tls_connector() -> &'static TlsConnector {
+    static CONNECTOR: OnceLock<TlsConnector> = OnceLock::new();
+    CONNECTOR.get_or_init(|| {
+        let mut roots = RootCertStore::empty();
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let config = ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        TlsConnector::from(Arc::new(config))
+    })
 }
 
 async fn open_tcp(target_host: &str, target_port: u16) -> TransportResult<TcpStream> {

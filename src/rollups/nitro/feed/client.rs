@@ -7,14 +7,13 @@ use serde::Deserialize;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use yawc::frame::OpCode;
-use yawc::{
-    CompressionLevel, DeflateOptions, HttpRequest, Options, TcpWebSocket, WebSocket, WebSocketError,
-};
+use yawc::{CompressionLevel, DeflateOptions, HttpRequest, Options, TcpWebSocket, WebSocketError};
 
 use super::message::BroadcastFeedMessage;
 use super::message::BroadcastMessage;
 use crate::rollups::nitro::nitro::verify_broadcast_feed_message_signature;
 use crate::utils::exponential_backoff;
+use crate::ws_proxy_connect::connect_yawc;
 
 pub const FEED_SERVER_VERSION: u64 = 2;
 pub const FEED_CLIENT_VERSION: u64 = 2;
@@ -191,21 +190,19 @@ impl BroadcasterClient {
 
         tracing::info!(url = %self.websocket_url, seq_num = next_seq_num, "connecting to arbitrum inbox message broadcaster");
 
-        // Connect with timeout, yawc handles TLS automatically and resolves DNS + TCP with ipv4/ipv6 internally
-        let ws = tokio::time::timeout(
-            self.config.timeout,
-            WebSocket::connect(url)
-                .with_request(request)
-                .with_options(options),
-        )
-        .await
-        .map_err(|_| {
-            BroadcasterClientError::Connection(format!(
-                "connection to {} timed out after {:?}",
-                self.websocket_url, self.config.timeout
-            ))
-        })?
-        .map_err(BroadcasterClientError::WebSocket)?;
+        // Route through HTTPS_PROXY (enclaver egress) so DNS is resolved by the
+        // proxy host, matching how reqwest already behaves for HTTPS. yawc's
+        // own WebSocket::connect does direct DNS and fails inside the enclave;
+        // see ws_proxy_connect for details.
+        let ws = tokio::time::timeout(self.config.timeout, connect_yawc(url, request, options))
+            .await
+            .map_err(|_| {
+                BroadcasterClientError::Connection(format!(
+                    "connection to {} timed out after {:?}",
+                    self.websocket_url, self.config.timeout
+                ))
+            })?
+            .map_err(|e| BroadcasterClientError::Connection(e.to_string()))?;
 
         self.first_reconnect_attempt = true;
         tracing::info!(
