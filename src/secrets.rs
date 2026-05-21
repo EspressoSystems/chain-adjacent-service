@@ -15,6 +15,7 @@ pub const PLACEHOLDER_URL: &str = "http://placeholder.invalid/";
 
 pub const ENV_AWS_REGION: &str = "AWS_REGION";
 pub const ENV_AWS_SECRET_ID: &str = "AWS_SECRET_ID";
+pub const ENV_OPERATOR_PRIVATE_KEY: &str = "OPERATOR_PRIVATE_KEY";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SecretOverrides {
@@ -22,6 +23,8 @@ pub struct SecretOverrides {
     pub feed_ws_url: String,
     pub l1_ws_url: String,
     pub anytrust_endpoint: String,
+    #[serde(default)]
+    pub operator_private_key: Option<String>,
 }
 
 /// Fetches the secret overrides from AWS Secrets Manager.
@@ -134,6 +137,25 @@ pub fn apply_overrides_nitro(
     Ok(())
 }
 
+/// Resolves the operator private key from AWS secret overrides, falling back
+/// to the `OPERATOR_PRIVATE_KEY` env var if the secret omits the field (or no
+/// AWS overrides were fetched). Errors only when both sources are missing.
+pub fn resolve_operator_private_key(overrides: Option<&SecretOverrides>) -> Result<String> {
+    if let Some(key) = overrides.and_then(|o| o.operator_private_key.as_ref()) {
+        tracing::info!("operator_private_key sourced from AWS secret");
+        return Ok(key.clone());
+    }
+    match env::var(ENV_OPERATOR_PRIVATE_KEY) {
+        Ok(key) => {
+            tracing::info!("operator_private_key sourced from {ENV_OPERATOR_PRIVATE_KEY} env var");
+            Ok(key)
+        }
+        Err(_) => bail!(
+            "operator_private_key not found in AWS secret and {ENV_OPERATOR_PRIVATE_KEY} env var is not set"
+        ),
+    }
+}
+
 pub fn assert_no_placeholders_nitro(cfg: &ServiceConfig<NitroConfig>) -> Result<()> {
     if cfg.espresso_client.base_url.as_str() == PLACEHOLDER_URL {
         bail!("espresso_client.base_url was not overridden — still placeholder sentinel");
@@ -244,6 +266,38 @@ mod tests {
             "l1_ws_url": "wss://l1.example.com"
         }"#;
         assert!(parse_secret_overrides(bad).is_err());
+    }
+
+    #[test]
+    fn operator_private_key_field_is_optional_in_secret() {
+        let overrides = parse_secret_overrides(sample_secret_json()).unwrap();
+        assert!(overrides.operator_private_key.is_none());
+    }
+
+    #[test]
+    fn parses_operator_private_key_when_present() {
+        let with_key = r#"{
+            "espresso_base_url": "https://query.example.com/",
+            "feed_ws_url": "wss://feed.example.com/feed",
+            "l1_ws_url": "wss://l1.example.com",
+            "anytrust_endpoint": "http://anytrust.example.com:9876",
+            "operator_private_key": "0xabc123"
+        }"#;
+        let overrides = parse_secret_overrides(with_key).unwrap();
+        assert_eq!(overrides.operator_private_key.as_deref(), Some("0xabc123"));
+    }
+
+    #[test]
+    fn resolve_operator_private_key_prefers_aws_value() {
+        let overrides = SecretOverrides {
+            espresso_base_url: "https://x/".to_string(),
+            feed_ws_url: "wss://x".to_string(),
+            l1_ws_url: "wss://x".to_string(),
+            anytrust_endpoint: "http://x".to_string(),
+            operator_private_key: Some("0xfromsecret".to_string()),
+        };
+        let key = resolve_operator_private_key(Some(&overrides)).unwrap();
+        assert_eq!(key, "0xfromsecret");
     }
 
     #[test]
