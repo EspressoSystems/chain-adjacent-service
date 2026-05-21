@@ -327,6 +327,7 @@ impl<R: Rollup> Streamer<R> {
                             "stub promotion mismatch for seq {seq}: expected hotshot height {expected_height}, got {}",
                             entry.hotshot_height()
                         );
+                        return;
                     }
                     let pos = self.queue.partition_point(|e| e.sequence_number() < seq);
                     self.queue.insert(pos, entry);
