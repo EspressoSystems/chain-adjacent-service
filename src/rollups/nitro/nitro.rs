@@ -226,16 +226,6 @@ impl Rollup for Nitro {
         build_espresso_tx_payload(messages)
     }
 
-    fn batch_cursor_from_l1(
-        next_batch_start_pos: u64,
-        delayed_messages_read: u64,
-    ) -> Self::BatchCursor {
-        BatchCursor {
-            next_batch_start_pos,
-            last_batch_delayed_messages_read: delayed_messages_read,
-        }
-    }
-
     fn rollup_type() -> RollupType {
         RollupType::Nitro
     }

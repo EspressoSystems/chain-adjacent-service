@@ -96,13 +96,6 @@ impl Rollup for MockRollup {
         todo!()
     }
 
-    fn batch_cursor_from_l1(
-        _next_batch_start_pos: u64,
-        _delayed_messages_read: u64,
-    ) -> Self::BatchCursor {
-        MockBatchCursor
-    }
-
     fn rollup_type() -> crate::config::RollupType {
         todo!()
     }

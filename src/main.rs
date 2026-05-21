@@ -11,7 +11,7 @@ use chain_adjacent_service::espresso_client::client::EspressoClient;
 use chain_adjacent_service::key_manager::attestation_client::HttpAttestationVerifierClient;
 use chain_adjacent_service::key_manager::key_manager::KeyManager;
 use chain_adjacent_service::key_manager::tee_verifier::TEEVerifier;
-use chain_adjacent_service::rollups::nitro::types::Nitro;
+use chain_adjacent_service::rollups::nitro::types::{BatchCursor, Nitro};
 use chain_adjacent_service::rollups::rollup::{BatchCursorFetcher, L1Monitor};
 use chain_adjacent_service::secrets::{
     apply_overrides_nitro, assert_no_placeholders_nitro, fetch_secret_overrides,
@@ -86,7 +86,7 @@ async fn main() -> Result<()> {
             );
 
             let l1_monitor = Nitro::create_l1_monitor(&config.rollup.stack).await?;
-            let cursor_fetcher: Option<Arc<dyn BatchCursorFetcher>> =
+            let cursor_fetcher: Option<Arc<dyn BatchCursorFetcher<BatchCursor>>> =
                 Some(l1_monitor.create_cursor_fetcher());
 
             run::<Nitro>(config, key_manager, l1_monitor, cursor_fetcher).await
@@ -98,7 +98,7 @@ async fn run<R: Rollup>(
     config: ServiceConfig<R::StackConfig>,
     key_manager: KeyManager,
     l1_monitor: R::L1Monitor,
-    cursor_fetcher: Option<Arc<dyn BatchCursorFetcher>>,
+    cursor_fetcher: Option<Arc<dyn BatchCursorFetcher<R::BatchCursor>>>,
 ) -> Result<()> {
     info!("L1 monitor created");
 

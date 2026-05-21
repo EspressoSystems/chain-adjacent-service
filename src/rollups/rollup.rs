@@ -12,10 +12,9 @@ use crate::{
 };
 
 #[async_trait]
-pub trait BatchCursorFetcher: Send + Sync {
+pub trait BatchCursorFetcher<C>: Send + Sync {
     /// Read the current batch cursor from L1.
-    /// Returns (next_batch_start_pos, last_batch_delayed_messages_read).
-    async fn fetch_batch_cursor(&self) -> Result<(u64, u64)>;
+    async fn fetch_batch_cursor(&self) -> Result<C>;
 }
 
 pub trait RollupQueueEntry: Clone {
@@ -93,11 +92,6 @@ pub trait Rollup {
         batch_cursor: Self::BatchCursor,
         starting_hotshot_height: Option<u64>, // None if this is a fresh deployment
     ) -> ServiceConfig<Self::StackConfig>;
-
-    fn batch_cursor_from_l1(
-        next_batch_start_pos: u64,
-        delayed_messages_read: u64,
-    ) -> Self::BatchCursor;
 
     fn rollup_type() -> RollupType;
 }

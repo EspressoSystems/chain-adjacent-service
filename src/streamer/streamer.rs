@@ -24,7 +24,7 @@ pub struct Streamer<R: Rollup> {
     rollup_config: RollupConfig<R::StackConfig>,
     advanced_config: AdvancedConfig,
 
-    cursor_fetcher: Option<Arc<dyn BatchCursorFetcher>>,
+    cursor_fetcher: Option<Arc<dyn BatchCursorFetcher<R::BatchCursor>>>,
     finalized_idx: u64,
     last_broadcast_position: u64,
 
@@ -39,7 +39,7 @@ impl<R: Rollup> Streamer<R> {
         config: StreamerConfig,
         rollup_config: RollupConfig<R::StackConfig>,
         advanced_config: AdvancedConfig,
-        cursor_fetcher: Option<Arc<dyn BatchCursorFetcher>>,
+        cursor_fetcher: Option<Arc<dyn BatchCursorFetcher<R::BatchCursor>>>,
     ) -> Self {
         Self {
             client,
@@ -128,7 +128,7 @@ impl<R: Rollup> Streamer<R> {
                     };
                     let context = match &self.cursor_fetcher {
                         Some(fetcher) => match fetcher.fetch_batch_cursor().await {
-                            Ok((pos, delayed)) => R::batch_cursor_from_l1(pos, delayed),
+                            Ok(cursor) => cursor,
                             Err(e) => {
                                 tracing::error!("failed to fetch batch cursor from L1: {e}");
                                 R::BatchCursor::default()

@@ -193,14 +193,17 @@ impl NitroBatchCursorFetcher {
 }
 
 #[async_trait]
-impl BatchCursorFetcher for NitroBatchCursorFetcher {
-    async fn fetch_batch_cursor(&self) -> Result<(u64, u64)> {
+impl BatchCursorFetcher<BatchCursor> for NitroBatchCursorFetcher {
+    async fn fetch_batch_cursor(&self) -> Result<BatchCursor> {
         let (msg_count, delayed_read) = tokio::try_join!(
             self.fetch_message_count(BlockNumberOrTag::Latest),
             self.fetch_delayed_messages_read(BlockNumberOrTag::Latest),
         )?;
 
-        Ok((msg_count, delayed_read))
+        Ok(BatchCursor {
+            next_batch_start_pos: msg_count,
+            last_batch_delayed_messages_read: delayed_read,
+        })
     }
 }
 
