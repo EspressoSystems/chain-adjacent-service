@@ -222,14 +222,13 @@ impl<R: Rollup> Streamer<R> {
         }
     }
 
-    /// filter_messages adds a parsed rollup entry to the queue only
-    /// if an entry with the same sequence number is not already present.
+    /// Adds parsed entries to the queue, skipping any whose sequence number is
+    /// already in the queue or in stubs. When the queue is at capacity, evicts
+    /// the tail to stubs (or stubs the new entry directly if it sits past the tail).
     ///
-    /// When the queue is at `max_full_queue_entries` capacity:
-    /// - If the entry fits within the full range (lower seq than the current tail),
-    ///   it is inserted and the tail entry is evicted to stubs.
-    /// - If the entry is beyond the full range, it goes directly to stubs.
-    /// - If the entry is already a stub and there is now room, it is upgraded to a full entry.
+    /// A stub records the HotShot height where we first saw a sequence number;
+    /// promotion back to a full entry only happens via `promote_stubs`, which
+    /// re-fetches that original block.
     fn filter_messages(&mut self, parsed_rollup_entries: Vec<<R as Rollup>::Entry>) {
         for parsed_entry in parsed_rollup_entries {
             let seq = parsed_entry.sequence_number();
@@ -244,27 +243,17 @@ impl<R: Rollup> Streamer<R> {
 
             let pos = self.queue.partition_point(|e| e.sequence_number() < seq);
             let exists = pos < self.queue.len() && self.queue[pos].sequence_number() == seq;
-            if exists {
+            if exists || self.stubs.contains_key(&seq) {
                 continue;
             }
 
-            let in_stubs = self.stubs.contains_key(&seq);
-
             if self.queue.len() < self.config.max_full_queue_entries {
-                // Room available: upgrade stub to full entry if present, then insert.
-                if in_stubs {
-                    self.stubs.remove(&seq);
-                }
                 self.queue.insert(pos, parsed_entry);
-            } else if in_stubs {
-                // Already recorded as a stub, nothing to do.
             } else {
                 let last_seq = self.queue.last().map(|e| e.sequence_number()).unwrap_or(0);
                 if seq > last_seq {
-                    // Beyond the full range: stub directly.
                     self.stubs.insert(seq, parsed_entry.hotshot_height());
                 } else {
-                    // Within the full range: insert and evict the tail to stubs.
                     self.queue.insert(pos, parsed_entry);
                     let evicted = self
                         .queue
@@ -277,9 +266,8 @@ impl<R: Rollup> Streamer<R> {
         }
     }
 
-    /// Re-fetches the hotshot blocks for the oldest stubs and promotes them to full
-    /// entries, filling back up to `max_full_queue_entries`. Called after finalization
-    /// prunes the queue and creates room.
+    /// Re-fetches HotShot blocks for the oldest stubs and inserts them directly into
+    /// the queue.
     async fn promote_stubs(&mut self) {
         let room = self
             .config
@@ -290,31 +278,33 @@ impl<R: Rollup> Streamer<R> {
         }
 
         let to_promote = room.min(self.stubs.len());
-        // Collect unique heights of the oldest `to_promote` stubs, in ascending order.
-        let heights: Vec<u64> = self
+        let stubs_to_promote: Vec<(u64, u64)> = self
             .stubs
-            .values()
+            .iter()
             .take(to_promote)
-            .copied()
+            .map(|(s, h)| (*s, *h))
+            .collect();
+        let heights: Vec<u64> = stubs_to_promote
+            .iter()
+            .map(|(_, h)| *h)
             .collect::<std::collections::BTreeSet<u64>>()
             .into_iter()
             .collect();
+        let expected: std::collections::BTreeSet<u64> =
+            stubs_to_promote.iter().map(|(s, _)| *s).collect();
 
         let namespace_id = espresso_types::NamespaceId::from(self.rollup_config.namespace_id);
 
-        // Track height ranges we successfully fetched so we can clean their stubs in a
-        // single pass at the end.
-        let mut fetched_ranges: Vec<(u64, u64)> = Vec::new();
+        let mut fetched: BTreeMap<u64, R::Entry> = BTreeMap::new();
 
         let mut i = 0;
         while i < heights.len() {
             let start = heights[i];
-            // Collect a contiguous chunk within HOTSHOT_RANGE_LIMIT.
             let mut j = i + 1;
             while j < heights.len() && heights[j] - start < HOTSHOT_RANGE_LIMIT {
                 j += 1;
             }
-            let end = heights[j - 1] + 1; // exclusive
+            let end = heights[j - 1] + 1;
 
             match self
                 .client
@@ -324,8 +314,12 @@ impl<R: Rollup> Streamer<R> {
                 Ok(txns) => {
                     let entries =
                         R::parse_hotshot_transactions(&self.rollup_config.stack, txns, start);
-                    self.filter_messages(entries);
-                    fetched_ranges.push((start, end));
+                    for entry in entries {
+                        let seq = entry.sequence_number();
+                        if expected.contains(&seq) {
+                            fetched.insert(seq, entry);
+                        }
+                    }
                 }
                 Err(err) => {
                     tracing::warn!(
@@ -336,12 +330,26 @@ impl<R: Rollup> Streamer<R> {
             i = j;
         }
 
-        // Drop any stubs whose hotshot blocks we just fetched. Most are already removed
-        // by filter_messages when upgraded into the queue; this also clears stubs whose
-        // entries weren't present in the fetched data so we don't keep retrying them.
-        if !fetched_ranges.is_empty() {
-            self.stubs
-                .retain(|_, h| !fetched_ranges.iter().any(|(s, e)| *h >= *s && *h < *e));
+        for (seq, expected_height) in stubs_to_promote {
+            match fetched.remove(&seq) {
+                Some(entry) => {
+                    if entry.hotshot_height() != expected_height {
+                        tracing::error!(
+                            "stub promotion mismatch for seq {seq}: expected hotshot height {expected_height}, got {}",
+                            entry.hotshot_height()
+                        );
+                    }
+                    let pos = self.queue.partition_point(|e| e.sequence_number() < seq);
+                    self.queue.insert(pos, entry);
+                    self.stubs.remove(&seq);
+                }
+                None => {
+                    tracing::error!(
+                        "stub promotion: expected seq {seq} at hotshot height {expected_height} not found in fetched data; dropping stub"
+                    );
+                    self.stubs.remove(&seq);
+                }
+            }
         }
     }
 }
@@ -578,7 +586,7 @@ pub mod testing {
     }
 
     #[test]
-    fn test_filter_messages_upgrades_stub_when_room() {
+    fn test_filter_messages_leaves_stubs_alone() {
         let mut streamer = make_streamer_with_cap(1, 2);
         streamer.filter_messages(vec![
             make_entry(1, 10),
@@ -592,8 +600,11 @@ pub mod testing {
         streamer.queue.drain(..);
 
         streamer.filter_messages(vec![make_entry(3, 12), make_entry(4, 13)]);
-        assert_eq!(queue_positions(&streamer), vec![3, 4]);
-        assert!(streamer.stubs.is_empty());
+        assert!(queue_positions(&streamer).is_empty());
+        assert_eq!(stub_entries(&streamer), vec![(3, 12), (4, 13)]);
+
+        streamer.filter_messages(vec![make_entry(3, 99)]);
+        assert_eq!(stub_entries(&streamer), vec![(3, 12), (4, 13)]);
     }
 
     #[tokio::test]
