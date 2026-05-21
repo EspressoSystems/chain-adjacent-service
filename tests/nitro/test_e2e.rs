@@ -40,6 +40,8 @@ const ANYTRUST_DAPROVIDER_URL: &str = "http://localhost:9881";
 
 const L1_WS_URL: &str = "ws://localhost:8545";
 const L1_HTTP_URL: &str = "http://localhost:8545";
+const SEQUENCER_HTTP_URL: &str = "http://localhost:8547";
+const VALIDATOR_HTTP_URL: &str = "http://localhost:8949";
 const GENERATED_CONFIG_DIR: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/e2e/nitro/generated-config");
 const TRUSTED_SEQUENCER_ADDRESS: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
@@ -378,6 +380,46 @@ async fn count_batches_on_l1(
         .unwrap_or(0)
 }
 
+async fn fetch_block_number(client: &reqwest::Client, rpc_url: &str) -> u64 {
+    let request_body = json!({
+        "jsonrpc": "2.0",
+        "method": "eth_blockNumber",
+        "params": [],
+        "id": 1,
+    });
+    let response = client
+        .post(rpc_url)
+        .json(&request_body)
+        .send()
+        .await
+        .unwrap_or_else(|e| panic!("eth_blockNumber request to {rpc_url} failed: {e}"));
+    let response_body: serde_json::Value = response
+        .json()
+        .await
+        .unwrap_or_else(|e| panic!("eth_blockNumber response from {rpc_url} not JSON: {e}"));
+    let encoded = response_body["result"].as_str().unwrap_or_else(|| {
+        panic!("eth_blockNumber from {rpc_url} missing result: {response_body}")
+    });
+    u64::from_str_radix(encoded.trim_start_matches("0x"), 16)
+        .unwrap_or_else(|e| panic!("eth_blockNumber from {rpc_url} bad hex {encoded}: {e}"))
+}
+
+async fn wait_for_validator_to_reach(client: &reqwest::Client, target: u64) {
+    let deadline = Instant::now() + Duration::from_secs(3 * 60);
+    loop {
+        let current = fetch_block_number(client, VALIDATOR_HTTP_URL).await;
+        if current >= target {
+            println!("validator caught up: block {current} >= target {target}");
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!("timed out: validator at block {current}, target {target}");
+        }
+        println!("validator at block {current}, waiting to reach {target}");
+        sleep(Duration::from_secs(2)).await;
+    }
+}
+
 async fn wait_for_batches_on_l1(
     provider: &RootProvider,
     from_block: u64,
@@ -479,6 +521,21 @@ async fn run_e2e(route: CasRoute) {
     println!("Poster started");
 
     wait_for_batches_on_l1(&l1, from_block, 2, sequencer_inbox).await;
+
+    nitro_node.stop_tx_generator();
+    println!("Load generator stopped; waiting for chain to settle");
+    sleep(Duration::from_secs(3)).await;
+
+    let http = reqwest::Client::new();
+    let sequencer_block = fetch_block_number(&http, SEQUENCER_HTTP_URL).await;
+    println!("Sequencer at block {sequencer_block}");
+
+    println!("Starting block validator...");
+    nitro_node.start_block_validator();
+
+    wait_for_validator_to_reach(&http, sequencer_block).await;
+    let validator_block = fetch_block_number(&http, VALIDATOR_HTTP_URL).await;
+    println!("Block validator at block {validator_block} (sequencer was {sequencer_block})");
 
     drop(cas);
     drop(nitro_node);
@@ -665,43 +722,43 @@ async fn test_e2e_restart() {
     nitro_node.start_poster(CAS_FEED_URL, route.rpc_url_for_poster());
     println!("Poster started");
 
-    println!("Waiting for 3 batches...");
-    wait_for_batches_on_l1(&l1, from_block, 3, sequencer_inbox).await;
-    println!("3 batches confirmed on L1");
+    println!("Waiting for 2 batches...");
+    wait_for_batches_on_l1(&l1, from_block, 2, sequencer_inbox).await;
+    println!("2 batches confirmed on L1");
 
     println!("Stopping CAS (simulating CAS downtime)...");
     drop(cas);
-    println!("CAS stopped; sleeping 60 s to verify no new batches are submitted");
-    sleep(Duration::from_secs(60)).await;
+    println!("CAS stopped; sleeping 30 s to verify no new batches are submitted");
+    sleep(Duration::from_secs(30)).await;
     let count_after_cas_down = count_batches_on_l1(&l1, from_block, sequencer_inbox).await;
     assert!(
-        count_after_cas_down < 5,
-        "expected fewer than 5 batches while CAS was down, got {count_after_cas_down}"
+        count_after_cas_down < 4,
+        "expected fewer than 4 batches while CAS was down, got {count_after_cas_down}"
     );
-    println!("Confirmed: only {count_after_cas_down} batches during CAS downtime (< 5)");
+    println!("Confirmed: only {count_after_cas_down} batches during CAS downtime (< 4)");
 
     println!("Restarting CAS...");
     let cas = spawn_cas_with_retries(&cas_config_path, &probe_url).await;
-    println!("CAS restarted; waiting for batch count to reach 5...");
-    wait_for_batches_on_l1(&l1, from_block, 5, sequencer_inbox).await;
-    println!("5 batches confirmed on L1");
+    println!("CAS restarted; waiting for batch count to reach 4...");
+    wait_for_batches_on_l1(&l1, from_block, 4, sequencer_inbox).await;
+    println!("4 batches confirmed on L1");
 
     println!("Stopping poster (simulating nitro-node downtime)...");
     nitro_node.stop_poster();
-    println!("Poster stopped; sleeping 60 s to verify no new batches are submitted");
-    sleep(Duration::from_secs(60)).await;
+    println!("Poster stopped; sleeping 30 s to verify no new batches are submitted");
+    sleep(Duration::from_secs(30)).await;
     let count_after_poster_down = count_batches_on_l1(&l1, from_block, sequencer_inbox).await;
     assert!(
-        count_after_poster_down < 10,
-        "expected fewer than 10 batches while poster was down, got {count_after_poster_down}"
+        count_after_poster_down < 6,
+        "expected fewer than 6 batches while poster was down, got {count_after_poster_down}"
     );
-    println!("Confirmed: only {count_after_poster_down} batches during poster downtime (< 10)");
+    println!("Confirmed: only {count_after_poster_down} batches during poster downtime (< 6)");
 
     println!("Restarting poster...");
     nitro_node.start_poster(CAS_FEED_URL, route.rpc_url_for_poster());
-    println!("Poster restarted; waiting for batch count to reach 10...");
-    wait_for_batches_on_l1(&l1, from_block, 10, sequencer_inbox).await;
-    println!("10 batches confirmed on L1 — restart test passed");
+    println!("Poster restarted; waiting for batch count to reach 6...");
+    wait_for_batches_on_l1(&l1, from_block, 6, sequencer_inbox).await;
+    println!("6 batches confirmed on L1 — restart test passed");
 
     drop(cas);
     drop(nitro_node);

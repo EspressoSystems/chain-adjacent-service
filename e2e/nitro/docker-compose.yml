@@ -237,6 +237,52 @@ services:
     profiles:
       - anytrust
 
+  validation-node:
+    image: ${NITRO_IMAGE}
+    entrypoint: /usr/local/bin/nitro-val
+    volumes:
+      - "./nitro-config:/nitro-config"
+    command:
+      - --conf.file=/nitro-config/validation_node_config.json
+    profiles:
+      - validator
+
+  validator:
+    image: ${NITRO_IMAGE}
+    entrypoint: /usr/local/bin/nitro
+    ports:
+      - "8949:8547"
+    volumes:
+      - "nitro-validator:/home/user/.arbitrum/local/nitro"
+      - "./generated-config:/config"
+      - "./nitro-config:/nitro-config"
+    command:
+      - --conf.file=/nitro-config/validator_config.json
+    depends_on:
+      sequencer:
+        condition: service_healthy
+      validation-node:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "-sf",
+          "-X",
+          "POST",
+          "--data",
+          '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}',
+          "-H",
+          "Content-Type: application/json",
+          "http://localhost:8547",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    profiles:
+      - validator
+
   daprovider-anytrust:
     image: ${NITRO_IMAGE}
     entrypoint: ["/bin/sh", "-c"]
@@ -299,3 +345,4 @@ volumes:
   espresso-data:
   nitro-sequencer:
   nitro-poster:
+  nitro-validator:
