@@ -4,7 +4,7 @@ use alloy::{
     eips::{BlockId, BlockNumberOrTag},
     primitives::Address,
     providers::{Provider, RootProvider},
-    rpc::types::Filter,
+    rpc::{client::ClientBuilder, types::Filter},
     sol,
     sol_types::SolEvent,
 };
@@ -20,6 +20,7 @@ use crate::{
         rollup::{CasCheckpoint, L1Monitor},
     },
     utils::exponential_backoff,
+    ws_proxy_connect::ProxyWsConnect,
 };
 
 sol! {
@@ -88,7 +89,13 @@ pub struct NitroL1Monitor {
 
 impl NitroL1Monitor {
     pub async fn new(config: &L1MonitorConfig) -> Result<Self, L1MonitorError> {
-        let provider = RootProvider::connect(&config.ws_url).await?;
+        // Use a custom WS connector that honours HTTPS_PROXY so the enclave's
+        // egress proxy is used. The default RootProvider::connect bypasses
+        // HTTPS_PROXY and fails DNS in the enclave; see ws_proxy_connect.
+        let client = ClientBuilder::default()
+            .pubsub(ProxyWsConnect::new(config.ws_url.clone()))
+            .await?;
+        let provider = RootProvider::new(client);
         let seq_inbox = ISequencerInbox::new(config.sequencer_inbox_address, &provider);
         let bridge_addr = seq_inbox
             .bridge()

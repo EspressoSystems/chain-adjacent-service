@@ -1,0 +1,181 @@
+// WS connector for alloy that respects HTTPS_PROXY.
+//
+// Inside the Nitro enclave, enclaver exposes an HTTP CONNECT egress proxy
+// and sets HTTPS_PROXY. reqwest auto-detects that and proxies HTTPS through
+// it transparently. But alloy's default WS transport (tokio-tungstenite via
+// alloy-transport-ws) ignores HTTPS_PROXY — it always resolves DNS in the
+// enclave and opens a direct TCP socket, which fails because enclave-side
+// DNS is not wired up for arbitrary hosts.
+//
+// This module implements a custom alloy_pubsub::PubSubConnect that:
+//   1. Reads HTTPS_PROXY (with lowercase / HTTP_ fallbacks) from env.
+//   2. If set: TCP → proxy → CONNECT host:port, then hand the tunnelled
+//      stream to tokio-tungstenite which finishes the TLS + WS handshake.
+//   3. If unset: TCP → host:port → TLS + WS handshake (local / e2e path).
+// The resulting WebSocketStream is bridged to alloy's PubSub channels via a
+// backend task that mirrors alloy-transport-ws's WsBackend.
+
+use std::env;
+
+use alloy::pubsub::{ConnectionHandle, ConnectionInterface, PubSubConnect};
+use alloy::rpc::json_rpc::PubSubItem;
+use alloy::transports::{TransportErrorKind, TransportResult};
+use async_http_proxy::http_connect_tokio;
+use futures::{SinkExt, StreamExt};
+use tokio::net::TcpStream;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use url::Url;
+
+#[derive(Debug, Clone)]
+pub struct ProxyWsConnect {
+    url: String,
+}
+
+impl ProxyWsConnect {
+    pub fn new(url: impl Into<String>) -> Self {
+        Self { url: url.into() }
+    }
+}
+
+impl PubSubConnect for ProxyWsConnect {
+    fn is_local(&self) -> bool {
+        alloy::transports::utils::guess_local_url(&self.url)
+    }
+
+    async fn connect(&self) -> TransportResult<ConnectionHandle> {
+        let url: Url = self
+            .url
+            .parse()
+            .map_err(|e: url::ParseError| TransportErrorKind::custom_str(&e.to_string()))?;
+        let host = url
+            .host_str()
+            .ok_or_else(|| TransportErrorKind::custom_str("ws url missing host"))?
+            .to_string();
+        let port = url
+            .port_or_known_default()
+            .ok_or_else(|| TransportErrorKind::custom_str("ws url missing port"))?;
+        match url.scheme() {
+            "ws" | "wss" => {}
+            other => {
+                return Err(TransportErrorKind::custom_str(&format!(
+                    "unsupported scheme {other}"
+                )));
+            }
+        }
+
+        let tcp = open_tcp(&host, port).await?;
+
+        let request = self
+            .url
+            .as_str()
+            .into_client_request()
+            .map_err(TransportErrorKind::custom)?;
+
+        // client_async_tls_with_config handles TLS upgrade (when scheme is wss)
+        // and the WS handshake on the already-connected stream.
+        let (ws, _) = tokio_tungstenite::client_async_tls_with_config(request, tcp, None, None)
+            .await
+            .map_err(TransportErrorKind::custom)?;
+
+        let (handle, interface) = ConnectionHandle::new();
+        tokio::spawn(run_backend(ws, interface));
+        Ok(handle)
+    }
+}
+
+async fn open_tcp(target_host: &str, target_port: u16) -> TransportResult<TcpStream> {
+    let proxy = env::var("HTTPS_PROXY")
+        .or_else(|_| env::var("https_proxy"))
+        .or_else(|_| env::var("HTTP_PROXY"))
+        .or_else(|_| env::var("http_proxy"))
+        .ok();
+
+    let Some(proxy_url) = proxy else {
+        return TcpStream::connect((target_host, target_port))
+            .await
+            .map_err(TransportErrorKind::custom);
+    };
+
+    let proxy: Url = proxy_url
+        .parse()
+        .map_err(|e: url::ParseError| TransportErrorKind::custom_str(&e.to_string()))?;
+    let proxy_host = proxy
+        .host_str()
+        .ok_or_else(|| TransportErrorKind::custom_str("proxy url missing host"))?
+        .to_string();
+    let proxy_port = proxy
+        .port_or_known_default()
+        .ok_or_else(|| TransportErrorKind::custom_str("proxy url missing port"))?;
+
+    let mut tcp = TcpStream::connect((proxy_host.as_str(), proxy_port))
+        .await
+        .map_err(TransportErrorKind::custom)?;
+    http_connect_tokio(&mut tcp, target_host, target_port)
+        .await
+        .map_err(TransportErrorKind::custom)?;
+    Ok(tcp)
+}
+
+async fn run_backend<S>(
+    mut ws: tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<S>>,
+    mut interface: ConnectionInterface,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
+{
+    loop {
+        tokio::select! {
+            biased;
+            outbound = interface.recv_from_frontend() => {
+                let Some(req) = outbound else { break };
+                if let Err(err) = ws.send(Message::Text(req.get().to_owned().into())).await {
+                    tracing::error!(%err, "ws send failed");
+                    interface.close_with_error();
+                    return;
+                }
+            }
+            inbound = ws.next() => {
+                let Some(msg) = inbound else {
+                    tracing::error!("ws stream ended");
+                    interface.close_with_error();
+                    return;
+                };
+                let msg = match msg {
+                    Ok(m) => m,
+                    Err(err) => {
+                        tracing::error!(%err, "ws receive failed");
+                        interface.close_with_error();
+                        return;
+                    }
+                };
+                match msg {
+                    Message::Text(text) => {
+                        match serde_json::from_str::<PubSubItem>(&text) {
+                            Ok(item) => {
+                                if interface.send_to_frontend(item).is_err() {
+                                    return;
+                                }
+                            }
+                            Err(err) => {
+                                tracing::error!(%err, "ws text deserialize failed");
+                                interface.close_with_error();
+                                return;
+                            }
+                        }
+                    }
+                    Message::Close(frame) => {
+                        tracing::info!(?frame, "ws server sent close");
+                        interface.close_with_error();
+                        return;
+                    }
+                    Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {}
+                    Message::Binary(_) => {
+                        tracing::error!("unexpected ws binary frame");
+                        interface.close_with_error();
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}

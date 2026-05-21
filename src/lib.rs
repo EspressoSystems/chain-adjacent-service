@@ -8,6 +8,7 @@ pub mod secrets;
 pub mod streamer;
 pub mod submitter;
 pub mod utils;
+pub mod ws_proxy_connect;
 
 use alloy::primitives::Bytes;
 use anyhow::Result;
