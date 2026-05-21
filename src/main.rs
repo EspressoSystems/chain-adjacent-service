@@ -5,7 +5,7 @@ use alloy::{
     signers::local::PrivateKeySigner,
 };
 use anyhow::Result;
-use chain_adjacent_service::config::RollupType;
+use chain_adjacent_service::config::{RollupType, TeeType};
 use chain_adjacent_service::da_api;
 use chain_adjacent_service::espresso_client::client::EspressoClient;
 use chain_adjacent_service::key_manager::attestation_client::HttpAttestationVerifierClient;
@@ -60,28 +60,38 @@ async fn main() -> Result<()> {
                 config.key_manager.tee_verifier_address,
                 operator_signer,
             );
-            let attestation_client = HttpAttestationVerifierClient::new(
-                config.key_manager.attestation_verifier_url.clone(),
-                config.key_manager.attestation_client_timeout_secs,
-            )?;
 
             let provider = ProviderBuilder::new().connect_http(config.key_manager.rpc_url.clone());
             let parent_chain_id = provider.get_chain_id().await?;
 
-            let signer = PrivateKeySigner::random();
-            let mut key_manager = KeyManager::new(
-                Box::new(tee_verifier),
-                Box::new(attestation_client),
-                config.key_manager.max_register_attempts,
-                config.key_manager.tee_type.into(),
-                parent_chain_id,
-                config.key_manager.tee_verifier_address,
-                signer,
-            )?;
+            let mut key_manager = if config.key_manager.tee_type == TeeType::Test {
+                KeyManager::new_for_test(
+                    Box::new(tee_verifier),
+                    config.key_manager.max_register_attempts,
+                    parent_chain_id,
+                    config.key_manager.tee_verifier_address,
+                )?
+            } else {
+                let attestation_client = HttpAttestationVerifierClient::new(
+                    config.key_manager.attestation_verifier_url.clone(),
+                    config.key_manager.attestation_client_timeout_secs,
+                )?;
+                let signer = PrivateKeySigner::random();
+                KeyManager::new(
+                    Box::new(tee_verifier),
+                    Box::new(attestation_client),
+                    config.key_manager.max_register_attempts,
+                    config.key_manager.tee_type.into(),
+                    parent_chain_id,
+                    config.key_manager.tee_verifier_address,
+                    signer,
+                )?
+            };
             key_manager.initialize().await?;
             tracing::info!(
-                "TEE key registered, signer address: {:?}",
-                key_manager.signer().address()
+                tee_type = ?config.key_manager.tee_type,
+                signer_address = ?key_manager.signer().address(),
+                "KeyManager ready"
             );
 
             let l1_monitor = Nitro::create_l1_monitor(&config.rollup.stack).await?;
