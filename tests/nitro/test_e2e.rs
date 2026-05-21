@@ -404,6 +404,31 @@ async fn fetch_block_number(client: &reqwest::Client, rpc_url: &str) -> u64 {
         .unwrap_or_else(|e| panic!("eth_blockNumber from {rpc_url} bad hex {encoded}: {e}"))
 }
 
+async fn fetch_block_hash(client: &reqwest::Client, rpc_url: &str, block_number: u64) -> String {
+    let request_body = json!({
+        "jsonrpc": "2.0",
+        "method": "eth_getBlockByNumber",
+        "params": [format!("0x{block_number:x}"), false],
+        "id": 1,
+    });
+    let response = client
+        .post(rpc_url)
+        .json(&request_body)
+        .send()
+        .await
+        .unwrap_or_else(|e| panic!("eth_getBlockByNumber request to {rpc_url} failed: {e}"));
+    let response_body: serde_json::Value = response
+        .json()
+        .await
+        .unwrap_or_else(|e| panic!("eth_getBlockByNumber response from {rpc_url} not JSON: {e}"));
+    response_body["result"]["hash"]
+        .as_str()
+        .unwrap_or_else(|| {
+            panic!("eth_getBlockByNumber from {rpc_url} missing hash: {response_body}")
+        })
+        .to_string()
+}
+
 async fn wait_for_validator_to_reach(client: &reqwest::Client, target: u64) {
     let deadline = Instant::now() + Duration::from_secs(3 * 60);
     loop {
@@ -536,6 +561,14 @@ async fn run_e2e(route: CasRoute) {
     wait_for_validator_to_reach(&http, sequencer_block).await;
     let validator_block = fetch_block_number(&http, VALIDATOR_HTTP_URL).await;
     println!("Block validator at block {validator_block} (sequencer was {sequencer_block})");
+
+    let sequencer_hash = fetch_block_hash(&http, SEQUENCER_HTTP_URL, sequencer_block).await;
+    let validator_hash = fetch_block_hash(&http, VALIDATOR_HTTP_URL, sequencer_block).await;
+    assert_eq!(
+        sequencer_hash, validator_hash,
+        "block hash mismatch at block {sequencer_block}: sequencer={sequencer_hash}, validator={validator_hash}"
+    );
+    println!("Block hashes match at block {sequencer_block}: {sequencer_hash}");
 
     drop(cas);
     drop(nitro_node);
