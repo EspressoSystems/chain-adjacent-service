@@ -22,8 +22,16 @@ pub struct NitroConfig {
     /// A value of 0 means no limit (scan the entire chain).
     #[serde(default)]
     pub max_l1_blocks_to_scan_on_startup: u64,
+    /// Interval in milliseconds between L1 finalized-block polls.
+    /// Defaults to 12 000 ms (≈ 1 L1 slot).
+    #[serde(default = "default_l1_finalized_poll_interval_ms")]
+    pub l1_finalized_poll_interval_ms: u64,
 }
 
 fn default_log_scan_step() -> u64 {
     10_000
+}
+
+fn default_l1_finalized_poll_interval_ms() -> u64 {
+    12_000
 }

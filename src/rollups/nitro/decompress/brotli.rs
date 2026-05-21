@@ -1,9 +1,9 @@
 use std::io::Cursor;
 
-use anyhow::bail;
+use anyhow::{Result, bail};
 
 /// Decompresses the input using Brotli and checks that the output size does not exceed `max_size`.
-pub fn decompress(input: &[u8], max_size: usize) -> anyhow::Result<Vec<u8>> {
+pub fn decompress(input: &[u8], max_size: usize) -> Result<Vec<u8>> {
     let mut output = Vec::new();
     brotli::BrotliDecompress(&mut Cursor::new(input), &mut output)
         .map_err(|e| anyhow::anyhow!("brotli decompression failed: {e}"))?;
@@ -20,7 +20,7 @@ pub fn decompress(input: &[u8], max_size: usize) -> anyhow::Result<Vec<u8>> {
 mod tests {
     use super::*;
 
-    fn compress(input: &[u8], quality: u32) -> anyhow::Result<Vec<u8>> {
+    fn compress(input: &[u8], quality: u32) -> Result<Vec<u8>> {
         let params = brotli::enc::BrotliEncoderParams {
             quality: quality as i32,
             ..Default::default()

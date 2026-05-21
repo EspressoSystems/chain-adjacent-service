@@ -11,8 +11,8 @@ use chain_adjacent_service::espresso_client::client::EspressoClient;
 use chain_adjacent_service::key_manager::attestation_client::HttpAttestationVerifierClient;
 use chain_adjacent_service::key_manager::key_manager::KeyManager;
 use chain_adjacent_service::key_manager::tee_verifier::TEEVerifier;
-use chain_adjacent_service::rollups::nitro::types::Nitro;
-use chain_adjacent_service::rollups::rollup::L1Monitor;
+use chain_adjacent_service::rollups::nitro::types::{BatchCursor, Nitro};
+use chain_adjacent_service::rollups::rollup::{BatchCursorFetcher, L1Monitor};
 use chain_adjacent_service::secrets::{
     apply_overrides_nitro, assert_no_placeholders_nitro, fetch_secret_overrides,
     resolve_operator_private_key,
@@ -84,7 +84,11 @@ async fn main() -> Result<()> {
                 key_manager.signer().address()
             );
 
-            run::<Nitro>(config, key_manager).await
+            let l1_monitor = Nitro::create_l1_monitor(&config.rollup.stack).await?;
+            let cursor_fetcher: Option<Arc<dyn BatchCursorFetcher<BatchCursor>>> =
+                Some(l1_monitor.create_cursor_fetcher());
+
+            run::<Nitro>(config, key_manager, l1_monitor, cursor_fetcher).await
         }
     }
 }
@@ -92,8 +96,9 @@ async fn main() -> Result<()> {
 async fn run<R: Rollup>(
     config: ServiceConfig<R::StackConfig>,
     key_manager: KeyManager,
+    l1_monitor: R::L1Monitor,
+    cursor_fetcher: Option<Arc<dyn BatchCursorFetcher<R::BatchCursor>>>,
 ) -> Result<()> {
-    let l1_monitor = R::create_l1_monitor(&config.rollup.stack).await?;
     info!("L1 monitor created");
 
     let (batch_cursor, hotshot_height) = if !config.is_fresh_deployment {
@@ -150,13 +155,16 @@ async fn run<R: Rollup>(
     let client = EspressoClient::from_config(config.espresso_client);
     let (verification_sender, verification_receiver) =
         mpsc::channel(config.advanced.verification_channel_capacity);
-    let (batch_cursor_sender, batch_cursor_receiver) = watch::channel(batch_cursor.clone());
-    let mut streamer: Streamer<R> =
-        Streamer::new(client, config.streamer, config.rollup, config.advanced);
+    let mut streamer: Streamer<R> = Streamer::new(
+        client,
+        config.streamer,
+        config.rollup,
+        config.advanced,
+        cursor_fetcher,
+    );
 
     let streamer_task = streamer.run(
         l1_finalized_msg_idx_receiver,
-        batch_cursor_receiver,
         verification_receiver,
         espresso_finalization_sender,
     );
@@ -169,7 +177,7 @@ async fn run<R: Rollup>(
     );
     info!("DA API server started");
 
-    let l1_monitor_task = l1_monitor.start(l1_finalized_msg_idx_sender, batch_cursor_sender);
+    let l1_monitor_task = l1_monitor.start(l1_finalized_msg_idx_sender);
 
     tokio::try_join!(
         async { submitter_task.await.map_err(anyhow::Error::from) },

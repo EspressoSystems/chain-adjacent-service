@@ -2,6 +2,7 @@ use std::future::Future;
 
 use alloy::primitives::Bytes;
 use anyhow::Result;
+use async_trait::async_trait;
 use tokio::sync::{mpsc, watch};
 
 use crate::{
@@ -9,6 +10,12 @@ use crate::{
     config::{RollupType, ServiceConfig},
     espresso_client::types::NamespaceTransactionsInRange,
 };
+
+#[async_trait]
+pub trait BatchCursorFetcher<C>: Send + Sync {
+    /// Read the current batch cursor from L1.
+    async fn fetch_batch_cursor(&self) -> Result<C>;
+}
 
 pub trait RollupQueueEntry: Clone {
     fn sequence_number(&self) -> u64;
@@ -100,9 +107,5 @@ pub trait L1Monitor<T, E> {
     /// where we don't have the checkpoint information.
     fn fetch_latest_batch_cursor_on_fresh_deployment(&self) -> impl Future<Output = Result<T, E>>;
 
-    fn start(
-        &self,
-        l1_finalized_msg_idx_sender: watch::Sender<u64>,
-        latest_batch_cursor_sender: watch::Sender<T>,
-    ) -> impl Future<Output = ()>;
+    fn start(&self, l1_finalized_msg_idx_sender: watch::Sender<u64>) -> impl Future<Output = ()>;
 }
