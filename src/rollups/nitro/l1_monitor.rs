@@ -8,36 +8,26 @@ use alloy::{
     sol,
     sol_types::SolEvent,
 };
-use futures::StreamExt;
+use anyhow::Result;
 use tokio::sync::watch;
 
-use crate::{
-    rollups::{
-        nitro::{
-            nitro,
-            types::{BatchCursor, L1MonitorError},
-        },
-        rollup::{CasCheckpoint, L1Monitor},
+use async_trait::async_trait;
+use std::sync::Arc;
+
+use crate::rollups::{
+    nitro::{
+        nitro,
+        types::{BatchCursor, L1MonitorError},
     },
-    utils::exponential_backoff,
-    ws_proxy_connect::ProxyWsConnect,
+    rollup::{BatchCursorFetcher, CasCheckpoint, L1Monitor},
 };
+use crate::ws_proxy_connect::ProxyWsConnect;
 
 sol! {
     #[sol(rpc)]
     interface ISequencerInbox {
         function totalDelayedMessagesRead() external view returns (uint256);
         function bridge() external view returns (IBridge);
-
-        event SequencerBatchDelivered(
-            uint256 indexed batchSequenceNumber,
-            bytes32 indexed beforeAcc,
-            bytes32 indexed afterAcc,
-            bytes32 delayedAcc,
-            uint256 afterDelayedMessagesRead,
-            IBridge.TimeBounds timeBounds,
-            IBridge.BatchDataLocation dataLocation
-        );
 
         event EspressoCertificateVerified(
             uint256 hotshotBlock,
@@ -66,6 +56,50 @@ sol! {
     }
 }
 
+/// Reads the bridge address from the SequencerInbox contract.
+pub async fn read_bridge_address(
+    provider: &RootProvider,
+    sequencer_inbox: Address,
+) -> Result<Address, L1MonitorError> {
+    let seq_inbox = ISequencerInbox::new(sequencer_inbox, provider);
+    seq_inbox
+        .bridge()
+        .call()
+        .await
+        .map_err(|e| L1MonitorError::Contract(e.to_string()))
+}
+
+/// Reads `sequencerReportedSubMessageCount` from the Bridge contract.
+pub async fn fetch_message_count(
+    provider: &RootProvider,
+    bridge_address: Address,
+    block_tag: BlockNumberOrTag,
+) -> Result<u64, L1MonitorError> {
+    let bridge = IBridge::new(bridge_address, provider);
+    bridge
+        .sequencerReportedSubMessageCount()
+        .block(BlockId::from(block_tag))
+        .call()
+        .await
+        .map(|r| r.to::<u64>())
+        .map_err(|e| L1MonitorError::Contract(e.to_string()))
+}
+
+pub async fn fetch_delayed_messages_read(
+    provider: &RootProvider,
+    sequencer_inbox: Address,
+    block_tag: BlockNumberOrTag,
+) -> Result<u64, L1MonitorError> {
+    let seq_inbox = ISequencerInbox::new(sequencer_inbox, provider);
+    seq_inbox
+        .totalDelayedMessagesRead()
+        .block(BlockId::from(block_tag))
+        .call()
+        .await
+        .map(|r| r.to::<u64>())
+        .map_err(|e| L1MonitorError::Contract(e.to_string()))
+}
+
 pub struct L1MonitorConfig {
     pub ws_url: String,
     pub sequencer_inbox_address: Address,
@@ -77,6 +111,7 @@ pub struct L1MonitorConfig {
     /// If no checkpoint is found within this range, the service will return an error.
     /// A value of 0 means no limit (scan the entire chain).
     pub max_l1_blocks_to_scan_on_startup: u64,
+    pub l1_finalized_poll_interval_ms: u64,
 }
 
 pub struct NitroL1Monitor {
@@ -85,6 +120,7 @@ pub struct NitroL1Monitor {
     bridge_address: Address,
     log_scan_step: u64,
     max_l1_blocks_to_scan_on_startup: u64,
+    l1_finalized_poll_interval_ms: u64,
 }
 
 impl NitroL1Monitor {
@@ -96,12 +132,7 @@ impl NitroL1Monitor {
             .pubsub(ProxyWsConnect::new(config.ws_url.clone()))
             .await?;
         let provider = RootProvider::new(client);
-        let seq_inbox = ISequencerInbox::new(config.sequencer_inbox_address, &provider);
-        let bridge_addr = seq_inbox
-            .bridge()
-            .call()
-            .await
-            .map_err(|e| L1MonitorError::Contract(e.to_string()))?;
+        let bridge_addr = read_bridge_address(&provider, config.sequencer_inbox_address).await?;
 
         Ok(Self {
             provider,
@@ -109,6 +140,7 @@ impl NitroL1Monitor {
             bridge_address: bridge_addr,
             log_scan_step: config.log_scan_step,
             max_l1_blocks_to_scan_on_startup: config.max_l1_blocks_to_scan_on_startup,
+            l1_finalized_poll_interval_ms: config.l1_finalized_poll_interval_ms,
         })
     }
 
@@ -129,95 +161,56 @@ impl NitroL1Monitor {
         &self,
         block_tag: BlockNumberOrTag,
     ) -> Result<u64, L1MonitorError> {
-        let bridge = IBridge::new(self.bridge_address, &self.provider);
-        let call = bridge
-            .sequencerReportedSubMessageCount()
-            .block(BlockId::from(block_tag));
-        let result = call
-            .call()
-            .await
-            .map_err(|e| L1MonitorError::Contract(e.to_string()))?;
-        Ok(result.to::<u64>())
+        fetch_message_count(&self.provider, self.bridge_address, block_tag).await
     }
 
-    /// Processes a single SequencerBatchDelivered event: updates finalized message
-    /// count (if the finalized head advanced) and latest batch info.
-    ///
-    /// Returns `Err` on RPC failures so the caller can retry.
-    async fn process_event(
-        &self,
-        last_finalized_block: &mut u64,
-        l1_finalized_msg_idx_sender: &watch::Sender<u64>,
-        batch_cursor_sender: &watch::Sender<BatchCursor>,
-    ) -> Result<(), L1MonitorError> {
-        // Check the current finalized block number
-        let finalized_block = self
-            .provider
-            .get_block_by_number(BlockNumberOrTag::Finalized)
-            .await?;
-
-        if let Some(block) = finalized_block {
-            let finalized_block = block.header.number;
-
-            // Only broadcast finalized message count when the finalized head advances
-            if finalized_block > *last_finalized_block {
-                let count = self
-                    .fetch_message_count(BlockNumberOrTag::Number(finalized_block))
-                    .await?;
-                tracing::info!(
-                    finalized_block,
-                    finalized_msg_count = count,
-                    "updated finalized message count"
-                );
-                // In nitro, message 0 can not be reorged
-                let _ = l1_finalized_msg_idx_sender.send(count.saturating_sub(1));
-                *last_finalized_block = finalized_block;
-            }
-        } else {
-            tracing::warn!("finalized block not available");
-            return Err(L1MonitorError::BlockNotFound);
-        }
-
-        let latest_block = self
-            .provider
-            .get_block_by_number(BlockNumberOrTag::Latest)
-            .await?;
-        if let Some(block) = latest_block {
-            let block_number = block.header.number;
-            // Always fetch both counts at the latest block.
-            let (msg_count, delayed_read) = tokio::try_join!(
-                self.fetch_message_count(BlockNumberOrTag::Number(block_number)),
-                self.fetch_delayed_messages_read(BlockNumberOrTag::Number(block_number)),
-            )?;
-
-            // A new batch is posted. This is the most up-to-date batch info
-            // needed by verifying upcoming batches.
-            let _ = batch_cursor_sender.send(BatchCursor {
-                last_batch_delayed_messages_read: delayed_read,
-                next_batch_start_pos: msg_count,
-            });
-
-            Ok(())
-        } else {
-            tracing::warn!("latest block not available");
-            Err(L1MonitorError::BlockNotFound)
-        }
-    }
-
-    /// Returns the number of delayed messages that have been read by the sequencer.
     async fn fetch_delayed_messages_read(
         &self,
         block_tag: BlockNumberOrTag,
     ) -> Result<u64, L1MonitorError> {
-        let seq_inbox = ISequencerInbox::new(self.sequencer_inbox_address, &self.provider);
-        let call = seq_inbox
-            .totalDelayedMessagesRead()
-            .block(BlockId::from(block_tag));
-        let result = call
-            .call()
-            .await
-            .map_err(|e| L1MonitorError::Contract(e.to_string()))?;
-        Ok(result.to::<u64>())
+        fetch_delayed_messages_read(&self.provider, self.sequencer_inbox_address, block_tag).await
+    }
+
+    pub fn create_cursor_fetcher(&self) -> Arc<NitroBatchCursorFetcher> {
+        Arc::new(NitroBatchCursorFetcher {
+            provider: self.provider.clone(),
+            bridge_address: self.bridge_address,
+            sequencer_inbox_address: self.sequencer_inbox_address,
+        })
+    }
+}
+
+pub struct NitroBatchCursorFetcher {
+    provider: RootProvider,
+    bridge_address: Address,
+    sequencer_inbox_address: Address,
+}
+
+impl NitroBatchCursorFetcher {
+    async fn fetch_message_count(&self, block_tag: BlockNumberOrTag) -> Result<u64> {
+        Ok(fetch_message_count(&self.provider, self.bridge_address, block_tag).await?)
+    }
+
+    async fn fetch_delayed_messages_read(&self, block_tag: BlockNumberOrTag) -> Result<u64> {
+        Ok(
+            fetch_delayed_messages_read(&self.provider, self.sequencer_inbox_address, block_tag)
+                .await?,
+        )
+    }
+}
+
+#[async_trait]
+impl BatchCursorFetcher<BatchCursor> for NitroBatchCursorFetcher {
+    async fn fetch_batch_cursor(&self) -> Result<BatchCursor> {
+        let (msg_count, delayed_read) = tokio::try_join!(
+            self.fetch_message_count(BlockNumberOrTag::Latest),
+            self.fetch_delayed_messages_read(BlockNumberOrTag::Latest),
+        )?;
+
+        Ok(BatchCursor {
+            next_batch_start_pos: msg_count,
+            last_batch_delayed_messages_read: delayed_read,
+        })
     }
 }
 
@@ -314,94 +307,53 @@ impl L1Monitor<BatchCursor, nitro::Error> for NitroL1Monitor {
         }
     }
 
-    async fn start(
-        &self,
-        l1_finalized_msg_idx_sender: watch::Sender<u64>,
-        batch_cursor: watch::Sender<BatchCursor>,
-    ) {
-        let filter = Filter::new()
-            .address(self.sequencer_inbox_address)
-            .event_signature(ISequencerInbox::SequencerBatchDelivered::SIGNATURE_HASH);
-
-        let initial_backoff = Duration::from_secs(1);
-        let max_backoff = Duration::from_secs(30);
-        let mut backoff = initial_backoff;
+    async fn start(&self, l1_finalized_msg_idx_sender: watch::Sender<u64>) {
+        let poll_interval = Duration::from_millis(self.l1_finalized_poll_interval_ms);
+        let mut interval = tokio::time::interval(poll_interval);
         let mut last_finalized_block: u64 = 0;
 
+        // Periodically poll the finalized block and update the finalized message count
         loop {
-            let subscription = match self.provider.subscribe_logs(&filter).await {
-                Ok(sub) => {
-                    backoff = initial_backoff;
-                    sub
+            interval.tick().await;
+
+            let finalized_block = match self
+                .provider
+                .get_block_by_number(BlockNumberOrTag::Finalized)
+                .await
+            {
+                Ok(Some(block)) => block.header.number,
+                Ok(None) => {
+                    tracing::warn!("finalized block not available");
+                    continue;
                 }
                 Err(err) => {
-                    tracing::error!(
-                        "failed to subscribe to SequencerBatchDelivered: {err}, retrying"
-                    );
-                    backoff = exponential_backoff(backoff, max_backoff).await;
+                    tracing::error!("failed to fetch finalized block: {err}");
                     continue;
                 }
             };
 
-            let mut stream = subscription.into_stream();
-
-            let mut event_backoff = initial_backoff;
-
-            'events: while let Some(log) = stream.next().await {
-                tracing::info!(
-                    block = ?log.block_number,
-                    tx = ?log.transaction_hash,
-                    "received SequencerBatchDelivered event"
-                );
-
-                loop {
-                    match self
-                        .process_event(
-                            &mut last_finalized_block,
-                            &l1_finalized_msg_idx_sender,
-                            &batch_cursor,
-                        )
-                        .await
-                    {
-                        Ok(()) => {
-                            event_backoff = initial_backoff;
-                            continue 'events;
-                        }
-                        Err(err) => {
-                            tracing::error!(
-                                "failed to process SequencerBatchDelivered event: {err}, retrying"
-                            );
-                            // Wait for backoff, but if a new event arrives first,
-                            // skip the wait and process immediately — the event is
-                            // just a trigger and RPCs always fetch the latest state.
-                            tokio::select! {
-                                () = tokio::time::sleep(event_backoff) => {
-                                    event_backoff = std::cmp::min(
-                                        event_backoff.saturating_mul(2),
-                                        max_backoff,
-                                    );
-                                }
-                                maybe_log = stream.next() => {
-                                    match maybe_log {
-                                        Some(new_log) => {
-                                            tracing::info!(
-                                                block = ?new_log.block_number,
-                                                tx = ?new_log.transaction_hash,
-                                                "new SequencerBatchDelivered event while retrying"
-                                            );
-                                            event_backoff = initial_backoff;
-                                        }
-                                        None => break 'events,
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            if finalized_block <= last_finalized_block {
+                continue;
             }
 
-            tracing::warn!("SequencerBatchDelivered subscription stream ended, reconnecting");
-            backoff = exponential_backoff(backoff, max_backoff).await;
+            match self
+                .fetch_message_count(BlockNumberOrTag::Number(finalized_block))
+                .await
+            {
+                Ok(count) => {
+                    tracing::info!(
+                        finalized_block,
+                        finalized_msg_count = count,
+                        "updated finalized message count"
+                    );
+                    // In nitro, message 0 can not be reorged
+                    let _ = l1_finalized_msg_idx_sender.send(count.saturating_sub(1));
+                    last_finalized_block = finalized_block;
+                }
+                Err(err) => {
+                    tracing::error!("failed to fetch finalized message count: {err}");
+                }
+            }
         }
     }
 }
@@ -424,6 +376,7 @@ mod tests {
             sequencer_inbox_address: SEQUENCER_INBOX,
             log_scan_step: 10_000,
             max_l1_blocks_to_scan_on_startup: 0,
+            l1_finalized_poll_interval_ms: 12_000,
         };
         NitroL1Monitor::new(&config)
             .await

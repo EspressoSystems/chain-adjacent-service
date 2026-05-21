@@ -1,3 +1,4 @@
+use anyhow::Result;
 use espresso_types::{NamespaceId, Transaction};
 use tokio::sync::watch;
 
@@ -28,7 +29,7 @@ pub struct MockRollup;
 pub struct MockBatchCursor;
 pub struct MockBatchMessage;
 
-fn mock_parse_batch(_: alloy::primitives::Bytes) -> anyhow::Result<Vec<MockBatchMessage>> {
+fn mock_parse_batch(_: alloy::primitives::Bytes) -> Result<Vec<MockBatchMessage>> {
     Ok(vec![])
 }
 
@@ -91,7 +92,7 @@ impl Rollup for MockRollup {
         // Receives the latest L1-finalized message.
         // Used to prune the backlog.
         _l1_finalized_msg_idx_receiver: watch::Receiver<u64>,
-    ) -> anyhow::Result<(), Self::Error> {
+    ) -> Result<(), Self::Error> {
         todo!()
     }
 
@@ -99,9 +100,7 @@ impl Rollup for MockRollup {
         todo!()
     }
 
-    fn parse_batch_data(
-        bytes: alloy::primitives::Bytes,
-    ) -> anyhow::Result<Vec<Self::BatchMessage>> {
+    fn parse_batch_data(bytes: alloy::primitives::Bytes) -> Result<Vec<Self::BatchMessage>> {
         mock_parse_batch(bytes)
     }
 
@@ -141,20 +140,15 @@ pub struct MockL1Monitor;
 impl L1Monitor<MockBatchCursor, std::convert::Infallible> for MockL1Monitor {
     async fn fetch_latest_checkpoint_on_startup(
         &self,
-    ) -> anyhow::Result<CasCheckpoint<MockBatchCursor>, std::convert::Infallible> {
+    ) -> Result<CasCheckpoint<MockBatchCursor>, std::convert::Infallible> {
         Ok(CasCheckpoint::new(MockBatchCursor, 0))
     }
 
-    async fn start(
-        &self,
-        _l1_finalized_msg_idx_sender: watch::Sender<u64>,
-        _latest_batch_info_sender: watch::Sender<MockBatchCursor>,
-    ) {
-    }
+    async fn start(&self, _l1_finalized_msg_idx_sender: watch::Sender<u64>) {}
 
     async fn fetch_latest_batch_cursor_on_fresh_deployment(
         &self,
-    ) -> anyhow::Result<MockBatchCursor, std::convert::Infallible> {
+    ) -> Result<MockBatchCursor, std::convert::Infallible> {
         todo!()
     }
 }

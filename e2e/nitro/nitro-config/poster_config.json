@@ -12,6 +12,12 @@
         ]
     },
     "node": {
+        "parent-chain-reader": {
+            "poll-interval": "1s"
+        },
+        "inbox-reader": {
+            "check-delay": "1s"
+        },
         "staker": {
             "enable": false
         },
@@ -28,13 +34,15 @@
         },
         "batch-poster": {
             "enable": true,
-            "max-delay": "1m",
+            "max-delay": "5s",
             "wait-for-max-delay": false,
             "l1-block-bound": "ignore",
+            "error-delay": "1s",
             "data-poster": {
-                "wait-for-l1-finality": false
+                "wait-for-l1-finality": false,
+                "replacement-times": ["1s","2s","5s","10s"]
             },
-            "poll-interval": "5s"
+            "poll-interval": "1s"
         },
         "feed": {
             "input": {

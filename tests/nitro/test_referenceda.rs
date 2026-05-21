@@ -7,6 +7,7 @@ use tokio::{
     time::sleep,
 };
 
+use alloy::primitives::Address;
 use chain_adjacent_service::{
     VerificationResult,
     config::RollupType,
@@ -15,7 +16,7 @@ use chain_adjacent_service::{
         nitro::{certificate::CasCertificate, utils::SEQUENCER_HEADER_LEN},
         run,
     },
-    key_manager::key_manager::KeyManager,
+    key_manager::{key_manager::KeyManager, test_utils::NoOpTeeVerifier},
 };
 use std::sync::Arc;
 
@@ -58,7 +59,10 @@ fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
             config,
             RollupType::Nitro,
             verification_channel,
-            Arc::new(KeyManager::new_signing_only()),
+            Arc::new(
+                KeyManager::new_for_test(Box::new(NoOpTeeVerifier), 1, 0, Address::ZERO)
+                    .expect("test key manager setup failed"),
+            ),
         )
         .await
         .expect("server should start");

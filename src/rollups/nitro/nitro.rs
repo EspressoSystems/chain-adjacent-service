@@ -240,6 +240,7 @@ impl Rollup for Nitro {
             sequencer_inbox_address: config.sequencer_inbox_address,
             log_scan_step: config.log_scan_step,
             max_l1_blocks_to_scan_on_startup: config.max_l1_blocks_to_scan_on_startup,
+            l1_finalized_poll_interval_ms: config.l1_finalized_poll_interval_ms,
         };
 
         NitroL1Monitor::new(&l1_config).await.map_err(Into::into)
