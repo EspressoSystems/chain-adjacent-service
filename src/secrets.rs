@@ -22,6 +22,7 @@ pub struct SecretOverrides {
     pub espresso_base_url: String,
     pub feed_ws_url: String,
     pub l1_ws_url: String,
+    pub l1_http_url: url::Url,
     pub anytrust_endpoint: String,
     #[serde(default)]
     pub operator_private_key: Option<String>,
@@ -116,6 +117,9 @@ pub fn apply_overrides_nitro(
     cfg.rollup.stack.l1_ws_url = overrides.l1_ws_url.clone();
     tracing::info!(field = "rollup.stack.l1_ws_url", "applied secret override");
 
+    cfg.rollup.stack.l1_http_url = overrides.l1_http_url.to_string();
+    tracing::info!(field = "rollup.stack.l1_http_url", "applied secret override");
+
     let mut anytrust_applied = 0usize;
     for provider in cfg.da_server.da_providers.iter_mut() {
         if provider.is_anytrust {
@@ -166,6 +170,11 @@ pub fn assert_no_placeholders_nitro(cfg: &ServiceConfig<NitroConfig>) -> Result<
     if cfg.rollup.stack.l1_ws_url == PLACEHOLDER_STR {
         bail!("rollup.stack.l1_ws_url was not overridden — still PLACEHOLDER");
     }
+    if cfg.rollup.stack.l1_http_url == PLACEHOLDER_STR {
+        bail!("rollup.stack.l1_http_url was not overridden — still PLACEHOLDER");
+    }
+    url::Url::parse(&cfg.rollup.stack.l1_http_url)
+        .context("rollup.stack.l1_http_url is not a valid URL")?;
     for provider in &cfg.da_server.da_providers {
         if provider.is_anytrust && provider.endpoint_url == PLACEHOLDER_STR {
             bail!(
@@ -196,6 +205,7 @@ mod tests {
                         "current_message_count": 0
                     },
                     "l1_ws_url": "PLACEHOLDER",
+                    "l1_http_url": "PLACEHOLDER",
                     "sequencer_inbox_address": "0x0000000000000000000000000000000000000000"
                 }
             },
@@ -215,7 +225,6 @@ mod tests {
                 ]
             },
             "key_manager": {
-                "rpc_url": "http://localhost:8545",
                 "tee_verifier_address": "0x0000000000000000000000000000000000000000",
                 "attestation_verifier_url": "http://localhost:9000",
                 "tee_type": "test"
@@ -229,6 +238,7 @@ mod tests {
             "espresso_base_url": "https://query.example.com/",
             "feed_ws_url": "wss://feed.example.com/feed",
             "l1_ws_url": "wss://l1.example.com",
+            "l1_http_url": "https://l1.example.com",
             "anytrust_endpoint": "http://anytrust.example.com:9876"
         }"#
     }
@@ -239,6 +249,7 @@ mod tests {
         assert_eq!(overrides.espresso_base_url, "https://query.example.com/");
         assert_eq!(overrides.feed_ws_url, "wss://feed.example.com/feed");
         assert_eq!(overrides.l1_ws_url, "wss://l1.example.com");
+        assert_eq!(overrides.l1_http_url.as_str(), "https://l1.example.com/");
         assert_eq!(
             overrides.anytrust_endpoint,
             "http://anytrust.example.com:9876"
@@ -247,15 +258,28 @@ mod tests {
 
     #[test]
     fn parses_wrapped_secret_json() {
-        let wrapped = r#"{"parameters":"{ \"espresso_base_url\": \"https://query.example.com/\", \"feed_ws_url\": \"wss://feed.example.com/feed\", \"l1_ws_url\": \"wss://l1.example.com\", \"anytrust_endpoint\": \"http://anytrust.example.com:9876\" }"}"#;
+        let wrapped = r#"{"parameters":"{ \"espresso_base_url\": \"https://query.example.com/\", \"feed_ws_url\": \"wss://feed.example.com/feed\", \"l1_ws_url\": \"wss://l1.example.com\", \"l1_http_url\": \"https://l1.example.com\", \"anytrust_endpoint\": \"http://anytrust.example.com:9876\" }"}"#;
         let overrides = parse_secret_overrides(wrapped).unwrap();
         assert_eq!(overrides.espresso_base_url, "https://query.example.com/");
         assert_eq!(overrides.feed_ws_url, "wss://feed.example.com/feed");
         assert_eq!(overrides.l1_ws_url, "wss://l1.example.com");
+        assert_eq!(overrides.l1_http_url.as_str(), "https://l1.example.com/");
         assert_eq!(
             overrides.anytrust_endpoint,
             "http://anytrust.example.com:9876"
         );
+    }
+
+    #[test]
+    fn parsing_fails_when_l1_http_url_malformed() {
+        let bad = r#"{
+            "espresso_base_url": "https://query.example.com/",
+            "feed_ws_url": "wss://feed.example.com/feed",
+            "l1_ws_url": "wss://l1.example.com",
+            "l1_http_url": "not a url",
+            "anytrust_endpoint": "http://anytrust.example.com:9876"
+        }"#;
+        assert!(parse_secret_overrides(bad).is_err());
     }
 
     #[test]
@@ -280,6 +304,7 @@ mod tests {
             "espresso_base_url": "https://query.example.com/",
             "feed_ws_url": "wss://feed.example.com/feed",
             "l1_ws_url": "wss://l1.example.com",
+            "l1_http_url": "https://l1.example.com",
             "anytrust_endpoint": "http://anytrust.example.com:9876",
             "operator_private_key": "0xabc123"
         }"#;
@@ -293,6 +318,7 @@ mod tests {
             espresso_base_url: "https://x/".to_string(),
             feed_ws_url: "wss://x".to_string(),
             l1_ws_url: "wss://x".to_string(),
+            l1_http_url: url::Url::parse("https://l1.example.com/").unwrap(),
             anytrust_endpoint: "http://x".to_string(),
             operator_private_key: Some("0xfromsecret".to_string()),
         };
@@ -319,6 +345,7 @@ mod tests {
             "wss://feed.example.com/feed"
         );
         assert_eq!(cfg.rollup.stack.l1_ws_url, "wss://l1.example.com");
+        assert_eq!(cfg.rollup.stack.l1_http_url, "https://l1.example.com/");
 
         let anytrust = cfg
             .da_server
@@ -350,6 +377,24 @@ mod tests {
 
         let err = assert_no_placeholders_nitro(&cfg).unwrap_err();
         assert!(err.to_string().contains("l1_ws_url"));
+    }
+
+    #[test]
+    fn assert_fails_when_l1_http_url_left_as_placeholder() {
+        let mut cfg: ServiceConfig<NitroConfig> =
+            serde_json::from_str(placeholder_config_json()).unwrap();
+        // Apply only feed/ws/anytrust overrides; leave l1_http_url at PLACEHOLDER.
+        cfg.espresso_client.base_url = url::Url::parse("https://query.example.com/").unwrap();
+        cfg.rollup.stack.feed.web_socket_url = "wss://feed.example.com/feed".to_string();
+        cfg.rollup.stack.l1_ws_url = "wss://l1.example.com".to_string();
+        for provider in cfg.da_server.da_providers.iter_mut() {
+            if provider.is_anytrust {
+                provider.endpoint_url = "http://anytrust.example.com:9876".to_string();
+            }
+        }
+
+        let err = assert_no_placeholders_nitro(&cfg).unwrap_err();
+        assert!(err.to_string().contains("l1_http_url"));
     }
 
     #[test]
@@ -386,6 +431,10 @@ mod tests {
         assert!(!overrides.feed_ws_url.is_empty(), "feed_ws_url is empty");
         assert!(!overrides.l1_ws_url.is_empty(), "l1_ws_url is empty");
         assert!(
+            !overrides.l1_http_url.as_str().is_empty(),
+            "l1_http_url is empty"
+        );
+        assert!(
             !overrides.anytrust_endpoint.is_empty(),
             "anytrust_endpoint is empty"
         );
@@ -394,7 +443,7 @@ mod tests {
             .expect("espresso_base_url is not a valid URL");
 
         println!(
-            "fetched secret with fields: espresso_base_url, feed_ws_url, l1_ws_url, anytrust_endpoint"
+            "fetched secret with fields: espresso_base_url, feed_ws_url, l1_ws_url, l1_http_url, anytrust_endpoint"
         );
     }
 }

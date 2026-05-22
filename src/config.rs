@@ -109,7 +109,6 @@ impl From<TeeType> for KmTeeType {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct KeyManagerConfig {
-    pub rpc_url: Url,
     pub tee_verifier_address: Address,
     pub attestation_verifier_url: Url,
     #[serde(default = "default_max_register_attempts")]

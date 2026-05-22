@@ -991,7 +991,6 @@ pub mod testing {
             da_server: DaApiConfig::default(),
             advanced: crate::config::AdvancedConfig::default(),
             key_manager: KeyManagerConfig {
-                rpc_url: Url::parse("http://localhost:8545").unwrap(),
                 tee_verifier_address: VerifierAddress::ZERO,
                 attestation_verifier_url: Url::parse("http://localhost:9000").unwrap(),
                 max_register_attempts: 3,

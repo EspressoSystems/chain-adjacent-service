@@ -328,7 +328,6 @@ fn write_cas_config(
             "max_in_flight": 1000
         },
         "key_manager": {
-            "rpc_url": "http://localhost:8545",
             "tee_verifier_address": format!("{tee_verifier_address}"),
             "attestation_verifier_url": "http://localhost:9000",
             "tee_type": "test"
