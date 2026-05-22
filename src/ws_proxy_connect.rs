@@ -148,7 +148,8 @@ async fn open_tcp(target_host: &str, target_port: u16) -> TransportResult<TcpStr
         .or_else(|_| env::var("https_proxy"))
         .or_else(|_| env::var("HTTP_PROXY"))
         .or_else(|_| env::var("http_proxy"))
-        .ok();
+        .ok()
+        .filter(|s| !s.is_empty());
 
     let Some(proxy_url) = proxy else {
         return TcpStream::connect((target_host, target_port))
@@ -195,7 +196,7 @@ async fn run_backend<S>(
             }
             inbound = ws.next() => {
                 let Some(msg) = inbound else {
-                    tracing::error!("ws stream ended");
+                    tracing::debug!("ws stream ended");
                     interface.close_with_error();
                     return;
                 };
@@ -227,7 +228,14 @@ async fn run_backend<S>(
                         interface.close_with_error();
                         return;
                     }
-                    Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {}
+                    Message::Ping(payload) => {
+                        if let Err(err) = ws.send(Message::Pong(payload)).await {
+                            tracing::error!(%err, "ws pong failed");
+                            interface.close_with_error();
+                            return;
+                        }
+                    }
+                    Message::Pong(_) | Message::Frame(_) => {}
                     Message::Binary(_) => {
                         tracing::error!("unexpected ws binary frame");
                         interface.close_with_error();
