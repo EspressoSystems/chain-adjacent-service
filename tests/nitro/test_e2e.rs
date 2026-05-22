@@ -350,6 +350,7 @@ fn write_cas_config(
     path
 }
 
+// https://github.com/EspressoSystems/nitro-contracts/blob/ec47f8578cc0837347af9de5bf6c34ed3e037d93/src/rollup/IRollupCore.sol#L26
 const ASSERTION_CREATED_TOPIC: alloy::primitives::B256 =
     alloy::primitives::b256!("901c3aee23cf4478825462caaab375c606ab83516060388344f0650340753630");
 
@@ -422,7 +423,7 @@ async fn count_batches_on_l1(
 ) -> usize {
     let filter = Filter::new()
         .address(sequencer_inbox)
-        .event_signature(ISequencerInbox::SequencerBatchDelivered::SIGNATURE_HASH)
+        .event_signature(SequencerBatchDelivered::SIGNATURE_HASH)
         .from_block(from_block);
     provider
         .get_logs(&filter)
@@ -642,6 +643,7 @@ async fn test_e2e_l1_reorg() {
         CasRoute::Calldata,
         &sequencer_inbox,
         tee_verifier_address,
+        true,
     );
 
     let probe_url = CasRoute::Calldata.rpc_url_local();
