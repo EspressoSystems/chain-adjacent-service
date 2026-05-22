@@ -13,15 +13,19 @@
     },
     "node": {
         "staker": {
-            "enable": false
+            "enable": true,
+            "strategy": "MakeNodes",
+            "dangerous": {
+                "without-block-validator": false
+            }
         },
-        "sequencer": true,
+        "sequencer": false,
         "dangerous": {
             "no-sequencer-coordinator": true,
             "disable-blob-reader": true
         },
         "delayed-sequencer": {
-            "enable": true
+            "enable": false
         },
         "seq-coordinator": {
             "enable": false
@@ -30,15 +34,15 @@
             "enable": false
         },
         "feed": {
-            "input": {
-                "url": []
-            },
             "output": {
-                "enable": true,
-                "signed": false,
-                "addr": "0.0.0.0",
-                "port": 9642,
-                "enable-compression": true
+                "enable": false
+            }
+        },
+        "block-validator": {
+            "enable": true,
+            "validation-server": {
+                "url": "ws://validation-node:8549",
+                "jwtsecret": "/nitro-config/val_jwt.hex"
             }
         },
         "da": {
@@ -53,7 +57,7 @@
     },
     "execution": {
         "sequencer": {
-            "enable": true
+            "enable": false
         },
         "forwarding-target": "null"
     },
@@ -66,7 +70,8 @@
     "http": {
         "addr": "0.0.0.0",
         "vhosts": "*",
-        "corsdomain": "*"
+        "corsdomain": "*",
+        "api": ["net", "web3", "eth", "arb", "debug"]
     },
     "log-level": "INFO"
 }

@@ -46,7 +46,7 @@
       "bridge": "0x7CB923362F408dEAD3d274EdC9645eef3753d7B2",
       "inbox": "0xF99CDA2c987f9FD881c37D0588e8d4771c2349FC",
       "sequencer-inbox": "0xd409d8E95C61Cb41F11B9fF3C3f51a261e0d81A5",
-      "deployed-at": 139,
+      "deployed-at": 172,
       "rollup": "0x8b919495cd523bB93A158264f1cdAD1181a01D9F",
       "native-token": "0x0000000000000000000000000000000000000000",
       "upgrade-executor": "0x44832ea4457D4fB7d1aF8AAbE0C2ba368b3dE32f",
