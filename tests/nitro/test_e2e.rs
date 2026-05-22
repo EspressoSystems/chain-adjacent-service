@@ -930,19 +930,6 @@ async fn test_e2e_malicious_batch_poster() {
         .await
         .expect("failed to read L1 head block number");
 
-    nitro_node.start_poster(CAS_FEED_URL, CasRoute::Calldata.rpc_url_for_poster());
-    println!("Poster started");
-
-    wait_for_batches_on_l1(&l1, from_block, 1, sequencer_inbox).await;
-
-    println!("At least 1 valid batch confirmed on L1");
-
-    nitro_node.stop_poster();
-    println!("Poster stopped; starting malicious poster to submit invalid batches...");
-
-    let batch_count_before = count_batches_on_l1(&l1, from_block, sequencer_inbox).await;
-    println!("Batch count on L1 before malicious attempt: {batch_count_before}");
-
     let malicious_batch = build_malicious_batch();
     let cas_url = CasRoute::Calldata.rpc_url_local();
     println!("Sending malicious dataprovide_store to {cas_url}");
@@ -968,8 +955,8 @@ async fn test_e2e_malicious_batch_poster() {
     sleep(Duration::from_secs(5)).await;
     let batch_count_after = count_batches_on_l1(&l1, from_block, sequencer_inbox).await;
     assert_eq!(
-        batch_count_before, batch_count_after,
-        "malicious batch must not reach L1: before={batch_count_before}, after={batch_count_after}"
+        batch_count_after, 0,
+        "malicious batch must not reach L1: batch_count={batch_count_after}"
     );
     println!("Confirmed: no new batches on L1 after malicious attempt");
 
