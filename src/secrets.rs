@@ -118,7 +118,10 @@ pub fn apply_overrides_nitro(
     tracing::info!(field = "rollup.stack.l1_ws_url", "applied secret override");
 
     cfg.rollup.stack.l1_http_url = overrides.l1_http_url.to_string();
-    tracing::info!(field = "rollup.stack.l1_http_url", "applied secret override");
+    tracing::info!(
+        field = "rollup.stack.l1_http_url",
+        "applied secret override"
+    );
 
     let mut anytrust_applied = 0usize;
     for provider in cfg.da_server.da_providers.iter_mut() {
