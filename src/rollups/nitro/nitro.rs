@@ -240,6 +240,7 @@ impl Rollup for Nitro {
             sequencer_inbox_address: config.sequencer_inbox_address,
             log_scan_step: config.log_scan_step,
             max_l1_blocks_to_scan_on_startup: config.max_l1_blocks_to_scan_on_startup,
+            l1_finalized_poll_interval_ms: config.l1_finalized_poll_interval_ms,
         };
 
         NitroL1Monitor::new(&l1_config).await.map_err(Into::into)
@@ -414,7 +415,7 @@ pub fn verify_broadcast_feed_message_signature(
     _sequencer_addresses: &[Address],
     _msg: &BroadcastFeedMessage,
 ) -> Result<()> {
-    // Skip signature verification in tests for simplicity, as test messages may not have valid signatures
+    // Skip signature verification in unit tests for simplicity, as test messages may not have valid signatures
     Ok(())
 }
 
@@ -969,7 +970,7 @@ pub mod testing {
             legacy_signer_addresses: vec![Address::ZERO],
             chain_id: 1,
             feed: initial_feed_config.clone(),
-            l1_https_url: "https://example.com".to_string(),
+            l1_http_url: "http://example.com".to_string(),
             l1_ws_url: "wss://example.com".to_string(),
             sequencer_inbox_address: Address::ZERO,
             ..Default::default()
@@ -1026,7 +1027,7 @@ pub mod testing {
             legacy_signer_addresses: vec![],
             chain_id: 1,
             feed: Default::default(),
-            l1_https_url: "https://localhost:8546".to_string(),
+            l1_http_url: "http://localhost:8545".to_string(),
             l1_ws_url: "wss://localhost".to_string(),
             sequencer_inbox_address: Address::ZERO,
             ..Default::default()

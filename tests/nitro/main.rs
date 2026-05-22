@@ -1,4 +1,3 @@
-mod cas_harness;
 mod nitro_node;
 mod test_e2e;
 mod test_referenceda;

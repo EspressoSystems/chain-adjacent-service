@@ -5,14 +5,18 @@ use alloy::{
     signers::local::PrivateKeySigner,
 };
 use anyhow::Result;
-use chain_adjacent_service::config::RollupType;
+use chain_adjacent_service::config::{RollupType, TeeType};
 use chain_adjacent_service::da_api;
 use chain_adjacent_service::espresso_client::client::EspressoClient;
 use chain_adjacent_service::key_manager::attestation_client::HttpAttestationVerifierClient;
 use chain_adjacent_service::key_manager::key_manager::KeyManager;
 use chain_adjacent_service::key_manager::tee_verifier::TEEVerifier;
-use chain_adjacent_service::rollups::nitro::types::Nitro;
-use chain_adjacent_service::rollups::rollup::L1Monitor;
+use chain_adjacent_service::rollups::nitro::types::{BatchCursor, Nitro};
+use chain_adjacent_service::rollups::rollup::{BatchCursorFetcher, L1Monitor};
+use chain_adjacent_service::secrets::{
+    apply_overrides_nitro, assert_no_placeholders_nitro, fetch_secret_overrides,
+    resolve_operator_private_key,
+};
 use chain_adjacent_service::streamer::streamer::Streamer;
 use chain_adjacent_service::{cas_init, config::ServiceConfig, rollups::rollup::Rollup};
 
@@ -39,45 +43,62 @@ async fn main() -> Result<()> {
 
     match config.rollup.ty {
         RollupType::Nitro => {
-            let config: ServiceConfig<<Nitro as Rollup>::StackConfig> =
+            let mut config: ServiceConfig<<Nitro as Rollup>::StackConfig> =
                 serde_json::from_str(&config_contents)?;
 
-            let operator_private_key = std::env::var("OPERATOR_PRIVATE_KEY").map_err(|_| {
-                anyhow::anyhow!(
-                    "OPERATOR_PRIVATE_KEY env var must be set when key_manager is configured"
-                )
-            })?;
+            let overrides = fetch_secret_overrides(config.key_manager.tee_type).await?;
+            if let Some(overrides) = overrides.as_ref() {
+                apply_overrides_nitro(&mut config, overrides)?;
+            }
+            assert_no_placeholders_nitro(&config)?;
+            info!("Configuration loaded and validated successfully");
+
+            let operator_private_key = resolve_operator_private_key(overrides.as_ref())?;
             let operator_signer: PrivateKeySigner = operator_private_key.parse()?;
             let tee_verifier = TEEVerifier::new(
                 config.key_manager.rpc_url.clone(),
                 config.key_manager.tee_verifier_address,
                 operator_signer,
             );
-            let attestation_client = HttpAttestationVerifierClient::new(
-                config.key_manager.attestation_verifier_url.clone(),
-                config.key_manager.attestation_client_timeout_secs,
-            )?;
 
             let provider = ProviderBuilder::new().connect_http(config.key_manager.rpc_url.clone());
             let parent_chain_id = provider.get_chain_id().await?;
 
-            let signer = PrivateKeySigner::random();
-            let mut key_manager = KeyManager::new(
-                Box::new(tee_verifier),
-                Box::new(attestation_client),
-                config.key_manager.max_register_attempts,
-                config.key_manager.tee_type.into(),
-                parent_chain_id,
-                config.key_manager.tee_verifier_address,
-                signer,
-            )?;
+            let mut key_manager = if config.key_manager.tee_type == TeeType::Test {
+                KeyManager::new_for_test(
+                    Box::new(tee_verifier),
+                    config.key_manager.max_register_attempts,
+                    parent_chain_id,
+                    config.key_manager.tee_verifier_address,
+                )?
+            } else {
+                let attestation_client = HttpAttestationVerifierClient::new(
+                    config.key_manager.attestation_verifier_url.clone(),
+                    config.key_manager.attestation_client_timeout_secs,
+                )?;
+                let signer = PrivateKeySigner::random();
+                KeyManager::new(
+                    Box::new(tee_verifier),
+                    Box::new(attestation_client),
+                    config.key_manager.max_register_attempts,
+                    config.key_manager.tee_type.into(),
+                    parent_chain_id,
+                    config.key_manager.tee_verifier_address,
+                    signer,
+                )?
+            };
             key_manager.initialize().await?;
             tracing::info!(
-                "TEE key registered, signer address: {:?}",
-                key_manager.signer().address()
+                tee_type = ?config.key_manager.tee_type,
+                signer_address = ?key_manager.signer().address(),
+                "KeyManager ready"
             );
 
-            run::<Nitro>(config, key_manager).await
+            let l1_monitor = Nitro::create_l1_monitor(&config.rollup.stack).await?;
+            let cursor_fetcher: Option<Arc<dyn BatchCursorFetcher<BatchCursor>>> =
+                Some(l1_monitor.create_cursor_fetcher());
+
+            run::<Nitro>(config, key_manager, l1_monitor, cursor_fetcher).await
         }
     }
 }
@@ -85,8 +106,9 @@ async fn main() -> Result<()> {
 async fn run<R: Rollup>(
     config: ServiceConfig<R::StackConfig>,
     key_manager: KeyManager,
+    l1_monitor: R::L1Monitor,
+    cursor_fetcher: Option<Arc<dyn BatchCursorFetcher<R::BatchCursor>>>,
 ) -> Result<()> {
-    let l1_monitor = R::create_l1_monitor(&config.rollup.stack).await?;
     info!("L1 monitor created");
 
     let (batch_cursor, hotshot_height) = if !config.is_fresh_deployment {
@@ -143,13 +165,16 @@ async fn run<R: Rollup>(
     let client = EspressoClient::from_config(config.espresso_client);
     let (verification_sender, verification_receiver) =
         mpsc::channel(config.advanced.verification_channel_capacity);
-    let (batch_cursor_sender, batch_cursor_receiver) = watch::channel(batch_cursor.clone());
-    let mut streamer: Streamer<R> =
-        Streamer::new(client, config.streamer, config.rollup, config.advanced);
+    let mut streamer: Streamer<R> = Streamer::new(
+        client,
+        config.streamer,
+        config.rollup,
+        config.advanced,
+        cursor_fetcher,
+    );
 
     let streamer_task = streamer.run(
         l1_finalized_msg_idx_receiver,
-        batch_cursor_receiver,
         verification_receiver,
         espresso_finalization_sender,
     );
@@ -162,7 +187,7 @@ async fn run<R: Rollup>(
     );
     info!("DA API server started");
 
-    let l1_monitor_task = l1_monitor.start(l1_finalized_msg_idx_sender, batch_cursor_sender);
+    let l1_monitor_task = l1_monitor.start(l1_finalized_msg_idx_sender);
 
     tokio::try_join!(
         async { submitter_task.await.map_err(anyhow::Error::from) },

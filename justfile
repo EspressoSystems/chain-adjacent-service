@@ -1,21 +1,10 @@
 # E2E test setup and execution for CAS (Chain Agnostic Service)
-# Prerequisites: just, Rust, Go, Docker
-# First time on a fresh machine: just setup && just test-e2e
+# Prerequisites: just, Rust, Docker
+# Run: just test-e2e
 
 # List available recipes
 default:
     @just --list
-
-# ─── Setup ────────────────────────────────────────────────────────────────────
-
-# Install all prerequisites and initialize submodules (run once on a fresh machine)
-setup: setup-submodules
-    @echo ""
-    @echo "Setup complete. Run 'just check' to verify, then 'just test-e2e' to run tests."
-
-# Initialize git submodules (nitro-testnode)
-setup-submodules:
-    git submodule update --init --recursive
 
 # ─── Preflight check ──────────────────────────────────────────────────────────
 
@@ -37,7 +26,6 @@ check:
 
     echo "Checking required binaries..."
     require cargo
-    require go
     require docker
 
     echo ""
@@ -50,11 +38,11 @@ check:
     fi
 
     echo ""
-    echo "Checking git submodules..."
-    if [ -n "$(ls -A nitro-testnode 2>/dev/null)" ]; then
-        echo "  [ok] nitro-testnode submodule is initialized"
+    echo "Checking e2e compose file..."
+    if [ -f "e2e/nitro/docker-compose.yml" ]; then
+        echo "  [ok] e2e/nitro/docker-compose.yml exists"
     else
-        echo "  [missing] nitro-testnode submodule is empty — run: just setup-submodules"
+        echo "  [missing] e2e/nitro/docker-compose.yml not found"
         all_ok=false
     fi
 
@@ -62,7 +50,7 @@ check:
     if $all_ok; then
         echo "All prerequisites met. Run 'just test-e2e' to run the tests."
     else
-        echo "Some prerequisites are missing. Run 'just setup' to install them."
+        echo "Some prerequisites are missing."
         exit 1
     fi
 
@@ -83,14 +71,31 @@ test-e2e:
 test:
     RUST_BACKTRACE=1 cargo test --all-features -- --test-threads=1
 
+# ─── L1 state generation ──────────────────────────────────────────────────────
+
+# (Re)generate the pre-deployed L1 state used by e2e tests.
+# Run this after updating nitro-contracts or the rollup-creator image.
+generate-l1-state:
+    ./e2e/nitro/generate-l1-state.sh
+
+# ─── Docker compose helpers ───────────────────────────────────────────────────
+
+# Bring up the e2e Nitro stack (without poster)
+e2e-up:
+    docker compose -f e2e/nitro/docker-compose.yml up -d --wait
+
+# Tear down the e2e Nitro stack
+e2e-down:
+    docker compose -f e2e/nitro/docker-compose.yml --profile poster down -v --remove-orphans
+
 # ─── Cleanup ──────────────────────────────────────────────────────────────────
 
 # Tear down leftover E2E state (containers) after a crash or Ctrl-C
 clean:
     #!/usr/bin/env bash
     set -u
-    echo "Stopping nitro-testnode containers..."
-    (cd nitro-testnode && docker compose down -v) || true
+    echo "Stopping e2e Nitro stack..."
+    (docker compose -f e2e/nitro/docker-compose.yml --profile poster down -v --remove-orphans) || true
 
     echo "Stopping espresso dev-node containers..."
     docker compose -f src/espresso_e2e/docker-compose.yml down -v --remove-orphans || true

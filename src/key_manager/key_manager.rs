@@ -35,7 +35,7 @@ pub mod mock_journal {
         }
     }
 }
-use super::test_utils::{NoOpAttestationClient, NoOpAttestationProvider, NoOpTeeVerifier};
+use super::test_utils::{NoOpAttestationClient, NoOpAttestationProvider};
 use anyhow::{Result, bail};
 use async_trait::async_trait;
 use aws_nitro_enclaves_nsm_api::{
@@ -182,19 +182,22 @@ impl KeyManager {
         )
     }
 
-    // new_signing_only should only be used for TESTING
-    // as it uses no-op implementations and a random signer.
-    pub fn new_signing_only() -> Self {
-        Self {
-            tee_verifier: Box::new(NoOpTeeVerifier),
-            attestation_verifier_client: Box::new(NoOpAttestationClient),
-            attestation_provider: Box::new(NoOpAttestationProvider),
-            max_register_attempts: 1,
-            tee_type: TeeType::Test,
-            signer: PrivateKeySigner::random(),
-            parent_chain_id: 0,
-            tee_verifier_address: Address::ZERO,
-        }
+    pub fn new_for_test(
+        tee_verifier: Box<dyn EspressoTEEVerifier>,
+        max_register_attempts: u8,
+        parent_chain_id: u64,
+        tee_verifier_address: Address,
+    ) -> Result<Self, KeyManagerError> {
+        Self::new_with_attestation_provider(
+            tee_verifier,
+            Box::new(NoOpAttestationClient),
+            Box::new(NoOpAttestationProvider),
+            max_register_attempts,
+            TeeType::Test,
+            parent_chain_id,
+            tee_verifier_address,
+            PrivateKeySigner::random(),
+        )
     }
 
     #[allow(clippy::too_many_arguments)]

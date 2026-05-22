@@ -15,20 +15,31 @@ jobs:
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
         with:
-          go-version: "stable"
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull Docker images
+        working-directory: e2e/nitro
+        run: |
+          source .env
+          docker pull "$NITRO_IMAGE" &
+          docker pull "$ESPRESSO_DEV_NODE_IMAGE" &
+          docker pull ghcr.io/foundry-rs/foundry:latest &
+          docker pull ghcr.io/foundry-rs/foundry:v1.5.1 &
+          wait
 
       - uses: extractions/setup-just@v3
 
