@@ -278,6 +278,7 @@ fn write_cas_config(
     route: CasRoute,
     sequencer_inbox: &Address,
     tee_verifier_address: Address,
+    is_fresh_deployment: bool,
 ) -> PathBuf {
     let da_server = match route {
         CasRoute::Calldata => json!({"listen_addr": "0.0.0.0:8000"}),
@@ -334,7 +335,7 @@ fn write_cas_config(
             "attestation_verifier_url": "http://localhost:9000",
             "tee_type": "test"
         },
-        "is_fresh_deployment": true,
+        "is_fresh_deployment": is_fresh_deployment,
     });
 
     let path = std::env::temp_dir().join(match route {
@@ -347,6 +348,56 @@ fn write_cas_config(
     )
     .expect("failed to write CAS config");
     path
+}
+
+const ASSERTION_CREATED_TOPIC: alloy::primitives::B256 =
+    alloy::primitives::b256!("901c3aee23cf4478825462caaab375c606ab83516060388344f0650340753630");
+
+fn read_rollup_address() -> Address {
+    let path = Path::new(GENERATED_CONFIG_DIR).join("deployment.json");
+    let raw = std::fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
+    let deployment: serde_json::Value = serde_json::from_str(&raw)
+        .unwrap_or_else(|err| panic!("failed to parse {}: {err}", path.display()));
+    let value = deployment
+        .get("rollup")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_else(|| panic!("missing rollup in {}", path.display()));
+    value
+        .parse()
+        .unwrap_or_else(|err| panic!("invalid rollup address {value}: {err}"))
+}
+
+async fn wait_for_assertion_created(provider: &RootProvider, rollup: Address, from_block: u64) {
+    let filter = Filter::new()
+        .address(rollup)
+        .event_signature(ASSERTION_CREATED_TOPIC)
+        .from_block(from_block);
+
+    let deadline = Instant::now() + Duration::from_secs(5 * 60);
+    loop {
+        if Instant::now() >= deadline {
+            panic!(
+                "timed out waiting for AssertionCreated on rollup {rollup} from block {from_block}"
+            );
+        }
+        match provider.get_logs(&filter).await {
+            Ok(logs) if !logs.is_empty() => {
+                println!(
+                    "staker active: {} AssertionCreated event(s) on rollup {rollup}",
+                    logs.len()
+                );
+                return;
+            }
+            Ok(_) => {
+                println!("waiting for AssertionCreated on rollup {rollup}...");
+            }
+            Err(err) => {
+                println!("get_logs failed: {err}");
+            }
+        }
+        sleep(Duration::from_secs(5)).await;
+    }
 }
 
 fn read_sequencer_inbox_address() -> Address {
@@ -380,59 +431,19 @@ async fn count_batches_on_l1(
         .unwrap_or(0)
 }
 
-async fn fetch_block_number(client: &reqwest::Client, rpc_url: &str) -> u64 {
-    let request_body = json!({
-        "jsonrpc": "2.0",
-        "method": "eth_blockNumber",
-        "params": [],
-        "id": 1,
-    });
-    let response = client
-        .post(rpc_url)
-        .json(&request_body)
-        .send()
+async fn connect_http(url: &str) -> RootProvider {
+    RootProvider::connect(url)
         .await
-        .unwrap_or_else(|e| panic!("eth_blockNumber request to {rpc_url} failed: {e}"));
-    let response_body: serde_json::Value = response
-        .json()
-        .await
-        .unwrap_or_else(|e| panic!("eth_blockNumber response from {rpc_url} not JSON: {e}"));
-    let encoded = response_body["result"].as_str().unwrap_or_else(|| {
-        panic!("eth_blockNumber from {rpc_url} missing result: {response_body}")
-    });
-    u64::from_str_radix(encoded.trim_start_matches("0x"), 16)
-        .unwrap_or_else(|e| panic!("eth_blockNumber from {rpc_url} bad hex {encoded}: {e}"))
+        .unwrap_or_else(|e| panic!("failed to connect to {url}: {e}"))
 }
 
-async fn fetch_block_hash(client: &reqwest::Client, rpc_url: &str, block_number: u64) -> String {
-    let request_body = json!({
-        "jsonrpc": "2.0",
-        "method": "eth_getBlockByNumber",
-        "params": [format!("0x{block_number:x}"), false],
-        "id": 1,
-    });
-    let response = client
-        .post(rpc_url)
-        .json(&request_body)
-        .send()
-        .await
-        .unwrap_or_else(|e| panic!("eth_getBlockByNumber request to {rpc_url} failed: {e}"));
-    let response_body: serde_json::Value = response
-        .json()
-        .await
-        .unwrap_or_else(|e| panic!("eth_getBlockByNumber response from {rpc_url} not JSON: {e}"));
-    response_body["result"]["hash"]
-        .as_str()
-        .unwrap_or_else(|| {
-            panic!("eth_getBlockByNumber from {rpc_url} missing hash: {response_body}")
-        })
-        .to_string()
-}
-
-async fn wait_for_validator_to_reach(client: &reqwest::Client, target: u64) {
+async fn wait_for_validator_to_reach(validator: &RootProvider, target: u64) {
     let deadline = Instant::now() + Duration::from_secs(3 * 60);
     loop {
-        let current = fetch_block_number(client, VALIDATOR_HTTP_URL).await;
+        let current = validator
+            .get_block_number()
+            .await
+            .unwrap_or_else(|e| panic!("failed to get validator block number: {e}"));
         if current >= target {
             println!("validator caught up: block {current} >= target {target}");
             return;
@@ -528,6 +539,7 @@ async fn run_e2e(route: CasRoute) {
         route,
         &sequencer_inbox,
         tee_verifier_address,
+        true,
     );
     println!(
         "CAS config written to {} (starting_hotshot_height={starting_hotshot_height})",
@@ -551,24 +563,46 @@ async fn run_e2e(route: CasRoute) {
     println!("Load generator stopped; waiting for chain to settle");
     sleep(Duration::from_secs(3)).await;
 
-    let http = reqwest::Client::new();
-    let sequencer_block = fetch_block_number(&http, SEQUENCER_HTTP_URL).await;
+    let sequencer = connect_http(SEQUENCER_HTTP_URL).await;
+    let sequencer_block = sequencer
+        .get_block_number()
+        .await
+        .expect("failed to get sequencer block number");
     println!("Sequencer at block {sequencer_block}");
 
     println!("Starting block validator...");
+    let rollup = read_rollup_address();
     nitro_node.start_block_validator();
 
-    wait_for_validator_to_reach(&http, sequencer_block).await;
-    let validator_block = fetch_block_number(&http, VALIDATOR_HTTP_URL).await;
+    let validator = connect_http(VALIDATOR_HTTP_URL).await;
+    wait_for_validator_to_reach(&validator, sequencer_block).await;
+    let validator_block = validator
+        .get_block_number()
+        .await
+        .expect("failed to get validator block number");
     println!("Block validator at block {validator_block} (sequencer was {sequencer_block})");
 
-    let sequencer_hash = fetch_block_hash(&http, SEQUENCER_HTTP_URL, sequencer_block).await;
-    let validator_hash = fetch_block_hash(&http, VALIDATOR_HTTP_URL, sequencer_block).await;
+    let sequencer_hash = sequencer
+        .get_block_by_number(sequencer_block.into())
+        .await
+        .expect("failed to get sequencer block")
+        .unwrap_or_else(|| panic!("sequencer block {sequencer_block} not found"))
+        .header
+        .hash;
+    let validator_hash = validator
+        .get_block_by_number(sequencer_block.into())
+        .await
+        .expect("failed to get validator block")
+        .unwrap_or_else(|| panic!("validator block {sequencer_block} not found"))
+        .header
+        .hash;
     assert_eq!(
         sequencer_hash, validator_hash,
         "block hash mismatch at block {sequencer_block}: sequencer={sequencer_hash}, validator={validator_hash}"
     );
     println!("Block hashes match at block {sequencer_block}: {sequencer_hash}");
+
+    wait_for_assertion_created(&l1, rollup, from_block).await;
 
     drop(cas);
     drop(nitro_node);
@@ -737,6 +771,7 @@ async fn test_e2e_restart() {
         route,
         &sequencer_inbox,
         tee_verifier_address,
+        true,
     );
     println!(
         "CAS config written to {} (starting_hotshot_height={starting_hotshot_height})",
@@ -770,8 +805,17 @@ async fn test_e2e_restart() {
     );
     println!("Confirmed: only {count_after_cas_down} batches during CAS downtime (< 4)");
 
-    println!("Restarting CAS...");
-    let cas = spawn_cas_with_retries(&cas_config_path, &probe_url).await;
+    println!(
+        "Restarting CAS (is_fresh_deployment=false, exercises EspressoBatchVerified recovery)..."
+    );
+    let cas_restart_config_path = write_cas_config(
+        starting_hotshot_height,
+        route,
+        &sequencer_inbox,
+        tee_verifier_address,
+        false,
+    );
+    let cas = spawn_cas_with_retries(&cas_restart_config_path, &probe_url).await;
     println!("CAS restarted; waiting for batch count to reach 4...");
     wait_for_batches_on_l1(&l1, from_block, 4, sequencer_inbox).await;
     println!("4 batches confirmed on L1");

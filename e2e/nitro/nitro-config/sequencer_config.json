@@ -37,7 +37,8 @@
                 "enable": true,
                 "signed": false,
                 "addr": "0.0.0.0",
-                "port": 9642
+                "port": 9642,
+                "enable-compression": true
             }
         },
         "da": {

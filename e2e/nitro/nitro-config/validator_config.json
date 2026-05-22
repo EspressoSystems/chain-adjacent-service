@@ -14,7 +14,7 @@
     "node": {
         "staker": {
             "enable": true,
-            "strategy": "Watchtower",
+            "strategy": "MakeNodes",
             "dangerous": {
                 "without-block-validator": false
             }
@@ -34,9 +34,6 @@
             "enable": false
         },
         "feed": {
-            "input": {
-                "url": ["ws://sequencer:9642"]
-            },
             "output": {
                 "enable": false
             }

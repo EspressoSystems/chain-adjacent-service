@@ -12,6 +12,8 @@ services:
         "1337",
         "--load-state",
         "/state/l1-state.json",
+        "--slots-in-an-epoch",
+        "1",
       ]
     volumes:
       - "./generated-config:/state:ro"
@@ -258,6 +260,7 @@ services:
       - "./nitro-config:/nitro-config"
     command:
       - --conf.file=/nitro-config/validator_config.json
+      - --node.staker.parent-chain-wallet.private-key=${VALIDATOR_PRIVATE_KEY}
     depends_on:
       sequencer:
         condition: service_healthy

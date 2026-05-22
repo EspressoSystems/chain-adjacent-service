@@ -91,6 +91,35 @@ docker run --rm \
 
 echo "DAS keyset registered on SequencerInbox $SEQ_INBOX"
 
+# ── Authorize validator EOA ───────────────────────────────────────────────────
+
+echo "==> Authorizing validator EOA on rollup..."
+
+ROLLUP=$(jq -r '.rollup' "$CONFIG_DIR/deployment.json")
+VALIDATOR_ADDRESS=$(docker run --rm \
+    --entrypoint cast \
+    ghcr.io/foundry-rs/foundry:latest \
+    wallet address --private-key "0x${VALIDATOR_PRIVATE_KEY}")
+
+INNER_CALLDATA=$(docker run --rm \
+    --entrypoint cast \
+    ghcr.io/foundry-rs/foundry:latest \
+    calldata "setValidator(address[],bool[])" "[$VALIDATOR_ADDRESS]" "[true]")
+
+docker run --rm \
+    --network nitro_default \
+    --entrypoint cast \
+    ghcr.io/foundry-rs/foundry:latest \
+    send \
+    --rpc-url http://l1-anvil:8545 \
+    --private-key "$DEPLOYER_PRIVATE_KEY" \
+    "$UPGRADE_EXEC" \
+    "executeCall(address,bytes)" \
+    "$ROLLUP" \
+    "$INNER_CALLDATA"
+
+echo "Validator $VALIDATOR_ADDRESS authorized on rollup $ROLLUP"
+
 # ── Snapshot & cleanup ────────────────────────────────────────────────────────
 
 # The generate override starts Anvil with `--dump-state /state/l1-state.json`.
