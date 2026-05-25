@@ -299,7 +299,8 @@ fn write_cas_config(
 
     let config = json!({
         "espresso_client": {
-            "base_url": "http://localhost:41000"
+            "base_url": "http://localhost:41000",
+            "client_timeout_secs": 1
         },
         "streamer": {
             "starting_hotshot_height": starting_hotshot_height,
@@ -888,6 +889,110 @@ async fn test_e2e_restart() {
     println!("Poster restarted; waiting for batch count to reach 6...");
     wait_for_batches_on_l1(&l1, from_block, 6, sequencer_inbox).await;
     println!("6 batches confirmed on L1 — restart test passed");
+
+    drop(cas);
+    drop(nitro_node);
+}
+
+#[tokio::test]
+async fn test_e2e_espresso_downtime() {
+    let route = CasRoute::Calldata;
+    let config = NitroNodeConfig {
+        no_l2_traffic: false,
+    };
+    let nitro_node = NitroNode::start(config).await;
+    println!("Nitro stack started (L1 + sequencer + espresso dev node)");
+
+    let sequencer_inbox = read_sequencer_inbox_address();
+    let tee_verifier_address = read_tee_verifier_address();
+
+    let starting_hotshot_height = {
+        let espresso = EspressoDevNode::connect().await;
+        espresso
+            .client
+            .fetch_latest_hotshot_block_height()
+            .await
+            .expect("failed to fetch latest hotshot block height")
+            + 1
+    };
+
+    let cas_config_path = write_cas_config(
+        starting_hotshot_height,
+        route,
+        &sequencer_inbox,
+        tee_verifier_address,
+        true,
+    );
+    let probe_url = route.rpc_url_local();
+    let mut cas = spawn_cas_with_retries(&cas_config_path, &probe_url).await;
+
+    let l1 = connect_l1_ws_with_retries().await;
+    let from_block = l1
+        .get_block_number()
+        .await
+        .expect("failed to read L1 head block number");
+
+    nitro_node.start_poster(CAS_FEED_URL, route.rpc_url_for_poster());
+    println!("Poster started; waiting for 1 batch...");
+    wait_for_batches_on_l1(&l1, from_block, 1, sequencer_inbox).await;
+    println!("1 batch confirmed on L1");
+
+    let pre_fault_batches = count_batches_on_l1(&l1, from_block, sequencer_inbox).await;
+    println!("Batch count before Espresso unavailability: {pre_fault_batches}");
+
+    println!("Pausing Espresso dev node to simulate downtime...");
+    nitro_node.pause_espresso_dev_node();
+    println!("Espresso dev node paused; sleeping 3 s to verify CAS stays alive and retries");
+    sleep(Duration::from_secs(3)).await;
+
+    assert!(
+        cas.0
+            .try_wait()
+            .expect("failed to check CAS process status")
+            .is_none(),
+        "CAS exited while Espresso was unavailable"
+    );
+
+    let probe_body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "daprovider_getSupportedHeaderBytes",
+        "params": [],
+        "id": 1,
+    });
+    let probe_response = Client::new()
+        .post(&probe_url)
+        .json(&probe_body)
+        .send()
+        .await
+        .expect("CAS DA RPC should stay available during Espresso downtime");
+    assert!(
+        probe_response.status().is_success(),
+        "CAS DA RPC returned unexpected status during Espresso downtime: {}",
+        probe_response.status()
+    );
+
+    let during_fault_batches = count_batches_on_l1(&l1, from_block, sequencer_inbox).await;
+    // We allow 1 batch to be posted during the fault window to account for any batch that may have just started processing before the pause took effect
+    // but we assert that batch production did not continue beyond that.
+    assert!(
+        during_fault_batches <= pre_fault_batches + 1,
+        "expected batch production to stall while Espresso was down, got {during_fault_batches} batches after starting from {pre_fault_batches}"
+    );
+    println!(
+        "Confirmed: batch production stalled during Espresso downtime ({pre_fault_batches} -> {during_fault_batches})"
+    );
+
+    println!("Unpausing Espresso dev node...");
+    nitro_node.unpause_espresso_dev_node();
+    println!(
+        "Espresso dev node unpaused; waiting for batch count to reach {}",
+        pre_fault_batches + 1
+    );
+    wait_for_batches_on_l1(&l1, from_block, pre_fault_batches + 1, sequencer_inbox).await;
+    println!(
+        "Batch count reached {} after Espresso unpause — recovery test passed",
+        pre_fault_batches + 1
+    );
 
     drop(cas);
     drop(nitro_node);
