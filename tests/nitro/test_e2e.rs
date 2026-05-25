@@ -1,10 +1,13 @@
 use alloy::eips::BlockNumberOrTag;
-use alloy::primitives::Address;
+use alloy::primitives::{Address, Bytes};
 use alloy::providers::{Provider, RootProvider};
 use alloy::rpc::types::Filter;
 use alloy::sol;
 use alloy::sol_types::SolEvent;
-use serde_json::json;
+use alloy_rlp::Encodable;
+use reqwest::Client;
+use serde_json::{Value, json};
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
@@ -503,6 +506,53 @@ async fn wait_for_batches_on_l1(
     }
 }
 
+// Batch wire format: [0x00 brotli header] [brotli-compressed RLP segments]
+// Each segment: [kind_byte | payload], where kind 0x00 = L2 message.
+fn build_malicious_batch() -> Bytes {
+    let mut segment = vec![0x00u8]; // 0x00 = BATCH_SEGMENT_KIND_L2_MESSAGE
+    segment.extend_from_slice(b"malicious_tx_data_not_in_espresso");
+
+    let rlp_bytes = alloy_rlp::Bytes::from(segment);
+    let mut rlp_data = Vec::new();
+    rlp_bytes.encode(&mut rlp_data);
+
+    let params = brotli::enc::BrotliEncoderParams {
+        quality: 0,
+        ..Default::default()
+    };
+    let mut compressed = Vec::new();
+    brotli::BrotliCompress(&mut Cursor::new(&rlp_data), &mut compressed, &params)
+        .expect("brotli compression should not fail on valid input");
+
+    let mut batch = Vec::with_capacity(1 + compressed.len());
+    batch.push(0x00); // 0x00 = BROTLI_HEADER_BYTE
+    batch.extend_from_slice(&compressed);
+
+    Bytes::from(batch)
+}
+
+// Sends a raw batch to the CAS DA RPC endpoint, bypassing the normal poster flow.
+// Uses the `daprovider_store` method, which is used by the batch poster to submit a batch to CAS
+async fn send_store_rpc(url: &str, data: Bytes) -> Value {
+    let client = Client::new();
+    let body = json!({
+        "jsonrpc": "2.0",
+        "method": "daprovider_store",
+        "params": [data, 5000u64],
+        "id": 1,
+    });
+
+    client
+        .post(url)
+        .json(&body)
+        .send()
+        .await
+        .expect("daprovider_store RPC failed")
+        .json()
+        .await
+        .expect("daprovider_store response parse failed")
+}
+
 async fn run_e2e(route: CasRoute) {
     let config = NitroNodeConfig {
         no_l2_traffic: false,
@@ -838,6 +888,77 @@ async fn test_e2e_restart() {
     println!("Poster restarted; waiting for batch count to reach 6...");
     wait_for_batches_on_l1(&l1, from_block, 6, sequencer_inbox).await;
     println!("6 batches confirmed on L1 — restart test passed");
+
+    drop(cas);
+    drop(nitro_node);
+}
+
+#[tokio::test]
+async fn test_e2e_malicious_batch_poster() {
+    let config = NitroNodeConfig {
+        no_l2_traffic: false,
+    };
+    let nitro_node = NitroNode::start(config).await;
+    println!("Nitro stack started (L1 + sequencer + espresso dev node)");
+
+    let sequencer_inbox = read_sequencer_inbox_address();
+    let espresso = EspressoDevNode::connect().await;
+
+    let starting_hotshot_height = espresso
+        .client
+        .fetch_latest_hotshot_block_height()
+        .await
+        .expect("failed to fetch latest hotshot block height")
+        + 1;
+    let tee_verifier_address = read_tee_verifier_address();
+
+    let cas_config_path = write_cas_config(
+        starting_hotshot_height,
+        CasRoute::Calldata,
+        &sequencer_inbox,
+        tee_verifier_address,
+        true,
+    );
+
+    let probe_url = CasRoute::Calldata.rpc_url_local();
+    let cas = spawn_cas_with_retries(&cas_config_path, &probe_url).await;
+
+    let l1 = connect_l1_ws_with_retries().await;
+
+    let from_block = l1
+        .get_block_number()
+        .await
+        .expect("failed to read L1 head block number");
+
+    let malicious_batch = build_malicious_batch();
+    let cas_url = CasRoute::Calldata.rpc_url_local();
+    println!("Sending malicious dataprovide_store to {cas_url}");
+
+    // We send a malicious batch to CAS using the same `daprovider_store` RPC method
+    // that the poster uses which should cause CAS to attempt to process the batch
+    let response = send_store_rpc(&cas_url, malicious_batch).await;
+    println!("Received response from CAS: {response}");
+
+    assert!(
+        response.get("error").is_some(),
+        "expected CAS to reject the malicious batch with an error, got: {response}"
+    );
+    let error_msg = response["error"]["message"]
+        .as_str()
+        .unwrap_or("<no message>");
+    assert!(
+        error_msg.contains("CAS verification failed"),
+        "expected 'CAS verification failed' error, got: {error_msg}"
+    );
+    println!("CAS correctly rejected malicious batch: {error_msg}");
+
+    sleep(Duration::from_secs(5)).await;
+    let batch_count_after = count_batches_on_l1(&l1, from_block, sequencer_inbox).await;
+    assert_eq!(
+        batch_count_after, 0,
+        "malicious batch must not reach L1: batch_count={batch_count_after}"
+    );
+    println!("Confirmed: no new batches on L1 after malicious attempt");
 
     drop(cas);
     drop(nitro_node);
