@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use alloy::primitives::Address;
 use base64::Engine as _;
@@ -172,6 +172,14 @@ impl BroadcasterClient {
             .header(HEADER_FEED_CLIENT_VERSION, FEED_CLIENT_VERSION.to_string())
             .header(HEADER_REQUESTED_SEQ_NUM, next_seq_num.to_string());
 
+        // yawc defaults max_payload_read to 1 MiB and silently terminates the
+        // stream on FrameTooLarge — a single oversized backlog frame from the
+        // Arbitrum broadcaster (e.g. when starting from seq 1) would otherwise
+        // look like a clean disconnect. Lift the limits well above realistic
+        // feed-message sizes.
+        const MAX_PAYLOAD_READ: usize = 32 * 1024 * 1024;
+        const MAX_READ_BUFFER: usize = 64 * 1024 * 1024;
+
         let options = if self.config.enable_compression {
             Options {
                 compression: Some(DeflateOptions {
@@ -182,8 +190,12 @@ impl BroadcasterClient {
                 no_delay: true,
                 ..Default::default()
             }
+            .with_limits(MAX_PAYLOAD_READ, MAX_READ_BUFFER)
         } else {
-            Options::default().without_compression().with_no_delay()
+            Options::default()
+                .without_compression()
+                .with_no_delay()
+                .with_limits(MAX_PAYLOAD_READ, MAX_READ_BUFFER)
         };
 
         self.validate_preflight_headers(&url, next_seq_num).await?;
@@ -338,6 +350,10 @@ impl BroadcasterClient {
 
     async fn run_read_loop(&mut self, mut ws: TcpWebSocket) {
         let mut backoff = self.config.reconnect_initial_backoff;
+        // yawc collapses decode errors into a `None` from the stream, so a
+        // short-lived "clean" close is almost always a swallowed error
+        // (e.g. FrameTooLarge). Logging the elapsed time disambiguates them.
+        let mut connected_at = Instant::now();
 
         loop {
             let frame_result = tokio::time::timeout(self.config.timeout, ws.next()).await;
@@ -353,6 +369,7 @@ impl BroadcasterClient {
                 Ok(None) => {
                     tracing::warn!(
                         url = %self.websocket_url,
+                        elapsed_ms = connected_at.elapsed().as_millis() as u64,
                         "feed connection closed"
                     );
                 }
@@ -397,7 +414,10 @@ impl BroadcasterClient {
 
             // Attempt to reconnect
             match self.retry_connect().await {
-                Some(new_ws) => ws = new_ws,
+                Some(new_ws) => {
+                    ws = new_ws;
+                    connected_at = Instant::now();
+                }
                 None => return,
             }
         }
