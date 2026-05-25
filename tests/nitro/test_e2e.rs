@@ -282,6 +282,7 @@ fn write_cas_config(
     sequencer_inbox: &Address,
     tee_verifier_address: Address,
     is_fresh_deployment: bool,
+    client_timeout_secs: Option<u64>,
 ) -> PathBuf {
     let da_server = match route {
         CasRoute::Calldata => json!({"listen_addr": "0.0.0.0:8000"}),
@@ -297,11 +298,15 @@ fn write_cas_config(
         }),
     };
 
+    let mut espresso_client = json!({
+        "base_url": "http://localhost:41000"
+    });
+    if let Some(timeout) = client_timeout_secs {
+        espresso_client["client_timeout_secs"] = json!(timeout);
+    }
+
     let config = json!({
-        "espresso_client": {
-            "base_url": "http://localhost:41000",
-            "client_timeout_secs": 1
-        },
+        "espresso_client": espresso_client,
         "streamer": {
             "starting_hotshot_height": starting_hotshot_height,
         },
@@ -592,6 +597,7 @@ async fn run_e2e(route: CasRoute) {
         &sequencer_inbox,
         tee_verifier_address,
         true,
+        None,
     );
     println!(
         "CAS config written to {} (starting_hotshot_height={starting_hotshot_height})",
@@ -695,6 +701,7 @@ async fn test_e2e_l1_reorg() {
         &sequencer_inbox,
         tee_verifier_address,
         true,
+        None,
     );
 
     let probe_url = CasRoute::Calldata.rpc_url_local();
@@ -825,6 +832,7 @@ async fn test_e2e_restart() {
         &sequencer_inbox,
         tee_verifier_address,
         true,
+        None,
     );
     println!(
         "CAS config written to {} (starting_hotshot_height={starting_hotshot_height})",
@@ -867,6 +875,7 @@ async fn test_e2e_restart() {
         &sequencer_inbox,
         tee_verifier_address,
         false,
+        None,
     );
     let cas = spawn_cas_with_retries(&cas_restart_config_path, &probe_url).await;
     println!("CAS restarted; waiting for batch count to reach 4...");
@@ -922,6 +931,7 @@ async fn test_e2e_espresso_downtime() {
         &sequencer_inbox,
         tee_verifier_address,
         true,
+        Some(1),
     );
     let probe_url = route.rpc_url_local();
     let mut cas = spawn_cas_with_retries(&cas_config_path, &probe_url).await;
@@ -962,6 +972,7 @@ async fn test_e2e_espresso_downtime() {
     let probe_response = Client::new()
         .post(&probe_url)
         .json(&probe_body)
+        .timeout(Duration::from_secs(5))
         .send()
         .await
         .expect("CAS DA RPC should stay available during Espresso downtime");
@@ -984,15 +995,10 @@ async fn test_e2e_espresso_downtime() {
 
     println!("Unpausing Espresso dev node...");
     nitro_node.unpause_espresso_dev_node();
-    println!(
-        "Espresso dev node unpaused; waiting for batch count to reach {}",
-        pre_fault_batches + 1
-    );
-    wait_for_batches_on_l1(&l1, from_block, pre_fault_batches + 1, sequencer_inbox).await;
-    println!(
-        "Batch count reached {} after Espresso unpause — recovery test passed",
-        pre_fault_batches + 1
-    );
+    let target_batches = during_fault_batches + 1;
+    println!("Espresso dev node unpaused; waiting for batch count to reach {target_batches}",);
+    wait_for_batches_on_l1(&l1, from_block, target_batches, sequencer_inbox).await;
+    println!("Batch count reached {target_batches} after Espresso unpause — recovery test passed",);
 
     drop(cas);
     drop(nitro_node);
@@ -1023,6 +1029,7 @@ async fn test_e2e_malicious_batch_poster() {
         &sequencer_inbox,
         tee_verifier_address,
         true,
+        None,
     );
 
     let probe_url = CasRoute::Calldata.rpc_url_local();

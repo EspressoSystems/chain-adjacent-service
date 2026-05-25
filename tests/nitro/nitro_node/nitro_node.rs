@@ -209,6 +209,7 @@ impl NitroNode {
     }
 
     pub fn stop(&self) {
+        let _ = run_compose_result(&["compose", "unpause", "espresso-dev-node"]);
         let status = compose_down_status();
 
         match status {
