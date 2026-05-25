@@ -34,17 +34,17 @@ use url::Url;
 use yawc::{HttpRequestBuilder, MaybeTlsStream, Options, TcpWebSocket, WebSocket};
 
 #[derive(Debug, Clone)]
-pub struct ProxyWsConnect {
+pub struct WsProxyConnect {
     url: String,
 }
 
-impl ProxyWsConnect {
+impl WsProxyConnect {
     pub fn new(url: impl Into<String>) -> Self {
         Self { url: url.into() }
     }
 }
 
-impl PubSubConnect for ProxyWsConnect {
+impl PubSubConnect for WsProxyConnect {
     fn is_local(&self) -> bool {
         alloy::transports::utils::guess_local_url(&self.url)
     }
@@ -70,7 +70,7 @@ impl PubSubConnect for ProxyWsConnect {
             }
         }
 
-        let tcp = open_tcp(&host, port).await?;
+        let tcp = open_tcp(&host, port, url.scheme() == "wss").await?;
 
         let request = self
             .url
@@ -91,7 +91,7 @@ impl PubSubConnect for ProxyWsConnect {
 }
 
 /// Connect a yawc WebSocket through the same `HTTPS_PROXY` egress path
-/// `ProxyWsConnect` uses. Equivalent to `WebSocket::connect(url)` but routed
+/// `WsProxyConnect` uses. Equivalent to `WebSocket::connect(url)` but routed
 /// through the enclaver HTTP CONNECT proxy when the env var is set, so DNS
 /// is resolved by the proxy host rather than the enclave.
 ///
@@ -107,14 +107,15 @@ pub async fn connect_yawc(
     let host = url.host_str().context("ws url missing host")?.to_string();
     let port = url.port_or_known_default().context("ws url missing port")?;
 
-    let tcp = open_tcp(&host, port)
+    let is_secure = url.scheme() == "wss";
+    let tcp = open_tcp(&host, port, is_secure)
         .await
         .map_err(|e| anyhow::anyhow!("open_tcp failed: {e}"))?;
 
     let stream: MaybeTlsStream<TcpStream> = match url.scheme() {
         "ws" => MaybeTlsStream::Plain(tcp),
         "wss" => {
-            let connector = shared_tls_connector();
+            let connector = tls_connector();
             let server_name = ServerName::try_from(host.clone())
                 .with_context(|| format!("invalid DNS name for SNI: {host}"))?;
             let tls = connector
@@ -131,7 +132,7 @@ pub async fn connect_yawc(
         .context("yawc handshake failed")
 }
 
-fn shared_tls_connector() -> &'static TlsConnector {
+fn tls_connector() -> &'static TlsConnector {
     static CONNECTOR: OnceLock<TlsConnector> = OnceLock::new();
     CONNECTOR.get_or_init(|| {
         let mut roots = RootCertStore::empty();
@@ -143,13 +144,18 @@ fn shared_tls_connector() -> &'static TlsConnector {
     })
 }
 
-async fn open_tcp(target_host: &str, target_port: u16) -> TransportResult<TcpStream> {
-    let proxy = env::var("HTTPS_PROXY")
-        .or_else(|_| env::var("https_proxy"))
-        .or_else(|_| env::var("HTTP_PROXY"))
-        .or_else(|_| env::var("http_proxy"))
-        .ok()
-        .filter(|s| !s.is_empty());
+async fn open_tcp(
+    target_host: &str,
+    target_port: u16,
+    is_secure: bool,
+) -> TransportResult<TcpStream> {
+    let proxy = if is_secure {
+        env::var("HTTPS_PROXY").or_else(|_| env::var("https_proxy"))
+    } else {
+        env::var("HTTP_PROXY").or_else(|_| env::var("http_proxy"))
+    }
+    .ok()
+    .filter(|s| !s.is_empty());
 
     let Some(proxy_url) = proxy else {
         return TcpStream::connect((target_host, target_port))
@@ -177,10 +183,11 @@ async fn open_tcp(target_host: &str, target_port: u16) -> TransportResult<TcpStr
     Ok(tcp)
 }
 
-async fn run_backend<S>(
-    mut ws: tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<S>>,
-    mut interface: ConnectionInterface,
-) where
+type WsStream<S> =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<S>>;
+
+async fn run_backend<S>(mut ws: WsStream<S>, mut interface: ConnectionInterface)
+where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
 {
     loop {

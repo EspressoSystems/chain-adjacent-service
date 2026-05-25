@@ -21,7 +21,7 @@ use crate::rollups::{
     },
     rollup::{BatchCursorFetcher, CasCheckpoint, L1Monitor},
 };
-use crate::ws_proxy_connect::ProxyWsConnect;
+use crate::ws_proxy_connect::WsProxyConnect;
 
 sol! {
     #[sol(rpc)]
@@ -129,7 +129,7 @@ impl NitroL1Monitor {
         // egress proxy is used. The default RootProvider::connect bypasses
         // HTTPS_PROXY and fails DNS in the enclave; see ws_proxy_connect.
         let client = ClientBuilder::default()
-            .pubsub(ProxyWsConnect::new(config.ws_url.clone()))
+            .pubsub(WsProxyConnect::new(config.ws_url.clone()))
             .await?;
         let provider = RootProvider::new(client);
         let bridge_addr = read_bridge_address(&provider, config.sequencer_inbox_address).await?;
