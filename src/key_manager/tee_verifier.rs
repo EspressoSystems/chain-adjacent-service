@@ -54,8 +54,7 @@ impl EspressoTEEVerifier for TEEVerifier {
         let wallet = EthereumWallet::from(self.operator_signer.clone());
         let provider = ProviderBuilder::new()
             .wallet(wallet)
-            .connect(self.rpc_url.as_str())
-            .await?;
+            .connect_http(self.rpc_url.clone());
         let contract = IEspressoTEEVerifier::new(self.contract_address, &provider);
         contract
             .registerService(
@@ -71,9 +70,7 @@ impl EspressoTEEVerifier for TEEVerifier {
     }
 
     async fn registered_services(&self, addr: Address, tee_type: TeeType) -> Result<bool> {
-        let provider = ProviderBuilder::new()
-            .connect(self.rpc_url.as_str())
-            .await?;
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.clone());
         let contract = IEspressoTEEVerifier::new(self.contract_address, &provider);
         let is_valid = contract.isSignerValid(addr, tee_type as u8).call().await?;
         Ok(is_valid)

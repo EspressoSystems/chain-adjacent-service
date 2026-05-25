@@ -1,6 +1,6 @@
 use alloy::eips::BlockNumberOrTag;
 use alloy::primitives::{Address, Bytes};
-use alloy::providers::{Provider, RootProvider};
+use alloy::providers::{Provider, ProviderBuilder, RootProvider};
 use alloy::rpc::types::Filter;
 use alloy::sol;
 use alloy::sol_types::SolEvent;
@@ -435,13 +435,14 @@ async fn count_batches_on_l1(
         .unwrap_or(0)
 }
 
-async fn connect_http(url: &str) -> RootProvider {
-    RootProvider::connect(url)
-        .await
-        .unwrap_or_else(|e| panic!("failed to connect to {url}: {e}"))
+fn connect_http(url: &str) -> impl Provider + Clone {
+    ProviderBuilder::new().connect_http(
+        url.parse::<url::Url>()
+            .unwrap_or_else(|e| panic!("failed to parse {url}: {e}")),
+    )
 }
 
-async fn wait_for_validator_to_reach(validator: &RootProvider, target: u64) {
+async fn wait_for_validator_to_reach(validator: &impl Provider, target: u64) {
     let deadline = Instant::now() + Duration::from_secs(3 * 60);
     loop {
         let current = validator
@@ -614,7 +615,7 @@ async fn run_e2e(route: CasRoute) {
     println!("Load generator stopped; waiting for chain to settle");
     sleep(Duration::from_secs(3)).await;
 
-    let sequencer = connect_http(SEQUENCER_HTTP_URL).await;
+    let sequencer = connect_http(SEQUENCER_HTTP_URL);
     let sequencer_block = sequencer
         .get_block_number()
         .await
@@ -625,7 +626,7 @@ async fn run_e2e(route: CasRoute) {
     let rollup = read_rollup_address();
     nitro_node.start_block_validator();
 
-    let validator = connect_http(VALIDATOR_HTTP_URL).await;
+    let validator = connect_http(VALIDATOR_HTTP_URL);
     wait_for_validator_to_reach(&validator, sequencer_block).await;
     let validator_block = validator
         .get_block_number()
