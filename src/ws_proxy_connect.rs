@@ -144,18 +144,23 @@ fn tls_connector() -> &'static TlsConnector {
     })
 }
 
+fn select_proxy<F: Fn(&str) -> Option<String>>(is_secure: bool, get: F) -> Option<String> {
+    let vars: &[&str] = if is_secure {
+        &["HTTPS_PROXY", "https_proxy"]
+    } else {
+        &["HTTP_PROXY", "http_proxy"]
+    };
+    // Treat empty values as unset so the next candidate is tried — matches the
+    // shell convention of `HTTPS_PROXY=` unsetting the proxy.
+    vars.iter().find_map(|k| get(k).filter(|s| !s.is_empty()))
+}
+
 async fn open_tcp(
     target_host: &str,
     target_port: u16,
     is_secure: bool,
 ) -> TransportResult<TcpStream> {
-    let proxy = if is_secure {
-        env::var("HTTPS_PROXY").or_else(|_| env::var("https_proxy"))
-    } else {
-        env::var("HTTP_PROXY").or_else(|_| env::var("http_proxy"))
-    }
-    .ok()
-    .filter(|s| !s.is_empty());
+    let proxy = select_proxy(is_secure, |k| env::var(k).ok());
 
     let Some(proxy_url) = proxy else {
         return TcpStream::connect((target_host, target_port))
@@ -183,8 +188,7 @@ async fn open_tcp(
     Ok(tcp)
 }
 
-type WsStream<S> =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<S>>;
+type WsStream<S> = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<S>>;
 
 async fn run_backend<S>(mut ws: WsStream<S>, mut interface: ConnectionInterface)
 where
@@ -251,5 +255,79 @@ where
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::select_proxy;
+    use std::collections::HashMap;
+
+    fn env_from(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let map: HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        move |k: &str| map.get(k).cloned()
+    }
+
+    #[test]
+    fn secure_prefers_https_proxy_uppercase() {
+        let env = env_from(&[
+            ("HTTPS_PROXY", "http://upper:1"),
+            ("https_proxy", "http://lower:2"),
+        ]);
+        assert_eq!(select_proxy(true, env).as_deref(), Some("http://upper:1"));
+    }
+
+    #[test]
+    fn secure_falls_back_to_lowercase_https_proxy() {
+        let env = env_from(&[("https_proxy", "http://lower:2")]);
+        assert_eq!(select_proxy(true, env).as_deref(), Some("http://lower:2"));
+    }
+
+    #[test]
+    fn secure_ignores_http_proxy() {
+        let env = env_from(&[
+            ("HTTP_PROXY", "http://upper:1"),
+            ("http_proxy", "http://lower:2"),
+        ]);
+        assert_eq!(select_proxy(true, env), None);
+    }
+
+    #[test]
+    fn insecure_prefers_http_proxy_uppercase() {
+        let env = env_from(&[
+            ("HTTP_PROXY", "http://upper:1"),
+            ("http_proxy", "http://lower:2"),
+        ]);
+        assert_eq!(select_proxy(false, env).as_deref(), Some("http://upper:1"));
+    }
+
+    #[test]
+    fn insecure_ignores_https_proxy() {
+        let env = env_from(&[
+            ("HTTPS_PROXY", "http://upper:1"),
+            ("https_proxy", "http://lower:2"),
+        ]);
+        assert_eq!(select_proxy(false, env), None);
+    }
+
+    #[test]
+    fn empty_string_is_treated_as_unset() {
+        let env = env_from(&[("HTTPS_PROXY", ""), ("https_proxy", "http://lower:2")]);
+        assert_eq!(select_proxy(true, env).as_deref(), Some("http://lower:2"));
+    }
+
+    #[test]
+    fn all_empty_returns_none() {
+        let env = env_from(&[("HTTPS_PROXY", ""), ("https_proxy", "")]);
+        assert_eq!(select_proxy(true, env), None);
+    }
+
+    #[test]
+    fn unset_returns_none() {
+        assert_eq!(select_proxy(true, |_| None), None);
+        assert_eq!(select_proxy(false, |_| None), None);
     }
 }
