@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use espresso_types::NamespaceId;
@@ -19,7 +20,13 @@ const HOTSHOT_RANGE_LIMIT: u64 = 100;
 /// generic type over the rollup's messages which are sent in a batch
 pub struct Streamer<R: Rollup> {
     client: EspressoClient,
+    /// Full entries, sorted by sequence_number ascending. Capped at
+    /// `config.max_full_queue_entries`. Overflow spills into `stubs`.
     queue: Vec<R::Entry>,
+    /// Lightweight overflow entries beyond `max_full_queue_entries`,
+    /// mapping `sequence_number -> hotshot_height`.
+    /// Promoted back to full entries when finalization creates room.
+    stubs: BTreeMap<u64, u64>,
     config: StreamerConfig,
     rollup_config: RollupConfig<R::StackConfig>,
     advanced_config: AdvancedConfig,
@@ -44,6 +51,7 @@ impl<R: Rollup> Streamer<R> {
         Self {
             client,
             queue: Vec::new(),
+            stubs: BTreeMap::new(),
             config,
             rollup_config,
             advanced_config,
@@ -108,10 +116,13 @@ impl<R: Rollup> Streamer<R> {
                     if new_finalized_idx <= self.finalized_idx {
                         continue;
                     }
+                    tracing::debug!("new finalized message index: {new_finalized_idx}");
 
                     self.finalized_idx = new_finalized_idx;
                     let split_at = self.queue.partition_point(|e| e.sequence_number() <= self.finalized_idx);
                     self.queue.drain(0..split_at);
+                    self.stubs = self.stubs.split_off(&(self.finalized_idx + 1));
+                    self.promote_stubs().await;
                 },
                 batch_data = verification_receiver.recv() => {
                     let Some((batch_data, sender)) = batch_data else {
@@ -215,41 +226,123 @@ impl<R: Rollup> Streamer<R> {
         }
     }
 
-    /// filter_messages adds a parsed rollup entry to the queue only
-    /// if an entry with the same sequence number is not already present.
-    /// It also filters out messages that are significantly out of order.
+    /// Adds parsed entries to the queue, skipping any whose sequence number is
+    /// already in the queue or in stubs. When the queue is at capacity, evicts
+    /// the tail to stubs (or stubs the new entry directly if it sits past the tail).
+    ///
+    /// A stub records the HotShot height where we first saw a sequence number;
+    /// promotion back to a full entry only happens via `promote_stubs`, which
+    /// re-fetches that original block.
     fn filter_messages(&mut self, parsed_rollup_entries: Vec<<R as Rollup>::Entry>) {
         for parsed_entry in parsed_rollup_entries {
-            if let Some(f) = self.queue.first() {
-                // if seq number is less than the lowest sequencer number which is the first
-                // element in the array then skip that entry
-                if parsed_entry.sequence_number() < self.config.starting_pos {
-                    tracing::warn!(
-                        "sequence number {} is less than the starting pos of the streamer {}",
-                        parsed_entry.sequence_number(),
-                        self.config.starting_pos
-                    );
-                    continue;
-                }
-
-                let current = parsed_entry.sequence_number();
-                let first = f.sequence_number();
-
-                if current > first && current - first > self.config.max_sequencer_number_drift {
-                    tracing::warn!(
-                        "{} is outside the max sequencer number drift, current first sequence number: {}",
-                        current,
-                        first
-                    );
-                    continue;
-                }
-            }
             let seq = parsed_entry.sequence_number();
+            if seq < self.config.starting_pos {
+                tracing::warn!(
+                    "sequence number {} is less than the starting pos of the streamer {}",
+                    seq,
+                    self.config.starting_pos
+                );
+                continue;
+            }
 
             let pos = self.queue.partition_point(|e| e.sequence_number() < seq);
             let exists = pos < self.queue.len() && self.queue[pos].sequence_number() == seq;
-            if !exists {
-                self.queue.insert(pos, parsed_entry);
+            if exists || self.stubs.contains_key(&seq) {
+                continue;
+            }
+
+            self.queue.insert(pos, parsed_entry);
+            if self.queue.len() > self.config.max_full_queue_entries {
+                let evicted = self.queue.pop().expect("queue is non-empty: just inserted");
+                self.stubs
+                    .insert(evicted.sequence_number(), evicted.hotshot_height());
+            }
+        }
+    }
+
+    /// Re-fetches HotShot blocks for the oldest stubs and inserts them directly into
+    /// the queue.
+    async fn promote_stubs(&mut self) {
+        let room = self
+            .config
+            .max_full_queue_entries
+            .saturating_sub(self.queue.len());
+        if room == 0 || self.stubs.is_empty() {
+            return;
+        }
+
+        let to_promote = room.min(self.stubs.len());
+        let stubs_to_promote: Vec<(u64, u64)> = self
+            .stubs
+            .iter()
+            .take(to_promote)
+            .map(|(s, h)| (*s, *h))
+            .collect();
+        let heights: Vec<u64> = stubs_to_promote
+            .iter()
+            .map(|(_, h)| *h)
+            .collect::<std::collections::BTreeSet<u64>>()
+            .into_iter()
+            .collect();
+        let expected: std::collections::BTreeSet<u64> =
+            stubs_to_promote.iter().map(|(s, _)| *s).collect();
+
+        let namespace_id = espresso_types::NamespaceId::from(self.rollup_config.namespace_id);
+
+        let mut fetched: BTreeMap<u64, R::Entry> = BTreeMap::new();
+
+        let mut i = 0;
+        while i < heights.len() {
+            let start = heights[i];
+            let mut j = i + 1;
+            while j < heights.len() && heights[j] - start < HOTSHOT_RANGE_LIMIT {
+                j += 1;
+            }
+            let end = heights[j - 1] + 1;
+
+            let txns = match self
+                .client
+                .fetch_namespace_transactions_in_range(namespace_id, start, end)
+                .await
+            {
+                Ok(txns) => txns,
+                Err(err) => {
+                    tracing::error!(
+                        "failed to re-fetch hotshot blocks [{start}, {end}) for stub promotion; will retry on next L1 finalization tick: {err}"
+                    );
+                    return;
+                }
+            };
+            let entries = R::parse_hotshot_transactions(&self.rollup_config.stack, txns, start);
+            for entry in entries {
+                let seq = entry.sequence_number();
+                if expected.contains(&seq) {
+                    fetched.insert(seq, entry);
+                }
+            }
+            i = j;
+        }
+
+        for (seq, expected_height) in stubs_to_promote {
+            match fetched.remove(&seq) {
+                Some(entry) => {
+                    if entry.hotshot_height() != expected_height {
+                        tracing::error!(
+                            "stub promotion mismatch for seq {seq}: expected hotshot height {expected_height}, got {}",
+                            entry.hotshot_height()
+                        );
+                        return;
+                    }
+                    let pos = self.queue.partition_point(|e| e.sequence_number() < seq);
+                    self.queue.insert(pos, entry);
+                    self.stubs.remove(&seq);
+                }
+                None => {
+                    // should be impossible
+                    tracing::error!(
+                        "stub promotion: expected seq {seq} at hotshot height {expected_height} not found in fetched data; keeping stub"
+                    );
+                }
             }
         }
     }
@@ -347,17 +440,24 @@ pub mod testing {
     };
     use std::time::Duration;
 
-    fn make_streamer(max_drift: u64, starting_pos: u64) -> Streamer<MockRollup> {
+    fn make_streamer(starting_pos: u64) -> Streamer<MockRollup> {
+        make_streamer_with_cap(starting_pos, 1000)
+    }
+
+    fn make_streamer_with_cap(
+        starting_pos: u64,
+        max_full_queue_entries: usize,
+    ) -> Streamer<MockRollup> {
         let client = EspressoClient::new("http://127.0.0.1".to_string(), 30);
         Streamer::new(
             client,
             StreamerConfig {
-                max_sequencer_number_drift: max_drift,
                 initial_backoff_ms: 1,
                 max_backoff_ms: 1,
                 starting_pos,
                 starting_hotshot_height: 1,
                 retry_broadcast_delay_ms: 1000,
+                max_full_queue_entries,
             },
             RollupConfig {
                 namespace_id: 1918988905u64,
@@ -410,7 +510,7 @@ pub mod testing {
     #[test]
     fn test_filter_messages() {
         // Empty queue: lowest seq first, all get sorted
-        let mut streamer = make_streamer(10, 1);
+        let mut streamer = make_streamer(1);
         streamer.filter_messages(vec![
             make_entry(1, 1),
             make_entry(5, 1),
@@ -421,24 +521,85 @@ pub mod testing {
 
         assert_eq!(queue_positions(&streamer), vec![1, 2, 3, 4, 5]);
 
-        // Exact max drift boundary
-        let mut streamer = make_streamer(10, 1);
-        streamer.filter_messages(vec![make_entry(5, 1)]);
-        streamer.filter_messages(vec![make_entry(15, 1)]);
-        streamer.filter_messages(vec![make_entry(20, 1)]);
-        assert_eq!(queue_positions(&streamer), vec![5, 15]);
-
         // Duplicates are not added
-        let mut streamer = make_streamer(10, 1);
+        let mut streamer = make_streamer(1);
         streamer.filter_messages(vec![make_entry(5, 1)]);
         streamer.filter_messages(vec![make_entry(5, 1)]);
         assert_eq!(queue_positions(&streamer), vec![5]);
 
         // Skips positions which are less than the starting position
-        let mut streamer = make_streamer(10, 5);
+        let mut streamer = make_streamer(5);
         streamer.filter_messages(vec![make_entry(5, 1)]);
         streamer.filter_messages(vec![make_entry(1, 1)]);
         assert_eq!(queue_positions(&streamer), vec![5]);
+    }
+
+    fn stub_positions(streamer: &Streamer<MockRollup>) -> Vec<u64> {
+        streamer.stubs.keys().copied().collect()
+    }
+
+    fn stub_entries(streamer: &Streamer<MockRollup>) -> Vec<(u64, u64)> {
+        streamer.stubs.iter().map(|(s, h)| (*s, *h)).collect()
+    }
+
+    #[test]
+    fn test_filter_messages_overflows_to_stubs() {
+        let mut streamer = make_streamer_with_cap(1, 3);
+        streamer.filter_messages(vec![
+            make_entry(1, 10),
+            make_entry(2, 10),
+            make_entry(3, 11),
+            make_entry(4, 12),
+            make_entry(5, 13),
+        ]);
+        assert_eq!(queue_positions(&streamer), vec![1, 2, 3]);
+        assert_eq!(stub_positions(&streamer), vec![4, 5]);
+        assert_eq!(stub_entries(&streamer), vec![(4, 12), (5, 13)]);
+
+        streamer.filter_messages(vec![make_entry(0, 9)]);
+        assert_eq!(queue_positions(&streamer), vec![1, 2, 3]);
+        assert_eq!(stub_positions(&streamer), vec![4, 5]);
+
+        let mut streamer = make_streamer_with_cap(1, 3);
+        streamer.filter_messages(vec![
+            make_entry(2, 20),
+            make_entry(4, 22),
+            make_entry(6, 24),
+        ]);
+        assert_eq!(queue_positions(&streamer), vec![2, 4, 6]);
+        streamer.filter_messages(vec![make_entry(3, 21)]);
+        assert_eq!(queue_positions(&streamer), vec![2, 3, 4]);
+        assert_eq!(stub_entries(&streamer), vec![(6, 24)]);
+
+        streamer.filter_messages(vec![make_entry(6, 24)]);
+        assert_eq!(queue_positions(&streamer), vec![2, 3, 4]);
+        assert_eq!(stub_entries(&streamer), vec![(6, 24)]);
+
+        streamer.filter_messages(vec![make_entry(3, 21)]);
+        assert_eq!(queue_positions(&streamer), vec![2, 3, 4]);
+        assert_eq!(stub_entries(&streamer), vec![(6, 24)]);
+    }
+
+    #[test]
+    fn test_filter_messages_leaves_stubs_alone() {
+        let mut streamer = make_streamer_with_cap(1, 2);
+        streamer.filter_messages(vec![
+            make_entry(1, 10),
+            make_entry(2, 11),
+            make_entry(3, 12),
+            make_entry(4, 13),
+        ]);
+        assert_eq!(queue_positions(&streamer), vec![1, 2]);
+        assert_eq!(stub_entries(&streamer), vec![(3, 12), (4, 13)]);
+
+        streamer.queue.drain(..);
+
+        streamer.filter_messages(vec![make_entry(3, 12), make_entry(4, 13)]);
+        assert!(queue_positions(&streamer).is_empty());
+        assert_eq!(stub_entries(&streamer), vec![(3, 12), (4, 13)]);
+
+        streamer.filter_messages(vec![make_entry(3, 99)]);
+        assert_eq!(stub_entries(&streamer), vec![(3, 12), (4, 13)]);
     }
 
     #[tokio::test]
@@ -448,12 +609,12 @@ pub mod testing {
         let mut streamer = Streamer::new(
             node.client.clone(),
             StreamerConfig {
-                max_sequencer_number_drift: 1000,
                 initial_backoff_ms: 100,
                 max_backoff_ms: 500,
                 starting_hotshot_height: 1,
                 starting_pos: 1,
                 retry_broadcast_delay_ms: 1000,
+                max_full_queue_entries: 1000,
             },
             RollupConfig {
                 namespace_id: 1918988905u64,

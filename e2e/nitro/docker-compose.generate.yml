@@ -13,6 +13,8 @@ services:
         "1",
         "--chain-id",
         "1337",
+        "--slots-in-an-epoch",
+        "1",
         "--dump-state",
         "/state/l1-state.json",
       ]

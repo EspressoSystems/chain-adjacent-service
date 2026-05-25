@@ -970,6 +970,7 @@ pub mod testing {
             legacy_signer_addresses: vec![Address::ZERO],
             chain_id: 1,
             feed: initial_feed_config.clone(),
+            l1_http_url: "http://example.com".to_string(),
             l1_ws_url: "wss://example.com".to_string(),
             sequencer_inbox_address: Address::ZERO,
             ..Default::default()
@@ -990,7 +991,6 @@ pub mod testing {
             da_server: DaApiConfig::default(),
             advanced: crate::config::AdvancedConfig::default(),
             key_manager: KeyManagerConfig {
-                rpc_url: Url::parse("http://localhost:8545").unwrap(),
                 tee_verifier_address: VerifierAddress::ZERO,
                 attestation_verifier_url: Url::parse("http://localhost:9000").unwrap(),
                 max_register_attempts: 3,
@@ -1026,6 +1026,7 @@ pub mod testing {
             legacy_signer_addresses: vec![],
             chain_id: 1,
             feed: Default::default(),
+            l1_http_url: "http://localhost:8545".to_string(),
             l1_ws_url: "wss://localhost".to_string(),
             sequencer_inbox_address: Address::ZERO,
             ..Default::default()

@@ -40,6 +40,8 @@ const ANYTRUST_DAPROVIDER_URL: &str = "http://localhost:9881";
 
 const L1_WS_URL: &str = "ws://localhost:8545";
 const L1_HTTP_URL: &str = "http://localhost:8545";
+const SEQUENCER_HTTP_URL: &str = "http://localhost:8547";
+const VALIDATOR_HTTP_URL: &str = "http://localhost:8949";
 const GENERATED_CONFIG_DIR: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/e2e/nitro/generated-config");
 const TRUSTED_SEQUENCER_ADDRESS: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
@@ -276,6 +278,7 @@ fn write_cas_config(
     route: CasRoute,
     sequencer_inbox: &Address,
     tee_verifier_address: Address,
+    is_fresh_deployment: bool,
 ) -> PathBuf {
     let da_server = match route {
         CasRoute::Calldata => json!({"listen_addr": "0.0.0.0:8000"}),
@@ -318,6 +321,7 @@ fn write_cas_config(
                         }
                     }
                 },
+                "l1_http_url": L1_HTTP_URL,
                 "l1_ws_url": L1_WS_URL,
                 "sequencer_inbox_address": sequencer_inbox.to_string()
             }
@@ -327,12 +331,11 @@ fn write_cas_config(
             "max_in_flight": 1000
         },
         "key_manager": {
-            "rpc_url": "http://localhost:8545",
             "tee_verifier_address": format!("{tee_verifier_address}"),
             "attestation_verifier_url": "http://localhost:9000",
             "tee_type": "test"
         },
-        "is_fresh_deployment": true,
+        "is_fresh_deployment": is_fresh_deployment,
     });
 
     let path = std::env::temp_dir().join(match route {
@@ -345,6 +348,57 @@ fn write_cas_config(
     )
     .expect("failed to write CAS config");
     path
+}
+
+// https://github.com/EspressoSystems/nitro-contracts/blob/ec47f8578cc0837347af9de5bf6c34ed3e037d93/src/rollup/IRollupCore.sol#L26
+const ASSERTION_CREATED_TOPIC: alloy::primitives::B256 =
+    alloy::primitives::b256!("901c3aee23cf4478825462caaab375c606ab83516060388344f0650340753630");
+
+fn read_rollup_address() -> Address {
+    let path = Path::new(GENERATED_CONFIG_DIR).join("deployment.json");
+    let raw = std::fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
+    let deployment: serde_json::Value = serde_json::from_str(&raw)
+        .unwrap_or_else(|err| panic!("failed to parse {}: {err}", path.display()));
+    let value = deployment
+        .get("rollup")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_else(|| panic!("missing rollup in {}", path.display()));
+    value
+        .parse()
+        .unwrap_or_else(|err| panic!("invalid rollup address {value}: {err}"))
+}
+
+async fn wait_for_assertion_created(provider: &RootProvider, rollup: Address, from_block: u64) {
+    let filter = Filter::new()
+        .address(rollup)
+        .event_signature(ASSERTION_CREATED_TOPIC)
+        .from_block(from_block);
+
+    let deadline = Instant::now() + Duration::from_secs(5 * 60);
+    loop {
+        if Instant::now() >= deadline {
+            panic!(
+                "timed out waiting for AssertionCreated on rollup {rollup} from block {from_block}"
+            );
+        }
+        match provider.get_logs(&filter).await {
+            Ok(logs) if !logs.is_empty() => {
+                println!(
+                    "staker active: {} AssertionCreated event(s) on rollup {rollup}",
+                    logs.len()
+                );
+                return;
+            }
+            Ok(_) => {
+                println!("waiting for AssertionCreated on rollup {rollup}...");
+            }
+            Err(err) => {
+                println!("get_logs failed: {err}");
+            }
+        }
+        sleep(Duration::from_secs(5)).await;
+    }
 }
 
 fn read_sequencer_inbox_address() -> Address {
@@ -360,6 +414,47 @@ fn read_sequencer_inbox_address() -> Address {
     value
         .parse()
         .unwrap_or_else(|err| panic!("invalid sequencer-inbox address {value}: {err}"))
+}
+
+async fn count_batches_on_l1(
+    provider: &RootProvider,
+    from_block: u64,
+    sequencer_inbox: Address,
+) -> usize {
+    let filter = Filter::new()
+        .address(sequencer_inbox)
+        .event_signature(SequencerBatchDelivered::SIGNATURE_HASH)
+        .from_block(from_block);
+    provider
+        .get_logs(&filter)
+        .await
+        .map(|l| l.len())
+        .unwrap_or(0)
+}
+
+async fn connect_http(url: &str) -> RootProvider {
+    RootProvider::connect(url)
+        .await
+        .unwrap_or_else(|e| panic!("failed to connect to {url}: {e}"))
+}
+
+async fn wait_for_validator_to_reach(validator: &RootProvider, target: u64) {
+    let deadline = Instant::now() + Duration::from_secs(3 * 60);
+    loop {
+        let current = validator
+            .get_block_number()
+            .await
+            .unwrap_or_else(|e| panic!("failed to get validator block number: {e}"));
+        if current >= target {
+            println!("validator caught up: block {current} >= target {target}");
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!("timed out: validator at block {current}, target {target}");
+        }
+        println!("validator at block {current}, waiting to reach {target}");
+        sleep(Duration::from_secs(2)).await;
+    }
 }
 
 async fn wait_for_batches_on_l1(
@@ -445,6 +540,7 @@ async fn run_e2e(route: CasRoute) {
         route,
         &sequencer_inbox,
         tee_verifier_address,
+        true,
     );
     println!(
         "CAS config written to {} (starting_hotshot_height={starting_hotshot_height})",
@@ -463,6 +559,51 @@ async fn run_e2e(route: CasRoute) {
     println!("Poster started");
 
     wait_for_batches_on_l1(&l1, from_block, 2, sequencer_inbox).await;
+
+    nitro_node.stop_tx_generator();
+    println!("Load generator stopped; waiting for chain to settle");
+    sleep(Duration::from_secs(3)).await;
+
+    let sequencer = connect_http(SEQUENCER_HTTP_URL).await;
+    let sequencer_block = sequencer
+        .get_block_number()
+        .await
+        .expect("failed to get sequencer block number");
+    println!("Sequencer at block {sequencer_block}");
+
+    println!("Starting block validator...");
+    let rollup = read_rollup_address();
+    nitro_node.start_block_validator();
+
+    let validator = connect_http(VALIDATOR_HTTP_URL).await;
+    wait_for_validator_to_reach(&validator, sequencer_block).await;
+    let validator_block = validator
+        .get_block_number()
+        .await
+        .expect("failed to get validator block number");
+    println!("Block validator at block {validator_block} (sequencer was {sequencer_block})");
+
+    let sequencer_hash = sequencer
+        .get_block_by_number(sequencer_block.into())
+        .await
+        .expect("failed to get sequencer block")
+        .unwrap_or_else(|| panic!("sequencer block {sequencer_block} not found"))
+        .header
+        .hash;
+    let validator_hash = validator
+        .get_block_by_number(sequencer_block.into())
+        .await
+        .expect("failed to get validator block")
+        .unwrap_or_else(|| panic!("validator block {sequencer_block} not found"))
+        .header
+        .hash;
+    assert_eq!(
+        sequencer_hash, validator_hash,
+        "block hash mismatch at block {sequencer_block}: sequencer={sequencer_hash}, validator={validator_hash}"
+    );
+    println!("Block hashes match at block {sequencer_block}: {sequencer_hash}");
+
+    wait_for_assertion_created(&l1, rollup, from_block).await;
 
     drop(cas);
     drop(nitro_node);
@@ -502,6 +643,7 @@ async fn test_e2e_l1_reorg() {
         CasRoute::Calldata,
         &sequencer_inbox,
         tee_verifier_address,
+        true,
     );
 
     let probe_url = CasRoute::Calldata.rpc_url_local();
@@ -598,6 +740,104 @@ async fn test_e2e_l1_reorg() {
         "Post-resubmission message count: {post_resubmit_msg_count} \
          (recovered from {initial_message_count})"
     );
+
+    drop(cas);
+    drop(nitro_node);
+}
+
+/// Tests that batch submission pauses when CAS or the poster goes down, and
+/// resumes correctly after each component restarts.
+#[tokio::test]
+async fn test_e2e_restart() {
+    let route = CasRoute::Calldata;
+
+    let config = NitroNodeConfig {
+        no_l2_traffic: false,
+    };
+    let nitro_node = NitroNode::start(config).await;
+    println!("Nitro stack started (L1 + sequencer + espresso dev node)");
+
+    let sequencer_inbox = read_sequencer_inbox_address();
+    let tee_verifier_address = read_tee_verifier_address();
+
+    let espresso = EspressoDevNode::connect().await;
+    let starting_hotshot_height = espresso
+        .client
+        .fetch_latest_hotshot_block_height()
+        .await
+        .expect("failed to fetch latest hotshot block height")
+        + 1;
+
+    let cas_config_path = write_cas_config(
+        starting_hotshot_height,
+        route,
+        &sequencer_inbox,
+        tee_verifier_address,
+        true,
+    );
+    println!(
+        "CAS config written to {} (starting_hotshot_height={starting_hotshot_height})",
+        cas_config_path.display()
+    );
+
+    let probe_url = route.rpc_url_local();
+    let cas = spawn_cas_with_retries(&cas_config_path, &probe_url).await;
+
+    let l1 = connect_l1_ws_with_retries().await;
+    let from_block = l1
+        .get_block_number()
+        .await
+        .expect("failed to read L1 head block number");
+
+    nitro_node.start_poster(CAS_FEED_URL, route.rpc_url_for_poster());
+    println!("Poster started");
+
+    println!("Waiting for 2 batches...");
+    wait_for_batches_on_l1(&l1, from_block, 2, sequencer_inbox).await;
+    println!("2 batches confirmed on L1");
+
+    println!("Stopping CAS (simulating CAS downtime)...");
+    drop(cas);
+    println!("CAS stopped; sleeping 30 s to verify no new batches are submitted");
+    sleep(Duration::from_secs(30)).await;
+    let count_after_cas_down = count_batches_on_l1(&l1, from_block, sequencer_inbox).await;
+    assert!(
+        count_after_cas_down < 4,
+        "expected fewer than 4 batches while CAS was down, got {count_after_cas_down}"
+    );
+    println!("Confirmed: only {count_after_cas_down} batches during CAS downtime (< 4)");
+
+    println!(
+        "Restarting CAS (is_fresh_deployment=false, exercises EspressoBatchVerified recovery)..."
+    );
+    let cas_restart_config_path = write_cas_config(
+        starting_hotshot_height,
+        route,
+        &sequencer_inbox,
+        tee_verifier_address,
+        false,
+    );
+    let cas = spawn_cas_with_retries(&cas_restart_config_path, &probe_url).await;
+    println!("CAS restarted; waiting for batch count to reach 4...");
+    wait_for_batches_on_l1(&l1, from_block, 4, sequencer_inbox).await;
+    println!("4 batches confirmed on L1");
+
+    println!("Stopping poster (simulating nitro-node downtime)...");
+    nitro_node.stop_poster();
+    println!("Poster stopped; sleeping 30 s to verify no new batches are submitted");
+    sleep(Duration::from_secs(30)).await;
+    let count_after_poster_down = count_batches_on_l1(&l1, from_block, sequencer_inbox).await;
+    assert!(
+        count_after_poster_down < 6,
+        "expected fewer than 6 batches while poster was down, got {count_after_poster_down}"
+    );
+    println!("Confirmed: only {count_after_poster_down} batches during poster downtime (< 6)");
+
+    println!("Restarting poster...");
+    nitro_node.start_poster(CAS_FEED_URL, route.rpc_url_for_poster());
+    println!("Poster restarted; waiting for batch count to reach 6...");
+    wait_for_batches_on_l1(&l1, from_block, 6, sequencer_inbox).await;
+    println!("6 batches confirmed on L1 — restart test passed");
 
     drop(cas);
     drop(nitro_node);

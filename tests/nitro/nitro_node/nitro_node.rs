@@ -52,6 +52,8 @@ fn compose_down_status() -> std::io::Result<std::process::ExitStatus> {
             "deploy",
             "--profile",
             "anytrust",
+            "--profile",
+            "validator",
             "down",
             "-v",
             "--remove-orphans",
@@ -176,6 +178,26 @@ impl NitroNode {
             status.success(),
             "`docker compose up --wait daprovider-anytrust` failed"
         );
+    }
+
+    pub fn stop_poster(&self) {
+        run_compose(&["compose", "--profile", "poster", "stop", "poster"]);
+    }
+
+    pub fn start_block_validator(&self) {
+        run_compose(&[
+            "compose",
+            "--profile",
+            "validator",
+            "up",
+            "-d",
+            "--wait",
+            "validator",
+        ]);
+    }
+
+    pub fn stop_tx_generator(&self) {
+        run_compose(&["compose", "stop", "tx-generator"]);
     }
 
     pub fn stop(&self) {

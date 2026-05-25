@@ -4,7 +4,7 @@ use alloy::{
     providers::{Provider, ProviderBuilder},
     signers::local::PrivateKeySigner,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chain_adjacent_service::config::{RollupType, TeeType};
 use chain_adjacent_service::da_api;
 use chain_adjacent_service::espresso_client::client::EspressoClient;
@@ -55,13 +55,19 @@ async fn main() -> Result<()> {
 
             let operator_private_key = resolve_operator_private_key(overrides.as_ref())?;
             let operator_signer: PrivateKeySigner = operator_private_key.parse()?;
+            let l1_http_url: url::Url = config
+                .rollup
+                .stack
+                .l1_http_url
+                .parse()
+                .context("rollup.stack.l1_http_url is not a valid URL")?;
             let tee_verifier = TEEVerifier::new(
-                config.key_manager.rpc_url.clone(),
+                l1_http_url.clone(),
                 config.key_manager.tee_verifier_address,
                 operator_signer,
             );
 
-            let provider = ProviderBuilder::new().connect_http(config.key_manager.rpc_url.clone());
+            let provider = ProviderBuilder::new().connect_http(l1_http_url);
             let parent_chain_id = provider.get_chain_id().await?;
 
             let mut key_manager = if config.key_manager.tee_type == TeeType::Test {

@@ -66,7 +66,7 @@ impl Default for WsBroadcastServerConfig {
             client_timeout: Duration::from_secs(15),
             write_timeout: Duration::from_secs(2),
             require_version: false,
-            enable_compression: false,
+            enable_compression: true,
             require_compression: false,
         }
     }

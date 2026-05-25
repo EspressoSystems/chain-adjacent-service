@@ -32,24 +32,28 @@ pub struct ServiceConfig<C> {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct StreamerConfig {
-    pub max_sequencer_number_drift: u64,
     pub initial_backoff_ms: u64,
     pub max_backoff_ms: u64,
     pub retry_broadcast_delay_ms: u64,
 
     pub starting_pos: u64,
     pub starting_hotshot_height: u64,
+
+    /// Maximum number of entries stored with full data in the streamer queue.
+    /// Entries beyond this limit are stored as lightweight stubs (sequence_number, hotshot_height)
+    /// and are promoted back to full entries when finalization creates room.
+    pub max_full_queue_entries: usize,
 }
 
 impl Default for StreamerConfig {
     fn default() -> Self {
         Self {
-            max_sequencer_number_drift: 1000,
             initial_backoff_ms: 1000,
             max_backoff_ms: 30000,
             retry_broadcast_delay_ms: 300,
             starting_pos: 0,
             starting_hotshot_height: 0,
+            max_full_queue_entries: 1000,
         }
     }
 }
@@ -105,7 +109,6 @@ impl From<TeeType> for KmTeeType {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct KeyManagerConfig {
-    pub rpc_url: Url,
     pub tee_verifier_address: Address,
     pub attestation_verifier_url: Url,
     #[serde(default = "default_max_register_attempts")]
