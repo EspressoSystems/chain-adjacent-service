@@ -78,8 +78,8 @@ pub enum DaApiError {
     #[error("parsing error: {0}")]
     ParsingError(String),
 
-    #[error("dynamic batching resize requested by DA provider: {0}")]
-    DynamicBatchingResize(String),
+    #[error("message too large for current DA backend: {0}")]
+    MessageTooLarge(String),
 
     #[error("fallback to next writer requested by DA provider: {0}")]
     FallbackRequested(String),
@@ -132,7 +132,7 @@ impl From<JsonRpcError> for DaApiError {
     fn from(err: JsonRpcError) -> Self {
         match err.message {
             msg if msg.contains("message too large for current DA backend") => {
-                DaApiError::DynamicBatchingResize(msg)
+                DaApiError::MessageTooLarge(msg)
             }
             msg if msg.contains("DA provider requests fallback to next writer") => {
                 DaApiError::FallbackRequested(msg)
