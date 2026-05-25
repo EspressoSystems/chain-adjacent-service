@@ -26,10 +26,11 @@ module_inception = "allow"
 
 [dependencies]
 hex = "0.4.3"
-alloy = { version = "1.6.3", default-features = false, features = [
+alloy = { version = "2.0.5", default-features = false, features = [
     "sol-types",
     "serde",
     "rlp",
+    "rpc-types",
     "provider-http",
     "provider-ws",
     "pubsub",
