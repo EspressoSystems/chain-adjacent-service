@@ -251,6 +251,15 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
     let timeout: alloy::primitives::U64 = serde_json::from_value(params[1].clone())
         .map_err(|err| DaApiError::InvalidParams(format!("bad timeout: {err}")))?;
 
+    if let Some(max_size) = state.max_message_size
+        && data.len() as u64 > max_size
+    {
+        return Err(DaApiError::InvalidParams(format!(
+            "message size {} exceeds max calldata size {max_size}",
+            data.len(),
+        )));
+    }
+
     info!(
         "Intercepted store: message_len={}, timeout={}",
         data.len(),
@@ -483,6 +492,7 @@ async fn handle_recover_inner(
 mod tests {
     use alloy::primitives::{Bytes, FixedBytes, b256};
     use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder, rpc_params};
+    use reqwest::StatusCode;
     use serde_json::json;
     use std::{net::SocketAddr, str::FromStr, sync::Arc};
     use tokio::{sync::oneshot, task::JoinHandle};
@@ -513,7 +523,7 @@ mod tests {
         "0x010500000000000000000000" // 0x01, 0x05, then padding
     }
 
-    const TEST_CALLDATA_MAX_SIZE: u64 = 50_000;
+    const TEST_CALLDATA_MAX_SIZE: u64 = 1_000_000;
 
     fn spawn_server(addr: SocketAddr, config: Vec<DaProviderConfig>) -> JoinHandle<()> {
         let km = Arc::new(test_utils::test_key_manager());
@@ -1194,6 +1204,37 @@ mod tests {
             .await
             .expect("RPC call failed");
         assert_eq!(response["maxSize"], CUSTOM_MAX_SIZE);
+    }
+
+    #[tokio::test]
+    async fn test_store_rejects_oversized_calldata_batch() {
+        let addr: SocketAddr = "127.0.0.1:9962".parse().unwrap();
+        let _server = spawn_server(addr, vec![]);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let oversized = Bytes::from(vec![0u8; (TEST_CALLDATA_MAX_SIZE + 1) as usize]);
+        let response = reqwest::Client::new()
+            .post(format!("http://{addr}/arb/calldata"))
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "method": "daprovider_store",
+                "params": [oversized, 5000u64],
+                "id": 1,
+            }))
+            .send()
+            .await;
+
+        let response = response.expect("request should complete");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let err_text = response
+            .text()
+            .await
+            .expect("error body should be readable");
+        assert!(
+            err_text.contains("exceeds max calldata size"),
+            "unexpected error: {err_text}"
+        );
     }
 
     #[tokio::test]
