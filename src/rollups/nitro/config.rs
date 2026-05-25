@@ -11,6 +11,7 @@ pub struct NitroConfig {
 
     pub feed: FeedConfig,
 
+    pub l1_http_url: String,
     pub l1_ws_url: String,
     pub sequencer_inbox_address: Address,
     /// Number of blocks to step back per query when scanning for the latest
