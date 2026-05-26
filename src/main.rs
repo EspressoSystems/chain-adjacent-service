@@ -67,7 +67,7 @@ async fn main() -> Result<()> {
                 operator_signer,
             );
 
-            let provider = ProviderBuilder::new().connect_http(l1_http_url);
+            let provider = ProviderBuilder::new().connect_http(l1_http_url.clone());
             let parent_chain_id = provider.get_chain_id().await?;
 
             let mut key_manager = if config.key_manager.tee_type == TeeType::Test {
