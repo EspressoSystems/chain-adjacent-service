@@ -251,6 +251,12 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
     let timeout: alloy::primitives::U64 = serde_json::from_value(params[1].clone())
         .map_err(|err| DaApiError::InvalidParams(format!("bad timeout: {err}")))?;
 
+    if let Some(max_size) = state.max_message_size
+        && data.len() as u64 > max_size
+    {
+        return Err(DaApiError::DynamicBatchingResize);
+    }
+
     info!(
         "Intercepted store: message_len={}, timeout={}",
         data.len(),
@@ -514,7 +520,7 @@ mod tests {
         "0x010500000000000000000000" // 0x01, 0x05, then padding
     }
 
-    const TEST_CALLDATA_MAX_SIZE: u64 = 50_000;
+    const TEST_CALLDATA_MAX_SIZE: u64 = 1_000_000;
 
     fn spawn_server(addr: SocketAddr, config: Vec<DaProviderConfig>) -> JoinHandle<()> {
         let km = Arc::new(test_utils::test_key_manager());
@@ -1195,6 +1201,41 @@ mod tests {
             .await
             .expect("RPC call failed");
         assert_eq!(response["maxSize"], CUSTOM_MAX_SIZE);
+    }
+
+    #[tokio::test]
+    async fn test_store_rejects_oversized_calldata_batch() {
+        let addr: SocketAddr = "127.0.0.1:9962".parse().unwrap();
+        let _server = spawn_server(addr, vec![]);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let oversized = Bytes::from(vec![0u8; (TEST_CALLDATA_MAX_SIZE + 1) as usize]);
+        let response = reqwest::Client::new()
+            .post(format!("http://{addr}/arb/calldata"))
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "method": "daprovider_store",
+                "params": [oversized, 5000u64],
+                "id": 1,
+            }))
+            .send()
+            .await;
+
+        let response = response.expect("request should complete");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body: serde_json::Value = response
+            .json()
+            .await
+            .expect("response body should be valid JSON");
+        let err_msg = body["error"]["message"]
+            .as_str()
+            .expect("error message should be a string");
+
+        assert!(
+            err_msg.contains("message too large for current DA backend"),
+            "error must match Nitro's ErrMessageTooLarge, got: {err_msg}"
+        );
     }
 
     #[tokio::test]
