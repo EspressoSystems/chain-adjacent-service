@@ -104,25 +104,7 @@ impl<R: Rollup> Streamer<R> {
                         continue;
                     }
                     let new_finalized_idx = *l1_finalized_msg_idx.borrow();
-
-                    if new_finalized_idx > self.last_broadcast_position {
-                        // Rare but possible: L1's finalized index has advanced beyond what we've
-                        // last broadcast. In that case, advance `last_broadcast_position` to
-                        // avoid broadcasting messages that are already finalized on L1 and
-                        // therefore unnecessary for building future batches.
-                        self.last_broadcast_position = new_finalized_idx;
-                    }
-
-                    if new_finalized_idx <= self.finalized_idx {
-                        continue;
-                    }
-                    tracing::debug!("new finalized message index: {new_finalized_idx}");
-
-                    self.finalized_idx = new_finalized_idx;
-                    let split_at = self.queue.partition_point(|e| e.sequence_number() <= self.finalized_idx);
-                    self.queue.drain(0..split_at);
-                    self.stubs = self.stubs.split_off(&(self.finalized_idx + 1));
-                    self.promote_stubs().await;
+                    self.handle_finalization(new_finalized_idx).await;
                 },
                 batch_data = verification_receiver.recv() => {
                     let Some((batch_data, sender)) = batch_data else {
@@ -172,6 +154,32 @@ impl<R: Rollup> Streamer<R> {
                 }
             }
         }
+    }
+
+    pub async fn handle_finalization(&mut self, new_finalized_idx: u64) {
+        if new_finalized_idx > self.last_broadcast_position {
+            // Rare but possible: L1's finalized index has advanced beyond what we've
+            // last broadcast. In that case, advance `last_broadcast_position` to
+            // avoid broadcasting messages that are already finalized on L1 and
+            // therefore unnecessary for building future batches.
+            self.last_broadcast_position = new_finalized_idx;
+        }
+
+        if new_finalized_idx <= self.finalized_idx {
+            return;
+        }
+        tracing::debug!("new finalized message index: {new_finalized_idx}");
+
+        self.finalized_idx = new_finalized_idx;
+        let split_at = self
+            .queue
+            .partition_point(|e| e.sequence_number() <= self.finalized_idx);
+        self.queue.drain(0..split_at);
+        match self.finalized_idx.checked_add(1) {
+            Some(split_key) => self.stubs = self.stubs.split_off(&split_key),
+            None => self.stubs.clear(),
+        }
+        self.promote_stubs().await;
     }
 
     pub async fn handle_hotshot_transactions(
@@ -603,6 +611,51 @@ pub mod testing {
     }
 
     #[tokio::test]
+    async fn test_drifting_seq_overflows_to_stubs_and_finalization_clears() {
+        let mut s = make_streamer_with_cap(1, 3);
+
+        s.filter_messages(vec![
+            make_entry(2, 10),
+            make_entry(3, 11),
+            make_entry(4, 12),
+            make_entry(5, 13),
+            make_entry(6, 14),
+        ]);
+        assert_eq!(queue_positions(&s), vec![2, 3, 4]);
+        assert_eq!(stub_entries(&s), vec![(5, 13), (6, 14)]);
+        assert_eq!(s.last_broadcast_position, 0);
+
+        s.stubs.clear();
+        s.handle_finalization(4).await;
+        assert_eq!(queue_positions(&s), Vec::<u64>::new());
+        assert_eq!(s.finalized_idx, 4);
+        assert_eq!(s.last_broadcast_position, 4);
+
+        s.stubs.insert(5, 13);
+        s.stubs.insert(6, 14);
+        s.handle_finalization(5).await;
+        assert_eq!(stub_entries(&s), vec![(6, 14)]);
+        assert_eq!(s.finalized_idx, 5);
+    }
+
+    #[tokio::test]
+    async fn test_handle_finalization_noop_when_not_advancing() {
+        let mut s = make_streamer_with_cap(1, 5);
+        s.filter_messages(vec![make_entry(2, 10), make_entry(3, 11)]);
+        s.handle_finalization(2).await;
+        assert_eq!(queue_positions(&s), vec![3]);
+        assert_eq!(s.finalized_idx, 2);
+        assert_eq!(s.last_broadcast_position, 2);
+
+        // Stale/equal finalized idx must be a no-op (no queue mutation, no position regression).
+        s.handle_finalization(1).await;
+        s.handle_finalization(2).await;
+        assert_eq!(queue_positions(&s), vec![3]);
+        assert_eq!(s.finalized_idx, 2);
+        assert_eq!(s.last_broadcast_position, 2);
+    }
+
+    #[tokio::test]
     async fn test_poll_hotshot_blocks_and_process() {
         let node = EspressoDevNode::start().await;
 
@@ -688,6 +741,76 @@ pub mod testing {
                 "expected strictly ascending sequence numbers, got {positions:?}"
             );
         }
+
+        node.stop();
+    }
+
+    #[tokio::test]
+    async fn test_reverse_order_fills_stubs_then_finalization_promotes() {
+        let node = EspressoDevNode::start().await;
+
+        for seq in (1u64..=10).rev() {
+            let tx = make_mock_espresso_transaction(seq);
+            node.client
+                .submit_transaction(tx)
+                .await
+                .expect("failed to submit transaction");
+        }
+
+        // Cap the queue at 3 and start at seq=4 so seqs 1..=3 are ignored.
+        // last_broadcast_position stays at 0 since no contiguous run from 1 exists.
+        let mut streamer = Streamer::<MockRollup>::new(
+            node.client.clone(),
+            StreamerConfig {
+                initial_backoff_ms: 100,
+                max_backoff_ms: 500,
+                starting_hotshot_height: 1,
+                starting_pos: 4,
+                retry_broadcast_delay_ms: 1000,
+                max_full_queue_entries: 3,
+            },
+            RollupConfig {
+                namespace_id: 1918988905u64,
+                stack: (),
+                ty: Nitro,
+            },
+            AdvancedConfig::default(),
+            None,
+        );
+
+        let (tx, mut rx) = mpsc::channel(100);
+        let poller_config = streamer.config.clone();
+        let poller_client = streamer.client.clone();
+        let poller_ns = NamespaceId::from(streamer.rollup_config.namespace_id);
+        let poller = tokio::spawn(async move {
+            poll_hotshot_blocks(&poller_config, &poller_client, 0, poller_ns, tx).await;
+        });
+
+        let (feed_sender, _feed_rx) = mpsc::channel(100);
+        while streamer.queue.len() < 3 || streamer.stubs.len() < 4 {
+            match tokio::time::timeout(Duration::from_secs(30), rx.recv()).await {
+                Ok(Some((transactions, height))) => {
+                    streamer
+                        .handle_hotshot_transactions(transactions, height, feed_sender.clone())
+                        .await;
+                }
+                _ => break,
+            }
+        }
+        poller.abort();
+
+        assert_eq!(queue_positions(&streamer), vec![4, 5, 6]);
+        assert_eq!(stub_positions(&streamer), vec![7, 8, 9, 10]);
+
+        streamer.handle_finalization(6).await;
+        assert_eq!(queue_positions(&streamer), vec![7, 8, 9]);
+        assert_eq!(stub_positions(&streamer), vec![10]);
+        assert_eq!(streamer.finalized_idx, 6);
+        assert_eq!(streamer.last_broadcast_position, 6);
+
+        streamer.handle_finalization(9).await;
+        assert_eq!(queue_positions(&streamer), vec![10]);
+        assert!(streamer.stubs.is_empty());
 
         node.stop();
     }
