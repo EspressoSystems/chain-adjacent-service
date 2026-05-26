@@ -5,6 +5,9 @@ use std::{
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 const COMPOSE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/e2e/nitro");
+const UNUSED_CAS_FEED_URL: &str = "ws://unused.invalid";
+const UNUSED_CAS_CALLDATA_RPC_URL: &str = "http://unused.invalid";
+const UNUSED_SEQUENCER_INBOX_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
 
 #[derive(Debug, Clone, Default)]
 pub struct NitroNodeConfig {
@@ -21,12 +24,21 @@ fn compose_lifecycle_semaphore() -> &'static std::sync::Arc<Semaphore> {
     SEMAPHORE.get_or_init(|| std::sync::Arc::new(Semaphore::new(2)))
 }
 
-fn run_compose_result(args: &[&str]) -> Result<(), String> {
-    let status = Command::new("docker")
-        .args(args)
+fn compose_command() -> Command {
+    let mut command = Command::new("docker");
+    command
         .current_dir(COMPOSE_DIR)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
+        .env("CAS_FEED_URL", UNUSED_CAS_FEED_URL)
+        .env("CAS_CALLDATA_RPC_URL", UNUSED_CAS_CALLDATA_RPC_URL)
+        .env("SEQUENCER_INBOX_ADDRESS", UNUSED_SEQUENCER_INBOX_ADDRESS);
+    command
+}
+
+fn run_compose_result(args: &[&str]) -> Result<(), String> {
+    let status = compose_command()
+        .args(args)
         .status()
         .map_err(|err| format!("failed to run docker compose {args:?}: {err}"))?;
     if status.success() {
@@ -43,7 +55,7 @@ fn run_compose(args: &[&str]) {
 }
 
 fn compose_down_status() -> std::io::Result<std::process::ExitStatus> {
-    Command::new("docker")
+    compose_command()
         .args([
             "compose",
             "--profile",
@@ -58,9 +70,6 @@ fn compose_down_status() -> std::io::Result<std::process::ExitStatus> {
             "-v",
             "--remove-orphans",
         ])
-        .current_dir(COMPOSE_DIR)
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
         .status()
 }
 
@@ -107,7 +116,7 @@ impl NitroNode {
     }
 
     pub fn start_poster(&self, cas_feed_url: &str, cas_calldata_rpc_url: &str) {
-        let _ = Command::new("docker")
+        let _ = compose_command()
             .args([
                 "compose",
                 "--profile",
@@ -118,12 +127,9 @@ impl NitroNode {
                 "-v",
                 "poster",
             ])
-            .current_dir(COMPOSE_DIR)
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
             .status();
 
-        let status = Command::new("docker")
+        let status = compose_command()
             .args([
                 "compose",
                 "--profile",
@@ -135,9 +141,6 @@ impl NitroNode {
             ])
             .env("CAS_FEED_URL", cas_feed_url)
             .env("CAS_CALLDATA_RPC_URL", cas_calldata_rpc_url)
-            .current_dir(COMPOSE_DIR)
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
             .status()
             .expect("failed to run `docker compose up --wait poster`");
         assert!(status.success(), "`docker compose up --wait poster` failed");
@@ -158,7 +161,7 @@ impl NitroNode {
     }
 
     pub fn start_anytrust_daprovider(&self, sequencer_inbox_address: &str) {
-        let status = Command::new("docker")
+        let status = compose_command()
             .args([
                 "compose",
                 "--profile",
@@ -169,9 +172,6 @@ impl NitroNode {
                 "daprovider-anytrust",
             ])
             .env("SEQUENCER_INBOX_ADDRESS", sequencer_inbox_address)
-            .current_dir(COMPOSE_DIR)
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
             .status()
             .expect("failed to run `docker compose up --wait daprovider-anytrust`");
         assert!(
@@ -196,11 +196,20 @@ impl NitroNode {
         ]);
     }
 
+    pub fn pause_espresso_dev_node(&self) {
+        run_compose(&["compose", "pause", "espresso-dev-node"]);
+    }
+
+    pub fn unpause_espresso_dev_node(&self) {
+        run_compose(&["compose", "unpause", "espresso-dev-node"]);
+    }
+
     pub fn stop_tx_generator(&self) {
         run_compose(&["compose", "stop", "tx-generator"]);
     }
 
     pub fn stop(&self) {
+        let _ = run_compose_result(&["compose", "unpause", "espresso-dev-node"]);
         let status = compose_down_status();
 
         match status {
