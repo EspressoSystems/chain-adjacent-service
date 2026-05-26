@@ -26,15 +26,17 @@ module_inception = "allow"
 
 [dependencies]
 hex = "0.4.3"
-alloy = { version = "1.6.3", default-features = false, features = [
+alloy = { version = "2.0.5", default-features = false, features = [
     "sol-types",
     "serde",
     "rlp",
+    "rpc-types",
     "provider-http",
     "provider-ws",
     "pubsub",
     "contract",
     "signer-local",
+    "reqwest",
 ] }
 alloy-rlp = { version = "0.3.13", features = ["derive"] }
 anyhow = "1.0.101"
