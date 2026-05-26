@@ -254,10 +254,7 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
     if let Some(max_size) = state.max_message_size
         && data.len() as u64 > max_size
     {
-        return Err(DaApiError::InvalidParams(format!(
-            "message size {} exceeds max calldata size {max_size}",
-            data.len(),
-        )));
+        return Err(DaApiError::DynamicBatchingResize);
     }
 
     info!(
@@ -1227,13 +1224,17 @@ mod tests {
         let response = response.expect("request should complete");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-        let err_text = response
-            .text()
+        let body: serde_json::Value = response
+            .json()
             .await
-            .expect("error body should be readable");
+            .expect("response body should be valid JSON");
+        let err_msg = body["error"]["message"]
+            .as_str()
+            .expect("error message should be a string");
+
         assert!(
-            err_text.contains("exceeds max calldata size"),
-            "unexpected error: {err_text}"
+            err_msg.contains("message too large for current DA backend"),
+            "error must match Nitro's ErrMessageTooLarge, got: {err_msg}"
         );
     }
 
