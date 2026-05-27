@@ -42,7 +42,7 @@ use crate::nitro_node::nitro_node::{NitroNode, NitroNodeConfig};
 
 const CAS_BIN: &str = env!("CARGO_BIN_EXE_chain-adjacent-service");
 
-const CAS_FEED_URL: &str = "ws://host.docker.internal:9643";
+pub(crate) const CAS_FEED_URL: &str = "ws://host.docker.internal:9643";
 const CAS_CALLDATA_RPC_URL: &str = "http://host.docker.internal:8000/cas/arb/calldata";
 const CAS_ANYTRUST_RPC_URL: &str = "http://host.docker.internal:8000/cas/arb/anytrust";
 const CAS_LOCAL_BASE_URL: &str = "http://localhost:8000";
@@ -58,20 +58,20 @@ const GENERATED_CONFIG_DIR: &str =
 const TRUSTED_SEQUENCER_ADDRESS: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
 
 #[derive(Clone, Copy)]
-enum CasRoute {
+pub(crate) enum CasRoute {
     Calldata,
     Anytrust,
 }
 
 impl CasRoute {
-    fn rpc_url_for_poster(&self) -> &'static str {
+    pub(crate) fn rpc_url_for_poster(&self) -> &'static str {
         match self {
             CasRoute::Calldata => CAS_CALLDATA_RPC_URL,
             CasRoute::Anytrust => CAS_ANYTRUST_RPC_URL,
         }
     }
 
-    fn rpc_url_local(&self) -> String {
+    pub(crate) fn rpc_url_local(&self) -> String {
         let path = match self {
             CasRoute::Calldata => "/cas/arb/calldata",
             CasRoute::Anytrust => "/cas/arb/anytrust",
@@ -80,7 +80,7 @@ impl CasRoute {
     }
 }
 
-struct CasProcess(Child);
+pub(crate) struct CasProcess(Child);
 
 impl Drop for CasProcess {
     fn drop(&mut self) {
@@ -106,7 +106,7 @@ fn spawn_cas(config_path: &Path) -> CasProcess {
     CasProcess(child)
 }
 
-async fn spawn_cas_with_retries(config_path: &Path, probe_url: &str) -> CasProcess {
+pub(crate) async fn spawn_cas_with_retries(config_path: &Path, probe_url: &str) -> CasProcess {
     const MAX_ATTEMPTS: usize = 5;
     const PER_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -163,7 +163,7 @@ async fn wait_for_cas_ready(cas: &mut CasProcess, probe_url: &str) -> Result<(),
     }
 }
 
-async fn connect_l1_ws_with_retries() -> RootProvider {
+pub(crate) async fn connect_l1_ws_with_retries() -> RootProvider {
     const MAX_ATTEMPTS: usize = 10;
     let mut last_err: Option<String> = None;
     for attempt in 1..=MAX_ATTEMPTS {
@@ -256,7 +256,7 @@ async fn evm_revert(snapshot_id: &str) -> bool {
     resp["result"].as_bool().unwrap_or(false)
 }
 
-fn read_tee_verifier_address() -> Address {
+pub(crate) fn read_tee_verifier_address() -> Address {
     let path = Path::new(GENERATED_CONFIG_DIR).join("tee_verifier_address.txt");
     let content = std::fs::read_to_string(&path).unwrap_or_else(|_| {
         panic!(
@@ -284,13 +284,16 @@ fn read_tee_verifier_address() -> Address {
 /// Sets `is_fresh_deployment: true` so `resolve_config_with_checkpoint`
 /// preserves the `starting_hotshot_height` we wrote here instead of
 /// overwriting it with whatever it scans off L1.
-fn write_cas_config(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn write_cas_config(
     starting_hotshot_height: u64,
     route: CasRoute,
     sequencer_inbox: &Address,
     tee_verifier_address: Address,
     is_fresh_deployment: bool,
     client_timeout_secs: Option<u64>,
+    espresso_base_url_override: Option<&str>,
+    max_full_queue_entries: Option<usize>,
 ) -> PathBuf {
     let da_server = match route {
         CasRoute::Calldata => json!({"listen_addr": "0.0.0.0:8000"}),
@@ -307,17 +310,22 @@ fn write_cas_config(
     };
 
     let mut espresso_client = json!({
-        "base_url": "http://localhost:41000"
+        "base_url": espresso_base_url_override.unwrap_or("http://localhost:41000"),
     });
     if let Some(timeout) = client_timeout_secs {
         espresso_client["client_timeout_secs"] = json!(timeout);
     }
 
+    let mut streamer = json!({
+        "starting_hotshot_height": starting_hotshot_height,
+    });
+    if let Some(cap) = max_full_queue_entries {
+        streamer["max_full_queue_entries"] = json!(cap);
+    }
+
     let config = json!({
         "espresso_client": espresso_client,
-        "streamer": {
-            "starting_hotshot_height": starting_hotshot_height,
-        },
+        "streamer": streamer,
         "rollup": {
             "type": "nitro",
             "namespace_id": 412346,
@@ -418,7 +426,7 @@ async fn wait_for_assertion_created(provider: &RootProvider, rollup: Address, fr
     }
 }
 
-fn read_sequencer_inbox_address() -> Address {
+pub(crate) fn read_sequencer_inbox_address() -> Address {
     let path = Path::new(GENERATED_CONFIG_DIR).join("deployment.json");
     let raw = std::fs::read_to_string(&path)
         .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
@@ -475,7 +483,7 @@ async fn wait_for_validator_to_reach(validator: &impl Provider, target: u64) {
     }
 }
 
-async fn wait_for_batches_on_l1(
+pub(crate) async fn wait_for_batches_on_l1(
     provider: &RootProvider,
     from_block: u64,
     min: usize,
@@ -607,6 +615,8 @@ async fn run_e2e(route: CasRoute) {
         tee_verifier_address,
         true,
         None,
+        None,
+        None,
     );
     println!(
         "CAS config written to {} (starting_hotshot_height={starting_hotshot_height})",
@@ -710,6 +720,8 @@ async fn test_e2e_l1_reorg() {
         &sequencer_inbox,
         tee_verifier_address,
         true,
+        None,
+        None,
         None,
     );
 
@@ -842,6 +854,8 @@ async fn test_e2e_restart() {
         tee_verifier_address,
         true,
         None,
+        None,
+        None,
     );
     println!(
         "CAS config written to {} (starting_hotshot_height={starting_hotshot_height})",
@@ -884,6 +898,8 @@ async fn test_e2e_restart() {
         &sequencer_inbox,
         tee_verifier_address,
         false,
+        None,
+        None,
         None,
     );
     let cas = spawn_cas_with_retries(&cas_restart_config_path, &probe_url).await;
@@ -1027,6 +1043,8 @@ async fn test_e2e_anytrust_fallback_to_calldata() {
         tee_verifier_address,
         true,
         None,
+        None,
+        None,
     );
 
     let probe_url = CasRoute::Anytrust.rpc_url_local();
@@ -1084,6 +1102,8 @@ async fn test_e2e_espresso_downtime() {
         tee_verifier_address,
         true,
         Some(1),
+        None,
+        None,
     );
     let probe_url = route.rpc_url_local();
     let mut cas = spawn_cas_with_retries(&cas_config_path, &probe_url).await;
@@ -1181,6 +1201,8 @@ async fn test_e2e_malicious_batch_poster() {
         &sequencer_inbox,
         tee_verifier_address,
         true,
+        None,
+        None,
         None,
     );
 
