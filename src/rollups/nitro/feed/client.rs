@@ -177,8 +177,8 @@ impl BroadcasterClient {
         // Arbitrum broadcaster (e.g. when starting from seq 1) would otherwise
         // look like a clean disconnect. Lift the limits well above realistic
         // feed-message sizes.
-        const MAX_PAYLOAD_READ: usize = 32 * 1024 * 1024;
-        const MAX_READ_BUFFER: usize = 64 * 1024 * 1024;
+        const MAX_PAYLOAD_READ: usize = 100 * 1024 * 1024;
+        const MAX_READ_BUFFER: usize = 200 * 1024 * 1024;
 
         let options = if self.config.enable_compression {
             Options {
