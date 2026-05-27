@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+const DEFAULT_CALLDATA_MAX_SIZE: u64 = 1_000_000;
+
+#[derive(Default, Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct DaApiConfig {
     /// Server bind address
@@ -13,22 +15,11 @@ pub struct DaApiConfig {
     /// provider in response to `daprovider_getMaxMessageSize`. Mirrors the
     /// L1 calldata limit the poster has to stay under when batches are
     /// posted via the calldata path.
-    #[serde(default = "default_calldata_max_size")]
-    pub calldata_max_size: u64,
+    pub calldata_max_size: Option<u64>,
 }
 
-impl Default for DaApiConfig {
-    fn default() -> Self {
-        Self {
-            listen_addr: String::new(),
-            da_providers: Vec::new(),
-            calldata_max_size: default_calldata_max_size(),
-        }
-    }
-}
-
-fn default_calldata_max_size() -> u64 {
-    50_000
+pub fn resolve_calldata_max_size(explicit: Option<u64>) -> u64 {
+    explicit.unwrap_or(DEFAULT_CALLDATA_MAX_SIZE)
 }
 
 #[derive(Default, Debug, Clone, Deserialize, Serialize)]

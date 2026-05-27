@@ -12,26 +12,30 @@
 //   2. If set: TCP → proxy → CONNECT host:port, then hand the tunnelled
 //      stream to tokio-tungstenite which finishes the TLS + WS handshake.
 //   3. If unset: TCP → host:port → TLS + WS handshake (local / e2e path).
-// The resulting WebSocketStream is bridged to alloy's PubSub channels via a
-// backend task that mirrors alloy-transport-ws's WsBackend.
+// The resulting WebSocketStream is bridged to alloy's PubSub channels by
+// handing it to `alloy_transport_ws::WsBackend::from_socket(...).spawn()`,
+// which provides keepalive ping/pong and the standard message dispatch.
 
 use std::env;
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
-use alloy::pubsub::{ConnectionHandle, ConnectionInterface, PubSubConnect};
-use alloy::rpc::json_rpc::PubSubItem;
+use alloy::pubsub::{ConnectionHandle, PubSubConnect};
+use alloy::transports::ws::WsBackend;
 use alloy::transports::{TransportErrorKind, TransportResult};
 use anyhow::{Context, Result, bail};
 use async_http_proxy::http_connect_tokio;
-use futures::{SinkExt, StreamExt};
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, RootCertStore};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
-use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use url::Url;
 use yawc::{HttpRequestBuilder, MaybeTlsStream, Options, TcpWebSocket, WebSocket};
+
+/// Keepalive ping interval for the alloy WebSocket backend. Matches
+/// `alloy-transport-ws`'s own `DEFAULT_KEEPALIVE`.
+const WS_KEEPALIVE: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone)]
 pub struct WsProxyConnect {
@@ -85,7 +89,7 @@ impl PubSubConnect for WsProxyConnect {
             .map_err(TransportErrorKind::custom)?;
 
         let (handle, interface) = ConnectionHandle::new();
-        tokio::spawn(run_backend(ws, interface));
+        WsBackend::from_socket(ws, interface, WS_KEEPALIVE).spawn();
         Ok(handle)
     }
 }
@@ -186,76 +190,6 @@ async fn open_tcp(
         .await
         .map_err(TransportErrorKind::custom)?;
     Ok(tcp)
-}
-
-type WsStream<S> = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<S>>;
-
-async fn run_backend<S>(mut ws: WsStream<S>, mut interface: ConnectionInterface)
-where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
-{
-    loop {
-        tokio::select! {
-            biased;
-            outbound = interface.recv_from_frontend() => {
-                let Some(req) = outbound else { break };
-                if let Err(err) = ws.send(Message::Text(req.get().to_owned().into())).await {
-                    tracing::error!(%err, "ws send failed");
-                    interface.close_with_error();
-                    return;
-                }
-            }
-            inbound = ws.next() => {
-                let Some(msg) = inbound else {
-                    tracing::debug!("ws stream ended");
-                    interface.close_with_error();
-                    return;
-                };
-                let msg = match msg {
-                    Ok(m) => m,
-                    Err(err) => {
-                        tracing::error!(%err, "ws receive failed");
-                        interface.close_with_error();
-                        return;
-                    }
-                };
-                match msg {
-                    Message::Text(text) => {
-                        match serde_json::from_str::<PubSubItem>(&text) {
-                            Ok(item) => {
-                                if interface.send_to_frontend(item).is_err() {
-                                    return;
-                                }
-                            }
-                            Err(err) => {
-                                tracing::error!(%err, "ws text deserialize failed");
-                                interface.close_with_error();
-                                return;
-                            }
-                        }
-                    }
-                    Message::Close(frame) => {
-                        tracing::info!(?frame, "ws server sent close");
-                        interface.close_with_error();
-                        return;
-                    }
-                    Message::Ping(payload) => {
-                        if let Err(err) = ws.send(Message::Pong(payload)).await {
-                            tracing::error!(%err, "ws pong failed");
-                            interface.close_with_error();
-                            return;
-                        }
-                    }
-                    Message::Pong(_) | Message::Frame(_) => {}
-                    Message::Binary(_) => {
-                        tracing::error!("unexpected ws binary frame");
-                        interface.close_with_error();
-                        return;
-                    }
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]

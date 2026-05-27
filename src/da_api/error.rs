@@ -6,6 +6,11 @@ use thiserror::Error;
 
 use crate::da_api::nitro::types::JsonRpcError;
 
+/// Nitro's `ErrMessageTooLarge` error string (daprovider/writer.go).
+/// The daclient matches this via `strings.Contains` to restore error identity
+/// over RPC, causing the batch poster to invalidate and rebuild smaller.
+pub const NITRO_ERR_MESSAGE_TOO_LARGE: &str = "message too large for current DA backend";
+
 #[derive(Debug, Error)]
 pub enum DaApiError {
     #[error("certificate serialization failed: {0}")]
@@ -78,8 +83,8 @@ pub enum DaApiError {
     #[error("parsing error: {0}")]
     ParsingError(String),
 
-    #[error("dynamic batching resize requested by DA provider: {0}")]
-    DynamicBatchingResize(String),
+    #[error("message too large for current DA backend")]
+    DynamicBatchingResize,
 
     #[error("fallback to next writer requested by DA provider: {0}")]
     FallbackRequested(String),
@@ -131,9 +136,7 @@ impl From<DaApiError> for ErrorObjectOwned {
 impl From<JsonRpcError> for DaApiError {
     fn from(err: JsonRpcError) -> Self {
         match err.message {
-            msg if msg.contains("message too large for current DA backend") => {
-                DaApiError::DynamicBatchingResize(msg)
-            }
+            msg if msg.contains(NITRO_ERR_MESSAGE_TOO_LARGE) => DaApiError::DynamicBatchingResize,
             msg if msg.contains("DA provider requests fallback to next writer") => {
                 DaApiError::FallbackRequested(msg)
             }
@@ -145,7 +148,9 @@ impl From<JsonRpcError> for DaApiError {
 impl IntoResponse for DaApiError {
     fn into_response(self) -> Response {
         let status = match &self {
-            DaApiError::InvalidParams(_) => StatusCode::BAD_REQUEST,
+            DaApiError::InvalidParams(_) | DaApiError::DynamicBatchingResize => {
+                StatusCode::BAD_REQUEST
+            }
             DaApiError::DownstreamDa(_) => StatusCode::BAD_GATEWAY,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };

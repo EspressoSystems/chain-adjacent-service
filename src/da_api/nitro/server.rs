@@ -251,6 +251,12 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
     let timeout: alloy::primitives::U64 = serde_json::from_value(params[1].clone())
         .map_err(|err| DaApiError::InvalidParams(format!("bad timeout: {err}")))?;
 
+    if let Some(max_size) = state.max_message_size
+        && data.len() as u64 > max_size
+    {
+        return Err(DaApiError::DynamicBatchingResize);
+    }
+
     info!(
         "Intercepted store: message_len={}, timeout={}",
         data.len(),
@@ -482,6 +488,7 @@ async fn handle_recover_inner(
 #[cfg(test)]
 mod tests {
     use alloy::primitives::{Bytes, FixedBytes, b256};
+    use http::StatusCode;
     use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder, rpc_params};
     use serde_json::json;
     use std::{net::SocketAddr, str::FromStr, sync::Arc};
@@ -513,7 +520,7 @@ mod tests {
         "0x010500000000000000000000" // 0x01, 0x05, then padding
     }
 
-    const TEST_CALLDATA_MAX_SIZE: u64 = 50_000;
+    const TEST_CALLDATA_MAX_SIZE: u64 = 1_000_000;
 
     fn spawn_server(addr: SocketAddr, config: Vec<DaProviderConfig>) -> JoinHandle<()> {
         let km = Arc::new(test_utils::test_key_manager());
@@ -1104,7 +1111,7 @@ mod tests {
         let _server = spawn_server(
             addr,
             vec![DaProviderConfig {
-                name: "celestia".to_string(),
+                name: "anytrust".to_string(),
                 endpoint_url: mock_da_provider.uri(),
                 is_anytrust: false,
             }],
@@ -1112,7 +1119,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = HttpClientBuilder::default()
-            .build(format!("http://{addr}/arb/celestia"))
+            .build(format!("http://{addr}/arb/anytrust"))
             .unwrap();
 
         let response: Result<DAStoreResponse, _> = client
@@ -1197,6 +1204,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_store_rejects_oversized_calldata_batch() {
+        let addr: SocketAddr = "127.0.0.1:9962".parse().unwrap();
+        let _server = spawn_server(addr, vec![]);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let oversized = Bytes::from(vec![0u8; (TEST_CALLDATA_MAX_SIZE + 1) as usize]);
+        let response = reqwest::Client::new()
+            .post(format!("http://{addr}/arb/calldata"))
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "method": "daprovider_store",
+                "params": [oversized, 5000u64],
+                "id": 1,
+            }))
+            .send()
+            .await;
+
+        let response = response.expect("request should complete");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body: serde_json::Value = response
+            .json()
+            .await
+            .expect("response body should be valid JSON");
+        let err_msg = body["error"]["message"]
+            .as_str()
+            .expect("error message should be a string");
+
+        assert!(
+            err_msg.contains("message too large for current DA backend"),
+            "error must match Nitro's ErrMessageTooLarge, got: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_store_da_provider_generic_error_propagates() {
         let mock_da_provider = MockServer::start().await;
 
@@ -1238,5 +1280,264 @@ mod tests {
             err.contains("storage backend unavailable"),
             "unexpected error: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_store_message_too_large_error_propagates() {
+        let mock_da_provider = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "daprovider_store"})))
+            .respond_with(|req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                let id = body.get("id").cloned().unwrap_or(json!(1));
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {
+                        "code": -32000,
+                        "message": "message too large for current DA backend"
+                    }
+                }))
+            })
+            .mount(&mock_da_provider)
+            .await;
+
+        let addr: SocketAddr = "127.0.0.1:9973".parse().unwrap();
+        let _server = spawn_server(
+            addr,
+            vec![DaProviderConfig {
+                name: "celestia".to_string(),
+                endpoint_url: mock_da_provider.uri(),
+                is_anytrust: false,
+            }],
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}/arb/celestia"))
+            .unwrap();
+
+        let response: Result<DAStoreResponse, _> = client
+            .request("daprovider_store", rpc_params![valid_message(), 5000u64])
+            .await;
+
+        assert!(
+            response.is_err(),
+            "message-too-large should propagate as error, not silently succeed via calldata fallback"
+        );
+
+        let err = response.unwrap_err().to_string();
+        assert!(
+            err.contains("message too large for current DA backend"),
+            "error should contain the ErrMessageTooLarge message for batch poster detection, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_store_error_response_is_forwarded_unchanged() {
+        let cases = [
+            (
+                "127.0.0.1:9974",
+                StatusCode::OK,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "error": {
+                        "code": -32042,
+                        "message": "external DA provider rejected batch",
+                        "data": {
+                            "provider": "anytrust",
+                            "retryable": false
+                        }
+                    }
+                }),
+            ),
+            (
+                "127.0.0.1:9975",
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "error": {
+                        "code": -32050,
+                        "message": "external DA provider unavailable"
+                    }
+                }),
+            ),
+        ];
+
+        for (addr, status, downstream_error) in cases {
+            let mock_da_provider = MockServer::start().await;
+
+            Mock::given(method("POST"))
+                .and(body_partial_json(json!({"method": "daprovider_store"})))
+                .respond_with(
+                    ResponseTemplate::new(status.as_u16()).set_body_json(downstream_error.clone()),
+                )
+                .mount(&mock_da_provider)
+                .await;
+
+            let addr: SocketAddr = addr.parse().unwrap();
+            let _server = spawn_server(
+                addr,
+                vec![DaProviderConfig {
+                    name: "anytrust".to_string(),
+                    endpoint_url: mock_da_provider.uri(),
+                    is_anytrust: false,
+                }],
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+            let request_body = json!({
+                "jsonrpc": "2.0",
+                "method": "daprovider_store",
+                "params": [valid_message(), 5000u64],
+                "id": 1,
+            });
+
+            let response = reqwest::Client::new()
+                .post(format!("http://{addr}/arb/anytrust"))
+                .json(&request_body)
+                .send()
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), status);
+
+            let response_json: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(response_json, downstream_error);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_non_store_da_api_error_responses_are_forwarded_unchanged() {
+        let recover_params = json!([
+            1u64,
+            b256!("0x0000000000000000000000000000000000000000000000000000000000000000"),
+            Bytes::from(vec![0u8; 50])
+        ]);
+
+        let cases = [
+            (
+                "127.0.0.1:9976",
+                "daprovider_getMaxMessageSize",
+                json!([]),
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "error": {
+                        "code": -32060,
+                        "message": "max size backend unavailable"
+                    }
+                }),
+            ),
+            (
+                "127.0.0.1:9977",
+                "daprovider_getSupportedHeaderBytes",
+                json!([]),
+                StatusCode::BAD_GATEWAY,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "error": {
+                        "code": -32061,
+                        "message": "header bytes backend unavailable"
+                    }
+                }),
+            ),
+            (
+                "127.0.0.1:9978",
+                "daprovider_recoverPayload",
+                recover_params.clone(),
+                StatusCode::OK,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "error": {
+                        "code": -32062,
+                        "message": "recover payload failed"
+                    }
+                }),
+            ),
+            (
+                "127.0.0.1:9979",
+                "daprovider_collectPreimages",
+                recover_params.clone(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "error": {
+                        "code": -32063,
+                        "message": "collect preimages failed"
+                    }
+                }),
+            ),
+            (
+                "127.0.0.1:9980",
+                "daprovider_recoverPayloadAndPreimages",
+                recover_params,
+                StatusCode::BAD_GATEWAY,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "error": {
+                        "code": -32064,
+                        "message": "recover payload and preimages failed"
+                    }
+                }),
+            ),
+        ];
+
+        for (addr, method_name, params, status, downstream_error) in cases {
+            let mock_da_provider = MockServer::start().await;
+
+            Mock::given(method("POST"))
+                .and(body_partial_json(json!({"method": method_name})))
+                .respond_with(
+                    ResponseTemplate::new(status.as_u16()).set_body_json(downstream_error.clone()),
+                )
+                .mount(&mock_da_provider)
+                .await;
+
+            let addr: SocketAddr = addr.parse().unwrap();
+            let _server = spawn_server(
+                addr,
+                vec![DaProviderConfig {
+                    name: "anytrust".to_string(),
+                    endpoint_url: mock_da_provider.uri(),
+                    is_anytrust: false,
+                }],
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+            let request_body = json!({
+                "jsonrpc": "2.0",
+                "method": method_name,
+                "params": params,
+                "id": 1,
+            });
+
+            let response = reqwest::Client::new()
+                .post(format!("http://{addr}/arb/anytrust"))
+                .json(&request_body)
+                .send()
+                .await
+                .unwrap();
+
+            assert_eq!(
+                response.status(),
+                status,
+                "status mismatch for {method_name}"
+            );
+
+            let response_json: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(
+                response_json, downstream_error,
+                "body mismatch for {method_name}"
+            );
+        }
     }
 }
