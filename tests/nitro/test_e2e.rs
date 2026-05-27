@@ -5,12 +5,20 @@ use alloy::rpc::types::Filter;
 use alloy::sol;
 use alloy::sol_types::SolEvent;
 use alloy_rlp::Encodable;
+use axum::Router;
+use axum::extract::State;
+use axum::response::IntoResponse;
+use axum::routing::post;
 use reqwest::Client;
 use serde_json::{Value, json};
 use std::io::Cursor;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep};
 
 use chain_adjacent_service::espresso_e2e::espresso_dev_node::EspressoDevNode;
@@ -902,6 +910,149 @@ async fn test_e2e_restart() {
 
     drop(cas);
     drop(nitro_node);
+}
+
+struct MockDaProvider {
+    handle: JoinHandle<()>,
+    store_count: Arc<AtomicUsize>,
+}
+
+impl Drop for MockDaProvider {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
+async fn mock_handler(
+    State(store_count): State<Arc<AtomicUsize>>,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    let parsed: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    let id = parsed.get("id").cloned().unwrap_or(json!(1));
+    let method = parsed.get("method").and_then(Value::as_str).unwrap_or("");
+
+    let resp = match method {
+        "daprovider_store" => {
+            store_count.fetch_add(1, Ordering::SeqCst);
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {
+                    "code": -32000,
+                    "message": "DA provider requests fallback to next writer: mock always falls back",
+                },
+            })
+        }
+        "daprovider_getMaxMessageSize" => json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": { "maxSize": 100_000u64 },
+        }),
+        "daprovider_recoverPayload" => {
+            let cert_hex = parsed["params"][2].as_str().unwrap_or("0x");
+            let cert =
+                hex::decode(cert_hex.strip_prefix("0x").unwrap_or(cert_hex)).unwrap_or_default();
+            const SEQUENCER_HEADER_LEN: usize = 40;
+            let payload = if cert.len() > SEQUENCER_HEADER_LEN {
+                &cert[SEQUENCER_HEADER_LEN..]
+            } else {
+                &[][..]
+            };
+            use base64::Engine;
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "Payload": base64::engine::general_purpose::STANDARD.encode(payload),
+                },
+            })
+        }
+        _ => json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {},
+        }),
+    };
+
+    axum::Json(resp).into_response()
+}
+
+async fn start_mock_da_provider(addr: SocketAddr) -> MockDaProvider {
+    let store_count = Arc::new(AtomicUsize::new(0));
+    let app = Router::new()
+        .route("/", post(mock_handler))
+        .with_state(store_count.clone());
+
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .unwrap_or_else(|e| panic!("failed to bind mock DA provider on {addr}: {e}"));
+    println!("Mock DA provider listening on {addr}");
+
+    let handle = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    MockDaProvider {
+        handle,
+        store_count,
+    }
+}
+
+#[tokio::test]
+async fn test_e2e_anytrust_fallback_to_calldata() {
+    let mock_addr: SocketAddr = "127.0.0.1:9881".parse().unwrap();
+    let mock = start_mock_da_provider(mock_addr).await;
+
+    let config = NitroNodeConfig {
+        no_l2_traffic: false,
+    };
+    let nitro_node = NitroNode::start(config).await;
+    println!("Nitro stack started (L1 + sequencer + espresso dev node)");
+
+    let sequencer_inbox = read_sequencer_inbox_address();
+    let espresso = EspressoDevNode::connect().await;
+
+    let starting_hotshot_height = espresso
+        .client
+        .fetch_latest_hotshot_block_height()
+        .await
+        .expect("failed to fetch latest hotshot block height")
+        + 1;
+    let tee_verifier_address = read_tee_verifier_address();
+
+    let cas_config_path = write_cas_config(
+        starting_hotshot_height,
+        CasRoute::Anytrust,
+        &sequencer_inbox,
+        tee_verifier_address,
+        true,
+        None,
+    );
+
+    let probe_url = CasRoute::Anytrust.rpc_url_local();
+    let cas = spawn_cas_with_retries(&cas_config_path, &probe_url).await;
+
+    let l1 = connect_l1_ws_with_retries().await;
+    let from_block = l1
+        .get_block_number()
+        .await
+        .expect("failed to read L1 head block number");
+
+    nitro_node.start_poster(CAS_FEED_URL, CasRoute::Anytrust.rpc_url_for_poster());
+    println!("Poster started (anytrust route, mock DA always falls back)");
+
+    wait_for_batches_on_l1(&l1, from_block, 2, sequencer_inbox).await;
+
+    let store_calls = mock.store_count.load(Ordering::SeqCst);
+    assert!(
+        store_calls >= 2,
+        "expected mock DA to receive >=2 daprovider_store calls, got {store_calls}"
+    );
+    println!("Mock DA observed {store_calls} daprovider_store calls (all rejected with fallback)");
+
+    drop(cas);
+    drop(nitro_node);
+    drop(mock);
 }
 
 #[tokio::test]
