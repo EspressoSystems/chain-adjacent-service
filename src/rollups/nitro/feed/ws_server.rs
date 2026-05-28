@@ -389,7 +389,7 @@ async fn handle_connection(
         return Ok(());
     }
 
-    let client_count = shared.client_count.load(Ordering::Relaxed) + 1;
+    let client_count = shared.client_count.fetch_add(1, Ordering::Relaxed) + 1;
     tracing::info!(
         peer = %peer_addr,
         requested_seq_num = seq_num,
