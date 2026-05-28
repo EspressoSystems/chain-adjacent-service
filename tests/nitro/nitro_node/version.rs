@@ -3,9 +3,10 @@
 //   2. Create `e2e/nitro/versions/<tag>/nitro-config/` with version-specific configs.
 //   3. Run `just generate-l1-state <tag>` to populate `generated-config/`.
 //   4. Add the test functions that reference the new version.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NitroVersion {
     V3_9_9,
+    #[default]
     V3_10_0,
 }
 
@@ -76,10 +77,13 @@ impl NitroVersion {
             Self::V3_10_0 => "/usr/local/bin/anytrustserver",
         }
     }
-}
 
-impl Default for NitroVersion {
-    fn default() -> Self {
-        Self::V3_10_0
+    // v3.9.9: sequencer-inbox-address lives under `--data-availability.*`
+    // v3.10.0: moved to `--parent-chain.*`
+    pub fn das_inbox_flag(self) -> &'static str {
+        match self {
+            Self::V3_9_9 => "--data-availability.sequencer-inbox-address",
+            Self::V3_10_0 => "--parent-chain.sequencer-inbox-address",
+        }
     }
 }

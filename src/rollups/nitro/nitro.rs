@@ -432,10 +432,10 @@ pub fn verify_broadcast_feed_message_signature(
     // Try v3.10.0 hash scheme first, fall back to v3.9.9 scheme.
     let hash = match signature_hash_v2(msg, chain_id) {
         Ok(h) => {
-            if let Ok(signer) = recover_signer_address(h, &msg.signature) {
-                if sequencer_addresses.contains(&signer) {
-                    return Ok(());
-                }
+            if let Ok(signer) = recover_signer_address(h, &msg.signature)
+                && sequencer_addresses.contains(&signer)
+            {
+                return Ok(());
             }
             signature_hash_v1(msg, chain_id)?
         }

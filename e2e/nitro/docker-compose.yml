@@ -181,7 +181,7 @@ services:
     tmpfs:
       - /home/user/das-store
     command:
-      - --parent-chain.sequencer-inbox-address=none
+      - ${DAS_INBOX_FLAG:---parent-chain.sequencer-inbox-address=none}
       - --data-availability.key.key-dir=/das-keys
       - --data-availability.local-file-storage.enable
       - --data-availability.local-file-storage.data-dir=/home/user/das-store
@@ -204,7 +204,7 @@ services:
     tmpfs:
       - /home/user/das-store
     command:
-      - --parent-chain.sequencer-inbox-address=none
+      - ${DAS_INBOX_FLAG:---parent-chain.sequencer-inbox-address=none}
       - --data-availability.key.key-dir=/das-keys
       - --data-availability.local-file-storage.enable
       - --data-availability.local-file-storage.data-dir=/home/user/das-store
@@ -225,7 +225,7 @@ services:
     tmpfs:
       - /home/user/das-store
     command:
-      - --parent-chain.sequencer-inbox-address=none
+      - ${DAS_INBOX_FLAG:---parent-chain.sequencer-inbox-address=none}
       - --data-availability.local-file-storage.enable
       - --data-availability.local-file-storage.data-dir=/home/user/das-store
       - --enable-rest

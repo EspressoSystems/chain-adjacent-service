@@ -11,19 +11,10 @@ const UNUSED_CAS_FEED_URL: &str = "ws://unused.invalid";
 const UNUSED_CAS_CALLDATA_RPC_URL: &str = "http://unused.invalid";
 const UNUSED_SEQUENCER_INBOX_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct NitroNodeConfig {
     pub no_l2_traffic: bool,
     pub version: NitroVersion,
-}
-
-impl Default for NitroNodeConfig {
-    fn default() -> Self {
-        Self {
-            no_l2_traffic: false,
-            version: NitroVersion::default(),
-        }
-    }
 }
 
 pub struct NitroNode {
@@ -51,7 +42,11 @@ fn compose_command_for(version: NitroVersion) -> Command {
         .env("WASM_MODULE_ROOT", version.wasm_module_root())
         .env("VERSION_CONFIG_DIR", version.generated_config_dir())
         .env("VERSION_NITRO_CONFIG_DIR", version.nitro_config_dir())
-        .env("ANYTRUST_SERVER_BIN", version.anytrust_server_bin());
+        .env("ANYTRUST_SERVER_BIN", version.anytrust_server_bin())
+        .env(
+            "DAS_INBOX_FLAG",
+            format!("{}=none", version.das_inbox_flag()),
+        );
     command
 }
 
