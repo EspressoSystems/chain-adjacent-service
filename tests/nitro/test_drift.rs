@@ -41,6 +41,9 @@ struct ProxyState {
     drift_blocks: usize,
 }
 
+/// Reverse-proxies every request to the upstream Espresso node, then runs
+/// the response through `maybe_drift_response` so namespace block ranges can
+/// be rewritten before being returned to the caller.
 async fn proxy_handler(
     State(state): State<Arc<ProxyState>>,
     req: axum::extract::Request,
@@ -92,6 +95,10 @@ async fn proxy_handler(
         })
 }
 
+/// On the first successful namespace block-range response, captures the first
+/// transaction and removes it; lets `drift_blocks` worth of populated blocks
+/// pass through unmodified; then re-inserts the held transaction into the next
+/// block with transactions. Runs once per proxy lifetime.
 async fn maybe_drift_response(
     state: &Arc<ProxyState>,
     method: &axum::http::Method,
@@ -144,7 +151,9 @@ async fn maybe_drift_response(
             continue;
         }
 
-        let (origin_block, captured) = held_guard.take().expect("held is Some");
+        let (origin_block, captured) = held_guard
+            .take()
+            .expect("held tx must be present after capture branch and beyond drift window");
         txs.insert(0, captured);
         state.injected.store(true, Ordering::SeqCst);
         println!("[proxy] re-inserted held tx (origin block {origin_block}) into block {seq_num}");
@@ -158,6 +167,7 @@ async fn maybe_drift_response(
     }
 }
 
+/// Parses `/availability/block/{start}/{end}/...` and returns `(start, end)`.
 fn parse_block_range(path: &str) -> Option<(u64, u64)> {
     let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
     if parts.len() >= 5 && parts[0] == "availability" && parts[1] == "block" {
@@ -168,6 +178,8 @@ fn parse_block_range(path: &str) -> Option<(u64, u64)> {
     None
 }
 
+/// Binds the drifting reverse proxy on `ESPRESSO_PROXY_PORT` and returns a
+/// handle whose `Drop` aborts the server task.
 async fn start_espresso_proxy(drift_blocks: usize) -> EspressoProxy {
     let state = Arc::new(ProxyState {
         upstream: ESPRESSO_UPSTREAM.to_string(),
