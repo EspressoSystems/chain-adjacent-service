@@ -2,16 +2,9 @@
 # (Re)generate the pre-deployed L1 state used by e2e tests.
 # Run this after updating nitro-contracts or the rollup-creator image.
 #
-# Usage:
-#   just generate-l1-state           # default (v3.10.0)
-#   just generate-l1-state v3.9.9    # specific version
-# Optional env overrides:
-#   ROLLUP_CREATOR_IMAGE=ghcr.io/.../rollup-creator:<tag>
-#   ROLLUP_CREATOR_NITRO_CONTRACTS_BRANCH=<branch>
-#   ANYTRUST_TOOL_IMAGE=offchainlabs/nitro-node:<tag>
+# Usage: just generate-l1-state   (or run directly: ./e2e/nitro/generate-l1-state.sh)
 set -euo pipefail
 
-# Centralized cleanup: register paths here; single EXIT trap removes them all.
 CLEANUP_PATHS=()
 cleanup() {
     for p in "${CLEANUP_PATHS[@]}"; do

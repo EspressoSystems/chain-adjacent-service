@@ -3,6 +3,8 @@ use alloy::primitives::B256;
 use serde::{Deserialize, Serialize};
 use serde_with::{base64::Base64, serde_as};
 
+/// Top-level broadcast message from the Arbitrum feed server.
+/// Matches Go struct `BroadcastMessage` in broadcastclient/message/message.go
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BroadcastMessage {
@@ -13,6 +15,8 @@ pub struct BroadcastMessage {
     pub confirmed_sequence_number_message: Option<ConfirmedSequenceNumberMessage>,
 }
 
+/// Individual feed message containing a sequence number, message data, and signature.
+/// Matches Go struct `BroadcastFeedMessage`
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
