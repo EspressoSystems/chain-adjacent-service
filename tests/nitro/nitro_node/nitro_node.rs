@@ -46,6 +46,10 @@ fn compose_command_for(version: NitroVersion) -> Command {
         .env(
             "DAS_INBOX_FLAG",
             format!("{}=none", version.das_inbox_flag()),
+        )
+        .env(
+            "DAPROVIDER_ANYTRUST_EXTRA_CONFIG",
+            version.daprovider_anytrust_extra_config(),
         );
     command
 }
@@ -201,7 +205,8 @@ impl NitroNode {
     }
 
     pub fn start_anytrust_daprovider(&self, sequencer_inbox_address: &str) {
-        let status = compose_command_for(self.config.version)
+        let v = self.config.version;
+        let status = compose_command_for(v)
             .args([
                 "compose",
                 "--profile",
@@ -212,6 +217,14 @@ impl NitroNode {
                 "daprovider-anytrust",
             ])
             .env("SEQUENCER_INBOX_ADDRESS", sequencer_inbox_address)
+            .env(
+                "DAPROVIDER_L1_URL_FLAG",
+                format!("{}=ws://l1-anvil:8545", v.daprovider_l1_url_flag()),
+            )
+            .env(
+                "DAPROVIDER_INBOX_FLAG",
+                format!("{}={sequencer_inbox_address}", v.daprovider_inbox_flag()),
+            )
             .status()
             .expect("failed to run `docker compose up --wait daprovider-anytrust`");
         assert!(

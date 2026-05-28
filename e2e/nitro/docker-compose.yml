@@ -298,13 +298,9 @@ services:
         cat > /tmp/daprovider.json << DEOF
         {
           "mode": "anytrust",
-          "parent-chain": {
-            "node-url": "ws://l1-anvil:8545",
-            "sequencer-inbox-address": "${SEQUENCER_INBOX_ADDRESS}"
-          },
           "anytrust": {
             "enable": true,
-            "max-batch-size": 1000000,
+            ${DAPROVIDER_ANYTRUST_EXTRA_CONFIG}
             "request-timeout": "30s",
             "rpc-aggregator": {
               "enable": true,
@@ -331,7 +327,9 @@ services:
           "log-level": "DEBUG"
         }
         DEOF
-        exec /usr/local/bin/daprovider --conf.file=/tmp/daprovider.json
+        exec /usr/local/bin/daprovider --conf.file=/tmp/daprovider.json \
+          ${DAPROVIDER_L1_URL_FLAG} \
+          ${DAPROVIDER_INBOX_FLAG}
     volumes:
       - "./das-keys:/das-keys:ro"
     ports:

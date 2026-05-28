@@ -31,12 +31,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          docker system prune -af
+          df -h /
+
       - name: Pull Docker images
         working-directory: e2e/nitro
         run: |
           source .env
           docker pull "$NITRO_IMAGE" &
           docker pull "offchainlabs/nitro-node:v3.9.9-6b0af88" &
+          docker pull "ghcr.io/espressosystems/nitro-espresso-integration/nitro-node:pr-1052" &
           docker pull "$ESPRESSO_DEV_NODE_IMAGE" &
           docker pull ghcr.io/foundry-rs/foundry:latest &
           docker pull ghcr.io/foundry-rs/foundry:v1.5.1 &

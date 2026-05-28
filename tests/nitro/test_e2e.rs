@@ -488,7 +488,11 @@ fn connect_http(url: &str) -> impl Provider + Clone {
 async fn wait_for_poster_flush(provider: &RootProvider, from_block: u64, sequencer_inbox: Address) {
     let mut last_count = count_batches_on_l1(provider, from_block, sequencer_inbox).await;
     let mut stable_since = Instant::now();
+    let deadline = Instant::now() + Duration::from_secs(120);
     while stable_since.elapsed() < Duration::from_secs(8) {
+        if Instant::now() > deadline {
+            panic!("timed out waiting for poster flush to stabilize");
+        }
         sleep(Duration::from_secs(2)).await;
         let current = count_batches_on_l1(provider, from_block, sequencer_inbox).await;
         if current > last_count {
@@ -680,16 +684,16 @@ async fn run_e2e_versioned(route: CasRoute, version: NitroVersion) {
 
     wait_for_batches_on_l1(&l1, from_block, 2, sequencer_inbox).await;
 
-    nitro_node.stop_tx_generator();
-    println!("Load generator stopped; waiting for poster to flush remaining batches");
-    wait_for_poster_flush(&l1, from_block, sequencer_inbox).await;
-
     let sequencer = connect_http(SEQUENCER_HTTP_URL);
     let sequencer_block = sequencer
         .get_block_number()
         .await
         .expect("failed to get sequencer block number");
-    println!("Sequencer at block {sequencer_block}");
+
+    nitro_node.stop_tx_generator();
+    println!("Load generator stopped; waiting for poster to flush remaining batches");
+    wait_for_poster_flush(&l1, from_block, sequencer_inbox).await;
+    println!("Sequencer target block: {sequencer_block}");
 
     println!("Starting block validator...");
     let rollup = read_rollup_address(version);

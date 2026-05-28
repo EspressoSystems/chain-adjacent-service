@@ -420,6 +420,9 @@ pub fn verify_broadcast_feed_message_signature(
 }
 
 #[cfg(not(test))]
+static PREFER_V2: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+#[cfg(not(test))]
 pub fn verify_broadcast_feed_message_signature(
     chain_id: u64,
     sequencer_addresses: &[Address],
@@ -429,25 +432,39 @@ pub fn verify_broadcast_feed_message_signature(
         return Err(anyhow::anyhow!("empty feed signature"));
     }
 
-    // Try v3.10.0 hash scheme first, fall back to v3.9.9 scheme.
-    let hash = match signature_hash_v2(msg, chain_id) {
-        Ok(h) => {
-            if let Ok(signer) = recover_signer_address(h, &msg.signature)
-                && sequencer_addresses.contains(&signer)
-            {
-                return Ok(());
-            }
-            signature_hash_v1(msg, chain_id)?
-        }
-        Err(_) => signature_hash_v1(msg, chain_id)?,
-    };
+    let prefer_v2 = PREFER_V2.load(std::sync::atomic::Ordering::Relaxed);
 
-    let signer = recover_signer_address(hash, &msg.signature)?;
-    if !sequencer_addresses.contains(&signer) {
-        Err(anyhow::anyhow!(format!("signer is not valid: {signer:?}")))
-    } else {
-        Ok(())
+    if verify_with_scheme(prefer_v2, msg, chain_id, sequencer_addresses) {
+        return Ok(());
     }
+
+    if verify_with_scheme(!prefer_v2, msg, chain_id, sequencer_addresses) {
+        PREFER_V2.store(!prefer_v2, std::sync::atomic::Ordering::Relaxed);
+        return Ok(());
+    }
+
+    let hash = signature_hash_v2(msg, chain_id).or_else(|_| signature_hash_v1(msg, chain_id))?;
+    let signer = recover_signer_address(hash, &msg.signature)?;
+    Err(anyhow::anyhow!("signer is not valid: {signer:?}"))
+}
+
+#[cfg(not(test))]
+fn verify_with_scheme(
+    use_v2: bool,
+    msg: &BroadcastFeedMessage,
+    chain_id: u64,
+    sequencer_addresses: &[Address],
+) -> bool {
+    let hash = if use_v2 {
+        signature_hash_v2(msg, chain_id)
+    } else {
+        signature_hash_v1(msg, chain_id)
+    };
+    let Ok(h) = hash else { return false };
+    let Ok(signer) = recover_signer_address(h, &msg.signature) else {
+        return false;
+    };
+    sequencer_addresses.contains(&signer)
 }
 
 // v3.9.9: keccak256(prefix || seqNum || chainId || delayedMessagesRead || rlp(message))

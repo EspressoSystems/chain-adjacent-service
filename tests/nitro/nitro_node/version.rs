@@ -20,6 +20,7 @@ impl NitroVersion {
 
     pub fn poster_image(self) -> &'static str {
         match self {
+            // TODO: Replace with a stable release tag once available.
             Self::V3_9_9 => "ghcr.io/espressosystems/nitro-espresso-integration/nitro-node:pr-1052",
             Self::V3_10_0 => Self::V3_10_0.docker_image(),
         }
@@ -84,6 +85,31 @@ impl NitroVersion {
         match self {
             Self::V3_9_9 => "--data-availability.sequencer-inbox-address",
             Self::V3_10_0 => "--parent-chain.sequencer-inbox-address",
+        }
+    }
+
+    // v3.9.9: parent-chain config lives under `--anytrust.*`
+    // v3.10.0: moved to top-level `--parent-chain.*`
+    pub fn daprovider_l1_url_flag(self) -> &'static str {
+        match self {
+            Self::V3_9_9 => "--anytrust.parent-chain-node-url",
+            Self::V3_10_0 => "--parent-chain.node-url",
+        }
+    }
+
+    pub fn daprovider_inbox_flag(self) -> &'static str {
+        match self {
+            Self::V3_9_9 => "--anytrust.sequencer-inbox-address",
+            Self::V3_10_0 => "--parent-chain.sequencer-inbox-address",
+        }
+    }
+
+    // v3.9.9: daprovider rejects `anytrust.max-batch-size` as unknown
+    // v3.10.0: requires it (default is 0 which blocks all writes)
+    pub fn daprovider_anytrust_extra_config(self) -> &'static str {
+        match self {
+            Self::V3_9_9 => "",
+            Self::V3_10_0 => "\"max-batch-size\": 1000000,",
         }
     }
 }

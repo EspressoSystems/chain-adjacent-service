@@ -11,6 +11,15 @@
 #   ANYTRUST_TOOL_IMAGE=offchainlabs/nitro-node:<tag>
 set -euo pipefail
 
+# Centralized cleanup: register paths here; single EXIT trap removes them all.
+CLEANUP_PATHS=()
+cleanup() {
+    for p in "${CLEANUP_PATHS[@]}"; do
+        rm -rf "$p"
+    done
+}
+trap cleanup EXIT
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
@@ -29,7 +38,7 @@ build_rollup_creator_image() {
     local image_tag
 
     build_root="$(mktemp -d)"
-    trap 'rm -rf "$build_root"' RETURN
+    CLEANUP_PATHS+=("$build_root")
 
     image_tag="local/rollup-creator:${contracts_branch//[^a-zA-Z0-9_.-]/-}"
 
@@ -133,7 +142,7 @@ BLS_B=$(tr -d '\n' < "$DAS_KEYS_DIR/b/das_bls.pub")
 
 # Dump serialized keyset via anytrusttool
 DUMP_CONFIG=$(mktemp)
-trap 'rm -f "$DUMP_CONFIG"' EXIT
+CLEANUP_PATHS+=("$DUMP_CONFIG")
 cat > "$DUMP_CONFIG" <<EOF
 {
   "keyset": {
