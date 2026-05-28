@@ -172,18 +172,15 @@ impl NitroNode {
         .env("CAS_CALLDATA_RPC_URL", cas_calldata_rpc_url);
 
         let prefix = v.da_provider_flag_prefix();
-        cmd.env(
-            "DA_PROVIDER_FLAG_ENABLE",
-            format!("{prefix}.enable=true"),
-        )
-        .env(
-            "DA_PROVIDER_FLAG_WRITER",
-            format!("{prefix}.with-writer=true"),
-        )
-        .env(
-            "DA_PROVIDER_FLAG_RPC",
-            format!("{prefix}.rpc.url={cas_calldata_rpc_url}"),
-        );
+        cmd.env("DA_PROVIDER_FLAG_ENABLE", format!("{prefix}.enable=true"))
+            .env(
+                "DA_PROVIDER_FLAG_WRITER",
+                format!("{prefix}.with-writer=true"),
+            )
+            .env(
+                "DA_PROVIDER_FLAG_RPC",
+                format!("{prefix}.rpc.url={cas_calldata_rpc_url}"),
+            );
 
         let status = cmd
             .status()
@@ -192,17 +189,20 @@ impl NitroNode {
     }
 
     pub fn start_das_committee(&self) {
-        run_compose_for(self.config.version, &[
-            "compose",
-            "--profile",
-            "anytrust",
-            "up",
-            "-d",
-            "--wait",
-            "das-committee-a",
-            "das-committee-b",
-            "das-mirror",
-        ]);
+        run_compose_for(
+            self.config.version,
+            &[
+                "compose",
+                "--profile",
+                "anytrust",
+                "up",
+                "-d",
+                "--wait",
+                "das-committee-a",
+                "das-committee-b",
+                "das-mirror",
+            ],
+        );
     }
 
     pub fn start_anytrust_daprovider(&self, sequencer_inbox_address: &str) {
@@ -226,27 +226,39 @@ impl NitroNode {
     }
 
     pub fn stop_poster(&self) {
-        run_compose_for(self.config.version, &["compose", "--profile", "poster", "stop", "poster"]);
+        run_compose_for(
+            self.config.version,
+            &["compose", "--profile", "poster", "stop", "poster"],
+        );
     }
 
     pub fn start_block_validator(&self) {
-        run_compose_for(self.config.version, &[
-            "compose",
-            "--profile",
-            "validator",
-            "up",
-            "-d",
-            "--wait",
-            "validator",
-        ]);
+        run_compose_for(
+            self.config.version,
+            &[
+                "compose",
+                "--profile",
+                "validator",
+                "up",
+                "-d",
+                "--wait",
+                "validator",
+            ],
+        );
     }
 
     pub fn pause_espresso_dev_node(&self) {
-        run_compose_for(self.config.version, &["compose", "pause", "espresso-dev-node"]);
+        run_compose_for(
+            self.config.version,
+            &["compose", "pause", "espresso-dev-node"],
+        );
     }
 
     pub fn unpause_espresso_dev_node(&self) {
-        run_compose_for(self.config.version, &["compose", "unpause", "espresso-dev-node"]);
+        run_compose_for(
+            self.config.version,
+            &["compose", "unpause", "espresso-dev-node"],
+        );
     }
 
     pub fn stop_tx_generator(&self) {

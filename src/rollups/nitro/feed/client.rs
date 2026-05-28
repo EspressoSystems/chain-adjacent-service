@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use alloy::primitives::Address;
 use base64::Engine as _;
@@ -7,14 +7,13 @@ use serde::Deserialize;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use yawc::frame::OpCode;
-use yawc::{
-    CompressionLevel, DeflateOptions, HttpRequest, Options, TcpWebSocket, WebSocket, WebSocketError,
-};
+use yawc::{CompressionLevel, DeflateOptions, HttpRequest, Options, TcpWebSocket, WebSocketError};
 
 use super::message::BroadcastFeedMessage;
 use super::message::BroadcastMessage;
 use crate::rollups::nitro::nitro::verify_broadcast_feed_message_signature;
 use crate::utils::exponential_backoff;
+use crate::ws_proxy_connect::connect_yawc;
 
 pub const FEED_SERVER_VERSION: u64 = 2;
 pub const FEED_CLIENT_VERSION: u64 = 2;
@@ -173,6 +172,14 @@ impl BroadcasterClient {
             .header(HEADER_FEED_CLIENT_VERSION, FEED_CLIENT_VERSION.to_string())
             .header(HEADER_REQUESTED_SEQ_NUM, next_seq_num.to_string());
 
+        // yawc defaults max_payload_read to 1 MiB and silently terminates the
+        // stream on FrameTooLarge — a single oversized backlog frame from the
+        // Arbitrum broadcaster (e.g. when starting from seq 1) would otherwise
+        // look like a clean disconnect. Lift the limits well above realistic
+        // feed-message sizes.
+        const MAX_PAYLOAD_READ: usize = 100 * 1024 * 1024;
+        const MAX_READ_BUFFER: usize = 200 * 1024 * 1024;
+
         let options = if self.config.enable_compression {
             Options {
                 compression: Some(DeflateOptions {
@@ -183,29 +190,31 @@ impl BroadcasterClient {
                 no_delay: true,
                 ..Default::default()
             }
+            .with_limits(MAX_PAYLOAD_READ, MAX_READ_BUFFER)
         } else {
-            Options::default().without_compression().with_no_delay()
+            Options::default()
+                .without_compression()
+                .with_no_delay()
+                .with_limits(MAX_PAYLOAD_READ, MAX_READ_BUFFER)
         };
 
         self.validate_preflight_headers(&url, next_seq_num).await?;
 
         tracing::info!(url = %self.websocket_url, seq_num = next_seq_num, "connecting to arbitrum inbox message broadcaster");
 
-        // Connect with timeout, yawc handles TLS automatically and resolves DNS + TCP with ipv4/ipv6 internally
-        let ws = tokio::time::timeout(
-            self.config.timeout,
-            WebSocket::connect(url)
-                .with_request(request)
-                .with_options(options),
-        )
-        .await
-        .map_err(|_| {
-            BroadcasterClientError::Connection(format!(
-                "connection to {} timed out after {:?}",
-                self.websocket_url, self.config.timeout
-            ))
-        })?
-        .map_err(BroadcasterClientError::WebSocket)?;
+        // Route through HTTPS_PROXY (enclaver egress) so DNS is resolved by the
+        // proxy host, matching how reqwest already behaves for HTTPS. yawc's
+        // own WebSocket::connect does direct DNS and fails inside the enclave;
+        // see ws_proxy_connect for details.
+        let ws = tokio::time::timeout(self.config.timeout, connect_yawc(url, request, options))
+            .await
+            .map_err(|_| {
+                BroadcasterClientError::Connection(format!(
+                    "connection to {} timed out after {:?}",
+                    self.websocket_url, self.config.timeout
+                ))
+            })?
+            .map_err(|e| BroadcasterClientError::Connection(e.to_string()))?;
 
         self.first_reconnect_attempt = true;
         tracing::info!(
@@ -341,6 +350,10 @@ impl BroadcasterClient {
 
     async fn run_read_loop(&mut self, mut ws: TcpWebSocket) {
         let mut backoff = self.config.reconnect_initial_backoff;
+        // yawc collapses decode errors into a `None` from the stream, so a
+        // short-lived "clean" close is almost always a swallowed error
+        // (e.g. FrameTooLarge). Logging the elapsed time disambiguates them.
+        let mut connected_at = Instant::now();
 
         loop {
             let frame_result = tokio::time::timeout(self.config.timeout, ws.next()).await;
@@ -356,6 +369,7 @@ impl BroadcasterClient {
                 Ok(None) => {
                     tracing::warn!(
                         url = %self.websocket_url,
+                        elapsed_ms = connected_at.elapsed().as_millis() as u64,
                         "feed connection closed"
                     );
                 }
@@ -400,7 +414,10 @@ impl BroadcasterClient {
 
             // Attempt to reconnect
             match self.retry_connect().await {
-                Some(new_ws) => ws = new_ws,
+                Some(new_ws) => {
+                    ws = new_ws;
+                    connected_at = Instant::now();
+                }
                 None => return,
             }
         }

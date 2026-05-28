@@ -24,6 +24,8 @@ pub struct SecretOverrides {
     pub l1_ws_url: String,
     pub l1_http_url: url::Url,
     pub anytrust_endpoint: String,
+    pub starting_hotshot_height: u64,
+    pub is_fresh_deployment: bool,
     #[serde(default)]
     pub operator_private_key: Option<String>,
 }
@@ -141,6 +143,20 @@ pub fn apply_overrides_nitro(
         );
     }
 
+    cfg.streamer.starting_hotshot_height = overrides.starting_hotshot_height;
+    tracing::info!(
+        field = "streamer.starting_hotshot_height",
+        value = overrides.starting_hotshot_height,
+        "applied secret override"
+    );
+
+    cfg.is_fresh_deployment = overrides.is_fresh_deployment;
+    tracing::info!(
+        field = "is_fresh_deployment",
+        value = overrides.is_fresh_deployment,
+        "applied secret override"
+    );
+
     Ok(())
 }
 
@@ -232,7 +248,7 @@ mod tests {
                 "attestation_verifier_url": "http://localhost:9000",
                 "tee_type": "test"
             },
-            "is_fresh_deployment": true
+            "is_fresh_deployment": false
         }"#
     }
 
@@ -242,7 +258,9 @@ mod tests {
             "feed_ws_url": "wss://feed.example.com/feed",
             "l1_ws_url": "wss://l1.example.com",
             "l1_http_url": "https://l1.example.com",
-            "anytrust_endpoint": "http://anytrust.example.com:9876"
+            "anytrust_endpoint": "http://anytrust.example.com:9876",
+            "starting_hotshot_height": 9199257,
+            "is_fresh_deployment": true
         }"#
     }
 
@@ -257,11 +275,13 @@ mod tests {
             overrides.anytrust_endpoint,
             "http://anytrust.example.com:9876"
         );
+        assert_eq!(overrides.starting_hotshot_height, 9199257);
+        assert!(overrides.is_fresh_deployment);
     }
 
     #[test]
     fn parses_wrapped_secret_json() {
-        let wrapped = r#"{"parameters":"{ \"espresso_base_url\": \"https://query.example.com/\", \"feed_ws_url\": \"wss://feed.example.com/feed\", \"l1_ws_url\": \"wss://l1.example.com\", \"l1_http_url\": \"https://l1.example.com\", \"anytrust_endpoint\": \"http://anytrust.example.com:9876\" }"}"#;
+        let wrapped = r#"{"parameters":"{ \"espresso_base_url\": \"https://query.example.com/\", \"feed_ws_url\": \"wss://feed.example.com/feed\", \"l1_ws_url\": \"wss://l1.example.com\", \"l1_http_url\": \"https://l1.example.com\", \"anytrust_endpoint\": \"http://anytrust.example.com:9876\", \"starting_hotshot_height\": 9199257, \"is_fresh_deployment\": true }"}"#;
         let overrides = parse_secret_overrides(wrapped).unwrap();
         assert_eq!(overrides.espresso_base_url, "https://query.example.com/");
         assert_eq!(overrides.feed_ws_url, "wss://feed.example.com/feed");
@@ -271,6 +291,8 @@ mod tests {
             overrides.anytrust_endpoint,
             "http://anytrust.example.com:9876"
         );
+        assert_eq!(overrides.starting_hotshot_height, 9199257);
+        assert!(overrides.is_fresh_deployment);
     }
 
     #[test]
@@ -280,7 +302,35 @@ mod tests {
             "feed_ws_url": "wss://feed.example.com/feed",
             "l1_ws_url": "wss://l1.example.com",
             "l1_http_url": "not a url",
-            "anytrust_endpoint": "http://anytrust.example.com:9876"
+            "anytrust_endpoint": "http://anytrust.example.com:9876",
+            "starting_hotshot_height": 9199257,
+            "is_fresh_deployment": true
+        }"#;
+        assert!(parse_secret_overrides(bad).is_err());
+    }
+
+    #[test]
+    fn parsing_fails_when_starting_hotshot_height_missing() {
+        let bad = r#"{
+            "espresso_base_url": "https://query.example.com/",
+            "feed_ws_url": "wss://feed.example.com/feed",
+            "l1_ws_url": "wss://l1.example.com",
+            "l1_http_url": "https://l1.example.com",
+            "anytrust_endpoint": "http://anytrust.example.com:9876",
+            "is_fresh_deployment": true
+        }"#;
+        assert!(parse_secret_overrides(bad).is_err());
+    }
+
+    #[test]
+    fn parsing_fails_when_is_fresh_deployment_missing() {
+        let bad = r#"{
+            "espresso_base_url": "https://query.example.com/",
+            "feed_ws_url": "wss://feed.example.com/feed",
+            "l1_ws_url": "wss://l1.example.com",
+            "l1_http_url": "https://l1.example.com",
+            "anytrust_endpoint": "http://anytrust.example.com:9876",
+            "starting_hotshot_height": 9199257
         }"#;
         assert!(parse_secret_overrides(bad).is_err());
     }
@@ -309,6 +359,8 @@ mod tests {
             "l1_ws_url": "wss://l1.example.com",
             "l1_http_url": "https://l1.example.com",
             "anytrust_endpoint": "http://anytrust.example.com:9876",
+            "starting_hotshot_height": 9199257,
+            "is_fresh_deployment": true,
             "operator_private_key": "0xabc123"
         }"#;
         let overrides = parse_secret_overrides(with_key).unwrap();
@@ -323,6 +375,8 @@ mod tests {
             l1_ws_url: "wss://x".to_string(),
             l1_http_url: url::Url::parse("https://l1.example.com/").unwrap(),
             anytrust_endpoint: "http://x".to_string(),
+            starting_hotshot_height: 0,
+            is_fresh_deployment: true,
             operator_private_key: Some("0xfromsecret".to_string()),
         };
         let key = resolve_operator_private_key(Some(&overrides)).unwrap();
@@ -365,6 +419,9 @@ mod tests {
             .find(|p| p.name == "calldata")
             .unwrap();
         assert_eq!(calldata.endpoint_url, "");
+
+        assert_eq!(cfg.streamer.starting_hotshot_height, 9199257);
+        assert!(cfg.is_fresh_deployment);
 
         assert_no_placeholders_nitro(&cfg).unwrap();
     }
@@ -446,7 +503,8 @@ mod tests {
             .expect("espresso_base_url is not a valid URL");
 
         println!(
-            "fetched secret with fields: espresso_base_url, feed_ws_url, l1_ws_url, l1_http_url, anytrust_endpoint"
+            "fetched secret with fields: espresso_base_url, feed_ws_url, l1_ws_url, l1_http_url, anytrust_endpoint, starting_hotshot_height={}, is_fresh_deployment={}",
+            overrides.starting_hotshot_height, overrides.is_fresh_deployment
         );
     }
 }

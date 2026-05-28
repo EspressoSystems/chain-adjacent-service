@@ -19,9 +19,7 @@ impl NitroVersion {
 
     pub fn poster_image(self) -> &'static str {
         match self {
-            Self::V3_9_9 => {
-                "ghcr.io/espressosystems/nitro-espresso-integration/nitro-node:pr-1052"
-            }
+            Self::V3_9_9 => "ghcr.io/espressosystems/nitro-espresso-integration/nitro-node:pr-1052",
             Self::V3_10_0 => Self::V3_10_0.docker_image(),
         }
     }

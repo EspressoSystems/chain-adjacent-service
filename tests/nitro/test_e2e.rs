@@ -5,12 +5,20 @@ use alloy::rpc::types::Filter;
 use alloy::sol;
 use alloy::sol_types::SolEvent;
 use alloy_rlp::Encodable;
+use axum::Router;
+use axum::extract::State;
+use axum::response::IntoResponse;
+use axum::routing::post;
 use reqwest::Client;
 use serde_json::{Value, json};
 use std::io::Cursor;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep};
 
 use chain_adjacent_service::espresso_e2e::espresso_dev_node::EspressoDevNode;
@@ -35,7 +43,7 @@ use crate::nitro_node::version::NitroVersion;
 
 const CAS_BIN: &str = env!("CARGO_BIN_EXE_chain-adjacent-service");
 
-const CAS_FEED_URL: &str = "ws://host.docker.internal:9643";
+pub(crate) const CAS_FEED_URL: &str = "ws://host.docker.internal:9643";
 const CAS_CALLDATA_RPC_URL: &str = "http://host.docker.internal:8000/cas/arb/calldata";
 const CAS_ANYTRUST_RPC_URL: &str = "http://host.docker.internal:8000/cas/arb/anytrust";
 const CAS_LOCAL_BASE_URL: &str = "http://localhost:8000";
@@ -54,20 +62,20 @@ fn generated_config_dir(version: NitroVersion) -> PathBuf {
 }
 
 #[derive(Clone, Copy)]
-enum CasRoute {
+pub(crate) enum CasRoute {
     Calldata,
     Anytrust,
 }
 
 impl CasRoute {
-    fn rpc_url_for_poster(&self) -> &'static str {
+    pub(crate) fn rpc_url_for_poster(&self) -> &'static str {
         match self {
             CasRoute::Calldata => CAS_CALLDATA_RPC_URL,
             CasRoute::Anytrust => CAS_ANYTRUST_RPC_URL,
         }
     }
 
-    fn rpc_url_local(&self) -> String {
+    pub(crate) fn rpc_url_local(&self) -> String {
         let path = match self {
             CasRoute::Calldata => "/cas/arb/calldata",
             CasRoute::Anytrust => "/cas/arb/anytrust",
@@ -76,7 +84,7 @@ impl CasRoute {
     }
 }
 
-struct CasProcess(Child);
+pub(crate) struct CasProcess(Child);
 
 impl Drop for CasProcess {
     fn drop(&mut self) {
@@ -102,7 +110,7 @@ fn spawn_cas(config_path: &Path) -> CasProcess {
     CasProcess(child)
 }
 
-async fn spawn_cas_with_retries(config_path: &Path, probe_url: &str) -> CasProcess {
+pub(crate) async fn spawn_cas_with_retries(config_path: &Path, probe_url: &str) -> CasProcess {
     const MAX_ATTEMPTS: usize = 5;
     const PER_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -159,7 +167,7 @@ async fn wait_for_cas_ready(cas: &mut CasProcess, probe_url: &str) -> Result<(),
     }
 }
 
-async fn connect_l1_ws_with_retries() -> RootProvider {
+pub(crate) async fn connect_l1_ws_with_retries() -> RootProvider {
     const MAX_ATTEMPTS: usize = 10;
     let mut last_err: Option<String> = None;
     for attempt in 1..=MAX_ATTEMPTS {
@@ -252,7 +260,7 @@ async fn evm_revert(snapshot_id: &str) -> bool {
     resp["result"].as_bool().unwrap_or(false)
 }
 
-fn read_tee_verifier_address(version: NitroVersion) -> Address {
+pub(crate) fn read_tee_verifier_address(version: NitroVersion) -> Address {
     let path = generated_config_dir(version).join("tee_verifier_address.txt");
     let content = std::fs::read_to_string(&path).unwrap_or_else(|_| {
         panic!(
@@ -280,13 +288,16 @@ fn read_tee_verifier_address(version: NitroVersion) -> Address {
 /// Sets `is_fresh_deployment: true` so `resolve_config_with_checkpoint`
 /// preserves the `starting_hotshot_height` we wrote here instead of
 /// overwriting it with whatever it scans off L1.
-fn write_cas_config(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn write_cas_config(
     starting_hotshot_height: u64,
     route: CasRoute,
     sequencer_inbox: &Address,
     tee_verifier_address: Address,
     is_fresh_deployment: bool,
     client_timeout_secs: Option<u64>,
+    espresso_base_url_override: Option<&str>,
+    max_full_queue_entries: Option<usize>,
 ) -> PathBuf {
     let da_server = match route {
         CasRoute::Calldata => json!({"listen_addr": "0.0.0.0:8000"}),
@@ -303,17 +314,22 @@ fn write_cas_config(
     };
 
     let mut espresso_client = json!({
-        "base_url": "http://localhost:41000"
+        "base_url": espresso_base_url_override.unwrap_or("http://localhost:41000"),
     });
     if let Some(timeout) = client_timeout_secs {
         espresso_client["client_timeout_secs"] = json!(timeout);
     }
 
+    let mut streamer = json!({
+        "starting_hotshot_height": starting_hotshot_height,
+    });
+    if let Some(cap) = max_full_queue_entries {
+        streamer["max_full_queue_entries"] = json!(cap);
+    }
+
     let config = json!({
         "espresso_client": espresso_client,
-        "streamer": {
-            "starting_hotshot_height": starting_hotshot_height,
-        },
+        "streamer": streamer,
         "rollup": {
             "type": "nitro",
             "namespace_id": 412346,
@@ -431,7 +447,7 @@ async fn wait_for_assertion_created(
     }
 }
 
-fn read_sequencer_inbox_address(version: NitroVersion) -> Address {
+pub(crate) fn read_sequencer_inbox_address(version: NitroVersion) -> Address {
     let path = generated_config_dir(version).join("deployment.json");
     let raw = std::fs::read_to_string(&path)
         .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
@@ -469,11 +485,7 @@ fn connect_http(url: &str) -> impl Provider + Clone {
     )
 }
 
-async fn wait_for_poster_flush(
-    provider: &RootProvider,
-    from_block: u64,
-    sequencer_inbox: Address,
-) {
+async fn wait_for_poster_flush(provider: &RootProvider, from_block: u64, sequencer_inbox: Address) {
     let mut last_count = count_batches_on_l1(provider, from_block, sequencer_inbox).await;
     let mut stable_since = Instant::now();
     while stable_since.elapsed() < Duration::from_secs(8) {
@@ -507,7 +519,7 @@ async fn wait_for_validator_to_reach(validator: &impl Provider, target: u64) {
     }
 }
 
-async fn wait_for_batches_on_l1(
+pub(crate) async fn wait_for_batches_on_l1(
     provider: &RootProvider,
     from_block: u64,
     min: usize,
@@ -611,7 +623,10 @@ async fn run_e2e_versioned(route: CasRoute, version: NitroVersion) {
     };
 
     let nitro_node = NitroNode::start(config).await;
-    println!("Nitro stack started (L1 + sequencer + espresso dev node) [{}]", version.tag());
+    println!(
+        "Nitro stack started (L1 + sequencer + espresso dev node) [{}]",
+        version.tag()
+    );
 
     let sequencer_inbox = read_sequencer_inbox_address(version);
     let anytrust = matches!(route, CasRoute::Anytrust);
@@ -643,6 +658,8 @@ async fn run_e2e_versioned(route: CasRoute, version: NitroVersion) {
         &sequencer_inbox,
         tee_verifier_address,
         true,
+        None,
+        None,
         None,
     );
     println!(
@@ -725,9 +742,9 @@ async fn test_e2e_anytrust() {
 #[tokio::test]
 async fn test_e2e_l1_reorg() {
     let config = NitroNodeConfig {
-            no_l2_traffic: false,
-            ..Default::default()
-        };
+        no_l2_traffic: false,
+        ..Default::default()
+    };
 
     let nitro_node = NitroNode::start(config).await;
     let v = NitroVersion::default();
@@ -749,6 +766,8 @@ async fn test_e2e_l1_reorg() {
         &sequencer_inbox,
         tee_verifier_address,
         true,
+        None,
+        None,
         None,
     );
 
@@ -858,9 +877,9 @@ async fn test_e2e_restart() {
     let route = CasRoute::Calldata;
 
     let config = NitroNodeConfig {
-            no_l2_traffic: false,
-            ..Default::default()
-        };
+        no_l2_traffic: false,
+        ..Default::default()
+    };
     let nitro_node = NitroNode::start(config).await;
     let v = NitroVersion::default();
     println!("Nitro stack started (L1 + sequencer + espresso dev node)");
@@ -882,6 +901,8 @@ async fn test_e2e_restart() {
         &sequencer_inbox,
         tee_verifier_address,
         true,
+        None,
+        None,
         None,
     );
     println!(
@@ -926,6 +947,8 @@ async fn test_e2e_restart() {
         tee_verifier_address,
         false,
         None,
+        None,
+        None,
     );
     let cas = spawn_cas_with_retries(&cas_restart_config_path, &probe_url).await;
     println!("CAS restarted; waiting for batch count to reach 4...");
@@ -953,13 +976,160 @@ async fn test_e2e_restart() {
     drop(nitro_node);
 }
 
+struct MockDaProvider {
+    handle: JoinHandle<()>,
+    store_count: Arc<AtomicUsize>,
+}
+
+impl Drop for MockDaProvider {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
+async fn mock_handler(
+    State(store_count): State<Arc<AtomicUsize>>,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    let parsed: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    let id = parsed.get("id").cloned().unwrap_or(json!(1));
+    let method = parsed.get("method").and_then(Value::as_str).unwrap_or("");
+
+    let resp = match method {
+        "daprovider_store" => {
+            store_count.fetch_add(1, Ordering::SeqCst);
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {
+                    "code": -32000,
+                    "message": "DA provider requests fallback to next writer: mock always falls back",
+                },
+            })
+        }
+        "daprovider_getMaxMessageSize" => json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": { "maxSize": 100_000u64 },
+        }),
+        "daprovider_recoverPayload" => {
+            let cert_hex = parsed["params"][2].as_str().unwrap_or("0x");
+            let cert =
+                hex::decode(cert_hex.strip_prefix("0x").unwrap_or(cert_hex)).unwrap_or_default();
+            const SEQUENCER_HEADER_LEN: usize = 40;
+            let payload = if cert.len() > SEQUENCER_HEADER_LEN {
+                &cert[SEQUENCER_HEADER_LEN..]
+            } else {
+                &[][..]
+            };
+            use base64::Engine;
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "Payload": base64::engine::general_purpose::STANDARD.encode(payload),
+                },
+            })
+        }
+        _ => json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {},
+        }),
+    };
+
+    axum::Json(resp).into_response()
+}
+
+async fn start_mock_da_provider(addr: SocketAddr) -> MockDaProvider {
+    let store_count = Arc::new(AtomicUsize::new(0));
+    let app = Router::new()
+        .route("/", post(mock_handler))
+        .with_state(store_count.clone());
+
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .unwrap_or_else(|e| panic!("failed to bind mock DA provider on {addr}: {e}"));
+    println!("Mock DA provider listening on {addr}");
+
+    let handle = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    MockDaProvider {
+        handle,
+        store_count,
+    }
+}
+
+#[tokio::test]
+async fn test_e2e_anytrust_fallback_to_calldata() {
+    let mock_addr: SocketAddr = "127.0.0.1:9881".parse().unwrap();
+    let mock = start_mock_da_provider(mock_addr).await;
+
+    let config = NitroNodeConfig {
+        no_l2_traffic: false,
+        ..Default::default()
+    };
+    let nitro_node = NitroNode::start(config).await;
+    let v = NitroVersion::default();
+    println!("Nitro stack started (L1 + sequencer + espresso dev node)");
+
+    let sequencer_inbox = read_sequencer_inbox_address(v);
+    let espresso = EspressoDevNode::connect().await;
+
+    let starting_hotshot_height = espresso
+        .client
+        .fetch_latest_hotshot_block_height()
+        .await
+        .expect("failed to fetch latest hotshot block height")
+        + 1;
+    let tee_verifier_address = read_tee_verifier_address(v);
+
+    let cas_config_path = write_cas_config(
+        starting_hotshot_height,
+        CasRoute::Anytrust,
+        &sequencer_inbox,
+        tee_verifier_address,
+        true,
+        None,
+        None,
+        None,
+    );
+
+    let probe_url = CasRoute::Anytrust.rpc_url_local();
+    let cas = spawn_cas_with_retries(&cas_config_path, &probe_url).await;
+
+    let l1 = connect_l1_ws_with_retries().await;
+    let from_block = l1
+        .get_block_number()
+        .await
+        .expect("failed to read L1 head block number");
+
+    nitro_node.start_poster(CAS_FEED_URL, CasRoute::Anytrust.rpc_url_for_poster());
+    println!("Poster started (anytrust route, mock DA always falls back)");
+
+    wait_for_batches_on_l1(&l1, from_block, 2, sequencer_inbox).await;
+
+    let store_calls = mock.store_count.load(Ordering::SeqCst);
+    assert!(
+        store_calls >= 2,
+        "expected mock DA to receive >=2 daprovider_store calls, got {store_calls}"
+    );
+    println!("Mock DA observed {store_calls} daprovider_store calls (all rejected with fallback)");
+
+    drop(cas);
+    drop(nitro_node);
+    drop(mock);
+}
+
 #[tokio::test]
 async fn test_e2e_espresso_downtime() {
     let route = CasRoute::Calldata;
     let config = NitroNodeConfig {
-            no_l2_traffic: false,
-            ..Default::default()
-        };
+        no_l2_traffic: false,
+        ..Default::default()
+    };
     let nitro_node = NitroNode::start(config).await;
     let v = NitroVersion::default();
     println!("Nitro stack started (L1 + sequencer + espresso dev node)");
@@ -984,6 +1154,8 @@ async fn test_e2e_espresso_downtime() {
         tee_verifier_address,
         true,
         Some(1),
+        None,
+        None,
     );
     let probe_url = route.rpc_url_local();
     let mut cas = spawn_cas_with_retries(&cas_config_path, &probe_url).await;
@@ -1059,9 +1231,9 @@ async fn test_e2e_espresso_downtime() {
 #[tokio::test]
 async fn test_e2e_malicious_batch_poster() {
     let config = NitroNodeConfig {
-            no_l2_traffic: false,
-            ..Default::default()
-        };
+        no_l2_traffic: false,
+        ..Default::default()
+    };
     let nitro_node = NitroNode::start(config).await;
     let v = NitroVersion::default();
     println!("Nitro stack started (L1 + sequencer + espresso dev node)");
@@ -1083,6 +1255,8 @@ async fn test_e2e_malicious_batch_poster() {
         &sequencer_inbox,
         tee_verifier_address,
         true,
+        None,
+        None,
         None,
     );
 
