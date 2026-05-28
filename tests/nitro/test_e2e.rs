@@ -45,9 +45,12 @@ const CAS_BIN: &str = env!("CARGO_BIN_EXE_chain-adjacent-service");
 pub(crate) const CAS_FEED_URL: &str = "ws://host.docker.internal:9643";
 const CAS_CALLDATA_RPC_URL: &str = "http://host.docker.internal:8000/cas/arb/calldata";
 const CAS_ANYTRUST_RPC_URL: &str = "http://host.docker.internal:8000/cas/arb/anytrust";
+const CAS_EXTERNAL_DA_ANYTRUST_RPC_URL: &str =
+    "http://host.docker.internal:8000/cas/arb/external-da-anytrust";
 const CAS_LOCAL_BASE_URL: &str = "http://localhost:8000";
 
 const ANYTRUST_DAPROVIDER_URL: &str = "http://localhost:9881";
+const EXTERNAL_DA_MOCK_URL: &str = "http://localhost:9882";
 
 const L1_WS_URL: &str = "ws://localhost:8545";
 const L1_HTTP_URL: &str = "http://localhost:8545";
@@ -61,6 +64,7 @@ const TRUSTED_SEQUENCER_ADDRESS: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92
 pub(crate) enum CasRoute {
     Calldata,
     Anytrust,
+    ExternalDaAnytrustFallback,
 }
 
 impl CasRoute {
@@ -68,6 +72,7 @@ impl CasRoute {
         match self {
             CasRoute::Calldata => CAS_CALLDATA_RPC_URL,
             CasRoute::Anytrust => CAS_ANYTRUST_RPC_URL,
+            CasRoute::ExternalDaAnytrustFallback => CAS_EXTERNAL_DA_ANYTRUST_RPC_URL,
         }
     }
 
@@ -75,6 +80,7 @@ impl CasRoute {
         let path = match self {
             CasRoute::Calldata => "/cas/arb/calldata",
             CasRoute::Anytrust => "/cas/arb/anytrust",
+            CasRoute::ExternalDaAnytrustFallback => "/cas/arb/external-da-anytrust",
         };
         format!("{CAS_LOCAL_BASE_URL}{path}")
     }
@@ -94,25 +100,41 @@ const TEST_OPERATOR_PRIVATE_KEY: &str =
     "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 
 fn spawn_cas(config_path: &Path) -> CasProcess {
+    spawn_cas_with_stdio(config_path, Stdio::inherit(), Stdio::inherit())
+}
+
+fn spawn_cas_to_file(config_path: &Path, log_path: &Path) -> CasProcess {
+    let stdout = std::fs::File::create(log_path)
+        .unwrap_or_else(|e| panic!("create CAS log file {}: {e}", log_path.display()));
+    let stderr = stdout
+        .try_clone()
+        .expect("clone CAS log file handle for stderr");
+    spawn_cas_with_stdio(config_path, Stdio::from(stdout), Stdio::from(stderr))
+}
+
+fn spawn_cas_with_stdio(config_path: &Path, stdout: Stdio, stderr: Stdio) -> CasProcess {
     let child = Command::new(CAS_BIN)
         .arg("--config")
         .arg(config_path)
         .env("OPERATOR_PRIVATE_KEY", TEST_OPERATOR_PRIVATE_KEY)
         .env("RUST_LOG", "warn")
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
+        .stdout(stdout)
+        .stderr(stderr)
         .spawn()
         .expect("failed to spawn CAS binary");
     CasProcess(child)
 }
 
-pub(crate) async fn spawn_cas_with_retries(config_path: &Path, probe_url: &str) -> CasProcess {
+async fn spawn_cas_with_retries_inner<F: FnMut() -> CasProcess>(
+    mut spawn: F,
+    probe_url: &str,
+) -> CasProcess {
     const MAX_ATTEMPTS: usize = 5;
     const PER_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(60);
 
     for attempt in 1..=MAX_ATTEMPTS {
         println!("CAS spawn attempt {attempt}/{MAX_ATTEMPTS}");
-        let mut cas = spawn_cas(config_path);
+        let mut cas = spawn();
 
         match tokio::time::timeout(PER_ATTEMPT_TIMEOUT, wait_for_cas_ready(&mut cas, probe_url))
             .await
@@ -129,6 +151,18 @@ pub(crate) async fn spawn_cas_with_retries(config_path: &Path, probe_url: &str) 
         sleep(Duration::from_secs(2)).await;
     }
     panic!("CAS failed to become ready after {MAX_ATTEMPTS} attempts");
+}
+
+pub(crate) async fn spawn_cas_with_retries(config_path: &Path, probe_url: &str) -> CasProcess {
+    spawn_cas_with_retries_inner(|| spawn_cas(config_path), probe_url).await
+}
+
+pub(crate) async fn spawn_cas_with_retries_to_file(
+    config_path: &Path,
+    probe_url: &str,
+    log_path: &Path,
+) -> CasProcess {
+    spawn_cas_with_retries_inner(|| spawn_cas_to_file(config_path, log_path), probe_url).await
 }
 
 async fn wait_for_cas_ready(cas: &mut CasProcess, probe_url: &str) -> Result<(), String> {
@@ -307,6 +341,20 @@ pub(crate) fn write_cas_config(
                 }
             ]
         }),
+        CasRoute::ExternalDaAnytrustFallback => json!({
+            "listen_addr": "0.0.0.0:8000",
+            // Set the calldata max size to an extremely low value, which
+            // make the poster impossible to post batches through calldata path
+            "calldata_max_size": 1,
+            "da_providers": [
+                {
+                    "name": "external-da-anytrust",
+                    "endpoint_url": EXTERNAL_DA_MOCK_URL,
+                    "is_anytrust": false,
+                    "anytrust_fallback_url": ANYTRUST_DAPROVIDER_URL,
+                }
+            ]
+        }),
     };
 
     let mut espresso_client = json!({
@@ -366,6 +414,7 @@ pub(crate) fn write_cas_config(
     let path = std::env::temp_dir().join(match route {
         CasRoute::Calldata => "cas-config-e2e-calldata.json",
         CasRoute::Anytrust => "cas-config-e2e-anytrust.json",
+        CasRoute::ExternalDaAnytrustFallback => "cas-config-e2e-external-da-anytrust-fallback.json",
     });
     std::fs::write(
         &path,
@@ -983,6 +1032,13 @@ async fn mock_handler(
                 },
             })
         }
+        "daprovider_getSupportedHeaderBytes" => {
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {"headerBytes": "0x71"},
+            })
+        }
         _ => json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -1248,4 +1304,93 @@ async fn test_e2e_malicious_batch_poster() {
 
     drop(cas);
     drop(nitro_node);
+}
+
+#[tokio::test]
+async fn test_e2e_external_da_fallback_to_anytrust() {
+    let route = CasRoute::ExternalDaAnytrustFallback;
+    let mock_addr: SocketAddr = "127.0.0.1:9882".parse().unwrap();
+    let mock = start_mock_da_provider(mock_addr).await;
+
+    let nitro_node = NitroNode::start(NitroNodeConfig {
+        no_l2_traffic: false,
+    })
+    .await;
+    println!("Nitro stack started");
+
+    let sequencer_inbox = read_sequencer_inbox_address();
+    nitro_node.start_das_committee();
+    nitro_node.start_anytrust_daprovider(&sequencer_inbox.to_string());
+    println!("anytrust sidecar started on {ANYTRUST_DAPROVIDER_URL}");
+
+    let espresso = EspressoDevNode::connect().await;
+    let starting_hotshot_height = espresso
+        .client
+        .fetch_latest_hotshot_block_height()
+        .await
+        .expect("failed to fetch latest hotshot block height")
+        + 1;
+    let tee_verifier_address = read_tee_verifier_address();
+
+    let cas_config_path = write_cas_config(
+        starting_hotshot_height,
+        route,
+        &sequencer_inbox,
+        tee_verifier_address,
+        true,
+        None,
+        None,
+        None,
+    );
+
+    let probe_url = route.rpc_url_local();
+    let cas_log_path = std::env::temp_dir().join("cas-e2e-external-da-anytrust-fallback.log");
+    let cas = spawn_cas_with_retries_to_file(&cas_config_path, &probe_url, &cas_log_path).await;
+
+    let l1 = connect_l1_ws_with_retries().await;
+    let from_block = l1
+        .get_block_number()
+        .await
+        .expect("failed to read L1 head block number");
+
+    nitro_node.start_poster(CAS_FEED_URL, route.rpc_url_for_poster());
+    println!("Poster started (external-da route, mock primary falls back to anytrust)");
+
+    wait_for_batches_on_l1(&l1, from_block, 2, sequencer_inbox).await;
+
+    let store_calls = mock.store_count.load(Ordering::SeqCst);
+    assert!(
+        store_calls >= 2,
+        "expected mock primary to receive >=2 daprovider_store calls, got {store_calls}"
+    );
+
+    drop(cas);
+
+    let cas_logs = std::fs::read_to_string(&cas_log_path)
+        .unwrap_or_else(|e| panic!("read CAS log {}: {e}", cas_log_path.display()));
+    let fallback_line = "primary DA requested fallback; trying anytrust sidecar";
+    assert!(
+        cas_logs.contains(fallback_line),
+        "CAS log at {} did not contain the anytrust-fallback warning \"{fallback_line}\"; \
+         this is the only positive proof that the fallback path ran. Full log:\n{cas_logs}",
+        cas_log_path.display(),
+    );
+    for forbidden in [
+        "anytrust also requested fallback; using calldata",
+        "DA provider requested fallback; using calldata",
+    ] {
+        assert!(
+            !cas_logs.contains(forbidden),
+            "CAS log at {} unexpectedly contains the calldata-fallback warning \"{forbidden}\"; \
+             the anytrust sidecar was supposed to absorb every store. Full log:\n{cas_logs}",
+            cas_log_path.display(),
+        );
+    }
+    println!(
+        "Mock primary rejected {store_calls} store calls; CAS logs confirm anytrust-fallback \
+         path was taken (calldata_max_size=100 makes calldata fallback infeasible)"
+    );
+
+    drop(nitro_node);
+    drop(mock);
 }
