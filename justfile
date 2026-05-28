@@ -75,8 +75,9 @@ test:
 
 # (Re)generate the pre-deployed L1 state used by e2e tests.
 # Run this after updating nitro-contracts or the rollup-creator image.
-generate-l1-state:
-    ./e2e/nitro/generate-l1-state.sh
+# Pass a version tag (e.g. v3.9.9) to generate for a specific version.
+generate-l1-state version="":
+    ./e2e/nitro/generate-l1-state.sh {{version}}
 
 # ─── Docker compose helpers ───────────────────────────────────────────────────
 

@@ -1,0 +1,85 @@
+{
+    "ensure-rollup-deployment": false,
+    "parent-chain": {
+        "connection": {
+            "url": "http://l1-anvil:8545"
+        }
+    },
+    "chain": {
+        "id": 412346,
+        "info-files": [
+            "/config/deployed_chain_info.json"
+        ]
+    },
+    "node": {
+        "parent-chain-reader": {
+            "poll-interval": "1s"
+        },
+        "inbox-reader": {
+            "check-delay": "1s"
+        },
+        "staker": {
+            "enable": false
+        },
+        "sequencer": false,
+        "dangerous": {
+            "no-sequencer-coordinator": true,
+            "disable-blob-reader": true
+        },
+        "delayed-sequencer": {
+            "enable": false
+        },
+        "seq-coordinator": {
+            "enable": false
+        },
+        "batch-poster": {
+            "enable": true,
+            "max-delay": "5s",
+            "wait-for-max-delay": false,
+            "l1-block-bound": "ignore",
+            "error-delay": "1s",
+            "data-poster": {
+                "wait-for-l1-finality": false,
+                "replacement-times": ["1s","2s","5s","10s"]
+            },
+            "poll-interval": "1s"
+        },
+        "feed": {
+            "input": {
+                "url": ["ws://sequencer:9642"]
+            },
+            "output": {
+                "enable": false
+            }
+        },
+        "data-availability": {
+            "enable": true,
+            "rpc-aggregator": {
+                "enable": true,
+                "assumed-honest": 1
+            },
+            "rest-aggregator": {
+                "enable": true,
+                "urls": ["http://das-mirror:9877"]
+            }
+        }
+    },
+    "execution": {
+        "sequencer": {
+            "enable": false
+        },
+        "forwarding-target": "null"
+    },
+    "persistent": {
+        "chain": "local"
+    },
+    "ws": {
+        "addr": "0.0.0.0"
+    },
+    "http": {
+        "addr": "0.0.0.0",
+        "vhosts": "*",
+        "corsdomain": "*"
+    },
+    "log-level": "INFO"
+}

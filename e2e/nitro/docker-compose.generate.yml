@@ -19,4 +19,4 @@ services:
         "/state/l1-state.json",
       ]
     volumes:
-      - "./generated-config:/state"
+      - "./${VERSION_CONFIG_DIR:-generated-config}:/state"

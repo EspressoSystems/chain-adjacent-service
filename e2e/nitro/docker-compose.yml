@@ -16,7 +16,7 @@ services:
         "1",
       ]
     volumes:
-      - "./generated-config:/state:ro"
+      - "./${VERSION_CONFIG_DIR:-generated-config}:/state:ro"
     ports:
       - "8545:8545"
     healthcheck:
@@ -62,12 +62,12 @@ services:
       retries: 30
 
   rollup-creator:
-    image: ghcr.io/espressosystems/rollup-creator:63429ba
+    image: ${ROLLUP_CREATOR_IMAGE:-ghcr.io/espressosystems/rollup-creator:63429ba}
     platform: linux/amd64
     command: ["create-rollup-testnode"]
     volumes:
-      - "./generated-config:/config"
-      - "./nitro-config:/nitro-config"
+      - "./${VERSION_CONFIG_DIR:-generated-config}:/config"
+      - "./${VERSION_NITRO_CONFIG_DIR:-nitro-config}:/nitro-config"
     environment:
       DEPLOYER_PRIVKEY: ${DEPLOYER_PRIVATE_KEY}
       PARENT_CHAIN_RPC: "http://l1-anvil:8545"
@@ -82,7 +82,7 @@ services:
       TEE_VERIFIER_INFO: "/config/tee_verifier_address.txt"
       AUTHORIZE_VALIDATORS: 10
       MAX_DATA_SIZE: 117964
-      WASM_MODULE_ROOT: "0xc2c02df561d4afaf9a1d6785f70098ec3874765c638e3cb6dbe8d3c83333e14c"
+      WASM_MODULE_ROOT: "${WASM_MODULE_ROOT:-0xc2c02df561d4afaf9a1d6785f70098ec3874765c638e3cb6dbe8d3c83333e14c}"
     depends_on:
       l1-anvil:
         condition: service_healthy
@@ -99,8 +99,8 @@ services:
     volumes:
       - "nitro-sequencer:/home/user/.arbitrum/local/nitro"
       - "l1keystore:/home/user/l1keystore"
-      - "./generated-config:/config"
-      - "./nitro-config:/nitro-config"
+      - "./${VERSION_CONFIG_DIR:-generated-config}:/config"
+      - "./${VERSION_NITRO_CONFIG_DIR:-nitro-config}:/nitro-config"
     command:
       - --conf.file=/nitro-config/sequencer_config.json
       - --node.batch-poster.enable=false
@@ -132,19 +132,20 @@ services:
       retries: 20
 
   poster:
-    image: ${NITRO_IMAGE}
+    image: ${POSTER_IMAGE:-${NITRO_IMAGE}}
+    platform: ${POSTER_PLATFORM:-}
     entrypoint: /usr/local/bin/nitro
     volumes:
       - "nitro-poster:/home/user/.arbitrum/local/nitro"
       - "l1keystore:/home/user/l1keystore"
-      - "./generated-config:/config"
-      - "./nitro-config:/nitro-config"
+      - "./${VERSION_CONFIG_DIR:-generated-config}:/config"
+      - "./${VERSION_NITRO_CONFIG_DIR:-nitro-config}:/nitro-config"
     command:
       - --conf.file=/nitro-config/poster_config.json
       - --node.batch-poster.parent-chain-wallet.private-key=${BATCH_POSTER_PRIVATE_KEY}
-      - --node.da.external-provider.enable=true
-      - --node.da.external-provider.with-writer=true
-      - --node.da.external-provider.rpc.url=${CAS_CALLDATA_RPC_URL}
+      - ${DA_PROVIDER_FLAG_ENABLE:---node.da.external-provider.enable=true}
+      - ${DA_PROVIDER_FLAG_WRITER:---node.da.external-provider.with-writer=true}
+      - ${DA_PROVIDER_FLAG_RPC:---node.da.external-provider.rpc.url=http://unused.invalid}
       - --node.feed.input.url=${CAS_FEED_URL}
       - --node.dangerous.no-sequencer-coordinator=true
     extra_hosts:
@@ -174,7 +175,7 @@ services:
 
   das-committee-a:
     image: ${NITRO_IMAGE}
-    entrypoint: ["/usr/local/bin/anytrustserver"]
+    entrypoint: ["${ANYTRUST_SERVER_BIN:-/usr/local/bin/anytrustserver}"]
     volumes:
       - "./das-keys/a:/das-keys:ro"
     tmpfs:
@@ -197,7 +198,7 @@ services:
 
   das-committee-b:
     image: ${NITRO_IMAGE}
-    entrypoint: ["/usr/local/bin/anytrustserver"]
+    entrypoint: ["${ANYTRUST_SERVER_BIN:-/usr/local/bin/anytrustserver}"]
     volumes:
       - "./das-keys/b:/das-keys:ro"
     tmpfs:
@@ -220,7 +221,7 @@ services:
 
   das-mirror:
     image: ${NITRO_IMAGE}
-    entrypoint: ["/usr/local/bin/anytrustserver"]
+    entrypoint: ["${ANYTRUST_SERVER_BIN:-/usr/local/bin/anytrustserver}"]
     tmpfs:
       - /home/user/das-store
     command:
@@ -243,7 +244,7 @@ services:
     image: ${NITRO_IMAGE}
     entrypoint: /usr/local/bin/nitro-val
     volumes:
-      - "./nitro-config:/nitro-config"
+      - "./${VERSION_NITRO_CONFIG_DIR:-nitro-config}:/nitro-config"
     command:
       - --conf.file=/nitro-config/validation_node_config.json
     profiles:
@@ -256,8 +257,8 @@ services:
       - "8949:8547"
     volumes:
       - "nitro-validator:/home/user/.arbitrum/local/nitro"
-      - "./generated-config:/config"
-      - "./nitro-config:/nitro-config"
+      - "./${VERSION_CONFIG_DIR:-generated-config}:/config"
+      - "./${VERSION_NITRO_CONFIG_DIR:-nitro-config}:/nitro-config"
     command:
       - --conf.file=/nitro-config/validator_config.json
       - --node.staker.parent-chain-wallet.private-key=${VALIDATOR_PRIVATE_KEY}

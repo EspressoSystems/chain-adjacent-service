@@ -36,6 +36,7 @@ jobs:
         run: |
           source .env
           docker pull "$NITRO_IMAGE" &
+          docker pull "offchainlabs/nitro-node:v3.9.9-6b0af88" &
           docker pull "$ESPRESSO_DEV_NODE_IMAGE" &
           docker pull ghcr.io/foundry-rs/foundry:latest &
           docker pull ghcr.io/foundry-rs/foundry:v1.5.1 &

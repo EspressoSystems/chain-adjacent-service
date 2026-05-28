@@ -106,7 +106,7 @@ impl Broadcaster {
             message: msg,
             block_hash,
             // CAS has no need to sign over messages.
-            signature: Vec::new(),
+            signature: vec![],
             block_metadata,
             cumulative_sum_msg_size: 0,
         };

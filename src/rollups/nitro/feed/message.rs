@@ -3,8 +3,6 @@ use alloy::primitives::B256;
 use serde::{Deserialize, Serialize};
 use serde_with::{base64::Base64, serde_as};
 
-/// Top-level broadcast message from the Arbitrum feed server.
-/// Matches Go struct `BroadcastMessage` in broadcastclient/message/message.go
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BroadcastMessage {
@@ -15,16 +13,16 @@ pub struct BroadcastMessage {
     pub confirmed_sequence_number_message: Option<ConfirmedSequenceNumberMessage>,
 }
 
-/// Individual feed message containing a sequence number, message data, and signature.
-/// Matches Go struct `BroadcastFeedMessage`
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BroadcastFeedMessage {
     pub sequence_number: u64,
     pub message: MessageWithMetadata,
+    // v3.9.9 sends `"signature"`, v3.10.0 sends `"signatureV2"`.
+    // `alias` accepts either field name; `rename` serializes as `"signatureV2"`.
     #[serde_as(as = "serde_with::DefaultOnNull<Base64>")]
-    #[serde(default, rename = "signatureV2")]
+    #[serde(default, rename = "signatureV2", alias = "signature")]
     pub signature: Vec<u8>,
     #[serde_as(as = "serde_with::DefaultOnNull<Base64>")]
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -35,8 +33,6 @@ pub struct BroadcastFeedMessage {
     pub block_hash: Option<B256>,
 }
 
-/// Confirmed sequence number from the feed server.
-/// Matches Go struct `ConfirmedSequenceNumberMessage`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfirmedSequenceNumberMessage {

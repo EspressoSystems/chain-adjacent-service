@@ -1,0 +1,76 @@
+{
+    "ensure-rollup-deployment": false,
+    "parent-chain": {
+        "connection": {
+            "url": "http://l1-anvil:8545"
+        }
+    },
+    "chain": {
+        "id": 412346,
+        "info-files": [
+            "/config/deployed_chain_info.json"
+        ]
+    },
+    "node": {
+        "staker": {
+            "enable": true,
+            "strategy": "MakeNodes",
+            "staker-interval": "10s",
+            "dangerous": {
+                "without-block-validator": false
+            }
+        },
+        "sequencer": false,
+        "dangerous": {
+            "no-sequencer-coordinator": true,
+            "disable-blob-reader": true
+        },
+        "delayed-sequencer": {
+            "enable": false
+        },
+        "seq-coordinator": {
+            "enable": false
+        },
+        "batch-poster": {
+            "enable": false
+        },
+        "feed": {
+            "output": {
+                "enable": false
+            }
+        },
+        "block-validator": {
+            "enable": true,
+            "validation-server": {
+                "url": "ws://validation-node:8549",
+                "jwtsecret": "/nitro-config/val_jwt.hex"
+            }
+        },
+        "data-availability": {
+            "enable": true,
+            "rest-aggregator": {
+                "enable": true,
+                "urls": ["http://das-mirror:9877"]
+            }
+        }
+    },
+    "execution": {
+        "sequencer": {
+            "enable": false
+        },
+        "forwarding-target": "null"
+    },
+    "persistent": {
+        "chain": "local"
+    },
+    "ws": {
+        "addr": "0.0.0.0"
+    },
+    "http": {
+        "addr": "0.0.0.0",
+        "vhosts": "*",
+        "corsdomain": "*",
+        "api": ["net", "web3", "eth", "arb", "debug"]
+    },
+    "log-level": "INFO"
+}

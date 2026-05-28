@@ -425,25 +425,54 @@ pub fn verify_broadcast_feed_message_signature(
     sequencer_addresses: &[Address],
     msg: &BroadcastFeedMessage,
 ) -> Result<()> {
-    let hash = signature_hash(msg, chain_id)?;
-    let signer = recover_signer_address(hash, &msg.signature)?;
+    if msg.signature.is_empty() {
+        return Err(anyhow::anyhow!("empty feed signature"));
+    }
 
+    // Try v3.10.0 hash scheme first, fall back to v3.9.9 scheme.
+    let hash = match signature_hash_v2(msg, chain_id) {
+        Ok(h) => {
+            if let Ok(signer) = recover_signer_address(h, &msg.signature) {
+                if sequencer_addresses.contains(&signer) {
+                    return Ok(());
+                }
+            }
+            signature_hash_v1(msg, chain_id)?
+        }
+        Err(_) => signature_hash_v1(msg, chain_id)?,
+    };
+
+    let signer = recover_signer_address(hash, &msg.signature)?;
     if !sequencer_addresses.contains(&signer) {
-        tracing::warn!(
-            "recovered signer: {:?} is not in the list of sequencer addresses",
-            signer
-        );
         Err(anyhow::anyhow!(format!("signer is not valid: {signer:?}")))
     } else {
         Ok(())
     }
 }
 
-/// Mirrors `BroadcastFeedMessage.SignatureHash` in
-/// broadcaster/message/message.go from upstream nitro v3.10. Hashes the
-/// hand-picked subset of fields covered by the sequencer signature, prefixed
-/// with "Arbitrum Nitro Feed:".
-pub fn signature_hash(msg: &BroadcastFeedMessage, chain_id: u64) -> Result<FixedBytes<32>> {
+// v3.9.9: keccak256(prefix || seqNum || chainId || delayedMessagesRead || rlp(message))
+pub fn signature_hash_v1(msg: &BroadcastFeedMessage, chain_id: u64) -> Result<FixedBytes<32>> {
+    let l1_msg = msg
+        .message
+        .message
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("BroadcastFeedMessage missing L1IncomingMessage"))?;
+
+    let mut rlp_buf = Vec::new();
+    alloy_rlp::Encodable::encode(l1_msg, &mut rlp_buf);
+
+    let mut hasher = Keccak256::new();
+    hasher.update(b"Arbitrum Nitro Feed:");
+    hasher.update(msg.sequence_number.to_be_bytes());
+    hasher.update(chain_id.to_be_bytes());
+    hasher.update(msg.message.delayed_messages_read.to_be_bytes());
+    hasher.update(&rlp_buf);
+
+    Ok(hasher.finalize())
+}
+
+// v3.10.0: per-field hashing with prefix
+pub fn signature_hash_v2(msg: &BroadcastFeedMessage, chain_id: u64) -> Result<FixedBytes<32>> {
     let l1_msg = msg
         .message
         .message
@@ -472,7 +501,6 @@ pub fn signature_hash(msg: &BroadcastFeedMessage, chain_id: u64) -> Result<Fixed
         hasher.update(request_id.as_slice());
     }
     if let Some(base_fee) = &header.l1_base_fee {
-        // Match Go big.Int.Bytes(): minimal big-endian representation.
         hasher.update(base_fee.to_be_bytes_trimmed_vec());
     }
     hasher.update(&l1_msg.l2msg);

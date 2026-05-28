@@ -31,6 +31,7 @@ sol! {
 }
 
 use crate::nitro_node::nitro_node::{NitroNode, NitroNodeConfig};
+use crate::nitro_node::version::NitroVersion;
 
 const CAS_BIN: &str = env!("CARGO_BIN_EXE_chain-adjacent-service");
 
@@ -45,9 +46,12 @@ const L1_WS_URL: &str = "ws://localhost:8545";
 const L1_HTTP_URL: &str = "http://localhost:8545";
 const SEQUENCER_HTTP_URL: &str = "http://localhost:8547";
 const VALIDATOR_HTTP_URL: &str = "http://localhost:8949";
-const GENERATED_CONFIG_DIR: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/e2e/nitro/generated-config");
+const E2E_NITRO_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/e2e/nitro");
 const TRUSTED_SEQUENCER_ADDRESS: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+
+fn generated_config_dir(version: NitroVersion) -> PathBuf {
+    Path::new(E2E_NITRO_DIR).join(version.generated_config_dir())
+}
 
 #[derive(Clone, Copy)]
 enum CasRoute {
@@ -248,8 +252,8 @@ async fn evm_revert(snapshot_id: &str) -> bool {
     resp["result"].as_bool().unwrap_or(false)
 }
 
-fn read_tee_verifier_address() -> Address {
-    let path = Path::new(GENERATED_CONFIG_DIR).join("tee_verifier_address.txt");
+fn read_tee_verifier_address(version: NitroVersion) -> Address {
+    let path = generated_config_dir(version).join("tee_verifier_address.txt");
     let content = std::fs::read_to_string(&path).unwrap_or_else(|_| {
         panic!(
             "missing {} — run docker compose with deploy profile first",
@@ -359,12 +363,24 @@ fn write_cas_config(
     path
 }
 
+// BoLD: AssertionCreated event (v3.10.0+ contracts)
 // https://github.com/EspressoSystems/nitro-contracts/blob/ec47f8578cc0837347af9de5bf6c34ed3e037d93/src/rollup/IRollupCore.sol#L26
 const ASSERTION_CREATED_TOPIC: alloy::primitives::B256 =
     alloy::primitives::b256!("901c3aee23cf4478825462caaab375c606ab83516060388344f0650340753630");
 
-fn read_rollup_address() -> Address {
-    let path = Path::new(GENERATED_CONFIG_DIR).join("deployment.json");
+// Pre-BoLD: NodeCreated event (v3.9.9 / 2.1.3-legacy contracts)
+const NODE_CREATED_TOPIC: alloy::primitives::B256 =
+    alloy::primitives::b256!("4f4caa9e67fb994e349dd35d1ad0ce23053d4323f83ce11dc817b5435031d096");
+
+fn staker_event_topic(version: NitroVersion) -> alloy::primitives::B256 {
+    match version {
+        NitroVersion::V3_9_9 => NODE_CREATED_TOPIC,
+        NitroVersion::V3_10_0 => ASSERTION_CREATED_TOPIC,
+    }
+}
+
+fn read_rollup_address(version: NitroVersion) -> Address {
+    let path = generated_config_dir(version).join("deployment.json");
     let raw = std::fs::read_to_string(&path)
         .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
     let deployment: serde_json::Value = serde_json::from_str(&raw)
@@ -378,29 +394,34 @@ fn read_rollup_address() -> Address {
         .unwrap_or_else(|err| panic!("invalid rollup address {value}: {err}"))
 }
 
-async fn wait_for_assertion_created(provider: &RootProvider, rollup: Address, from_block: u64) {
+async fn wait_for_assertion_created(
+    provider: &RootProvider,
+    rollup: Address,
+    from_block: u64,
+    event_topic: alloy::primitives::B256,
+) {
     let filter = Filter::new()
         .address(rollup)
-        .event_signature(ASSERTION_CREATED_TOPIC)
+        .event_signature(event_topic)
         .from_block(from_block);
 
     let deadline = Instant::now() + Duration::from_secs(5 * 60);
     loop {
         if Instant::now() >= deadline {
             panic!(
-                "timed out waiting for AssertionCreated on rollup {rollup} from block {from_block}"
+                "timed out waiting for staker assertion on rollup {rollup} from block {from_block}"
             );
         }
         match provider.get_logs(&filter).await {
             Ok(logs) if !logs.is_empty() => {
                 println!(
-                    "staker active: {} AssertionCreated event(s) on rollup {rollup}",
+                    "staker active: {} assertion event(s) on rollup {rollup}",
                     logs.len()
                 );
                 return;
             }
             Ok(_) => {
-                println!("waiting for AssertionCreated on rollup {rollup}...");
+                println!("waiting for staker assertion on rollup {rollup}...");
             }
             Err(err) => {
                 println!("get_logs failed: {err}");
@@ -410,8 +431,8 @@ async fn wait_for_assertion_created(provider: &RootProvider, rollup: Address, fr
     }
 }
 
-fn read_sequencer_inbox_address() -> Address {
-    let path = Path::new(GENERATED_CONFIG_DIR).join("deployment.json");
+fn read_sequencer_inbox_address(version: NitroVersion) -> Address {
+    let path = generated_config_dir(version).join("deployment.json");
     let raw = std::fs::read_to_string(&path)
         .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
     let deployment: serde_json::Value = serde_json::from_str(&raw)
@@ -446,6 +467,25 @@ fn connect_http(url: &str) -> impl Provider + Clone {
         url.parse::<url::Url>()
             .unwrap_or_else(|e| panic!("failed to parse {url}: {e}")),
     )
+}
+
+async fn wait_for_poster_flush(
+    provider: &RootProvider,
+    from_block: u64,
+    sequencer_inbox: Address,
+) {
+    let mut last_count = count_batches_on_l1(provider, from_block, sequencer_inbox).await;
+    let mut stable_since = Instant::now();
+    while stable_since.elapsed() < Duration::from_secs(8) {
+        sleep(Duration::from_secs(2)).await;
+        let current = count_batches_on_l1(provider, from_block, sequencer_inbox).await;
+        if current > last_count {
+            println!("poster flushing: {current} batches on L1");
+            last_count = current;
+            stable_since = Instant::now();
+        }
+    }
+    println!("poster flush complete: {last_count} batches on L1");
 }
 
 async fn wait_for_validator_to_reach(validator: &impl Provider, target: u64) {
@@ -561,14 +601,19 @@ async fn send_store_rpc(url: &str, data: Bytes) -> Value {
 }
 
 async fn run_e2e(route: CasRoute) {
+    run_e2e_versioned(route, NitroVersion::default()).await;
+}
+
+async fn run_e2e_versioned(route: CasRoute, version: NitroVersion) {
     let config = NitroNodeConfig {
         no_l2_traffic: false,
+        version,
     };
 
     let nitro_node = NitroNode::start(config).await;
-    println!("Nitro stack started (L1 + sequencer + espresso dev node)");
+    println!("Nitro stack started (L1 + sequencer + espresso dev node) [{}]", version.tag());
 
-    let sequencer_inbox = read_sequencer_inbox_address();
+    let sequencer_inbox = read_sequencer_inbox_address(version);
     let anytrust = matches!(route, CasRoute::Anytrust);
 
     if anytrust {
@@ -590,7 +635,7 @@ async fn run_e2e(route: CasRoute) {
         .await
         .expect("failed to fetch latest hotshot block height")
         + 1;
-    let tee_verifier_address = read_tee_verifier_address();
+    let tee_verifier_address = read_tee_verifier_address(version);
     println!("Using TEE verifier mock at {tee_verifier_address}");
     let cas_config_path = write_cas_config(
         starting_hotshot_height,
@@ -619,8 +664,8 @@ async fn run_e2e(route: CasRoute) {
     wait_for_batches_on_l1(&l1, from_block, 2, sequencer_inbox).await;
 
     nitro_node.stop_tx_generator();
-    println!("Load generator stopped; waiting for chain to settle");
-    sleep(Duration::from_secs(3)).await;
+    println!("Load generator stopped; waiting for poster to flush remaining batches");
+    wait_for_poster_flush(&l1, from_block, sequencer_inbox).await;
 
     let sequencer = connect_http(SEQUENCER_HTTP_URL);
     let sequencer_block = sequencer
@@ -630,7 +675,7 @@ async fn run_e2e(route: CasRoute) {
     println!("Sequencer at block {sequencer_block}");
 
     println!("Starting block validator...");
-    let rollup = read_rollup_address();
+    let rollup = read_rollup_address(version);
     nitro_node.start_block_validator();
 
     let validator = connect_http(VALIDATOR_HTTP_URL);
@@ -661,7 +706,7 @@ async fn run_e2e(route: CasRoute) {
     );
     println!("Block hashes match at block {sequencer_block}: {sequencer_hash}");
 
-    wait_for_assertion_created(&l1, rollup, from_block).await;
+    wait_for_assertion_created(&l1, rollup, from_block, staker_event_topic(version)).await;
 
     drop(cas);
     drop(nitro_node);
@@ -680,10 +725,12 @@ async fn test_e2e_anytrust() {
 #[tokio::test]
 async fn test_e2e_l1_reorg() {
     let config = NitroNodeConfig {
-        no_l2_traffic: false,
-    };
+            no_l2_traffic: false,
+            ..Default::default()
+        };
 
     let nitro_node = NitroNode::start(config).await;
+    let v = NitroVersion::default();
     let espresso = EspressoDevNode::connect().await;
 
     let starting_hotshot_height = espresso
@@ -692,9 +739,9 @@ async fn test_e2e_l1_reorg() {
         .await
         .expect("failed to fetch latest hotshot block height");
 
-    let sequencer_inbox = read_sequencer_inbox_address();
+    let sequencer_inbox = read_sequencer_inbox_address(v);
 
-    let tee_verifier_address = read_tee_verifier_address();
+    let tee_verifier_address = read_tee_verifier_address(v);
 
     let cas_config_path = write_cas_config(
         starting_hotshot_height,
@@ -811,13 +858,15 @@ async fn test_e2e_restart() {
     let route = CasRoute::Calldata;
 
     let config = NitroNodeConfig {
-        no_l2_traffic: false,
-    };
+            no_l2_traffic: false,
+            ..Default::default()
+        };
     let nitro_node = NitroNode::start(config).await;
+    let v = NitroVersion::default();
     println!("Nitro stack started (L1 + sequencer + espresso dev node)");
 
-    let sequencer_inbox = read_sequencer_inbox_address();
-    let tee_verifier_address = read_tee_verifier_address();
+    let sequencer_inbox = read_sequencer_inbox_address(v);
+    let tee_verifier_address = read_tee_verifier_address(v);
 
     let espresso = EspressoDevNode::connect().await;
     let starting_hotshot_height = espresso
@@ -908,13 +957,15 @@ async fn test_e2e_restart() {
 async fn test_e2e_espresso_downtime() {
     let route = CasRoute::Calldata;
     let config = NitroNodeConfig {
-        no_l2_traffic: false,
-    };
+            no_l2_traffic: false,
+            ..Default::default()
+        };
     let nitro_node = NitroNode::start(config).await;
+    let v = NitroVersion::default();
     println!("Nitro stack started (L1 + sequencer + espresso dev node)");
 
-    let sequencer_inbox = read_sequencer_inbox_address();
-    let tee_verifier_address = read_tee_verifier_address();
+    let sequencer_inbox = read_sequencer_inbox_address(v);
+    let tee_verifier_address = read_tee_verifier_address(v);
 
     let starting_hotshot_height = {
         let espresso = EspressoDevNode::connect().await;
@@ -1008,12 +1059,14 @@ async fn test_e2e_espresso_downtime() {
 #[tokio::test]
 async fn test_e2e_malicious_batch_poster() {
     let config = NitroNodeConfig {
-        no_l2_traffic: false,
-    };
+            no_l2_traffic: false,
+            ..Default::default()
+        };
     let nitro_node = NitroNode::start(config).await;
+    let v = NitroVersion::default();
     println!("Nitro stack started (L1 + sequencer + espresso dev node)");
 
-    let sequencer_inbox = read_sequencer_inbox_address();
+    let sequencer_inbox = read_sequencer_inbox_address(v);
     let espresso = EspressoDevNode::connect().await;
 
     let starting_hotshot_height = espresso
@@ -1022,7 +1075,7 @@ async fn test_e2e_malicious_batch_poster() {
         .await
         .expect("failed to fetch latest hotshot block height")
         + 1;
-    let tee_verifier_address = read_tee_verifier_address();
+    let tee_verifier_address = read_tee_verifier_address(v);
 
     let cas_config_path = write_cas_config(
         starting_hotshot_height,
@@ -1075,4 +1128,16 @@ async fn test_e2e_malicious_batch_poster() {
 
     drop(cas);
     drop(nitro_node);
+}
+
+// ── Nitro v3.9.9 tests ──────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_e2e_calldata_v3_9_9() {
+    run_e2e_versioned(CasRoute::Calldata, NitroVersion::V3_9_9).await;
+}
+
+#[tokio::test]
+async fn test_e2e_anytrust_v3_9_9() {
+    run_e2e_versioned(CasRoute::Anytrust, NitroVersion::V3_9_9).await;
 }
