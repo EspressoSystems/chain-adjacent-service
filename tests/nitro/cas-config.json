@@ -2,6 +2,9 @@
   "espresso_client": {
     "base_url": "http://localhost:41000"
   },
+  "streamer": {
+    "starting_hotshot_height": 9199257
+  },
   "rollup": {
     "type": "nitro",
     "namespace_id": 412346,
