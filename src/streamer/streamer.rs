@@ -84,6 +84,12 @@ impl<R: Rollup> Streamer<R> {
         let client = self.client.clone();
         let namespace_id = NamespaceId::from(self.rollup_config.namespace_id);
 
+        tracing::info!(
+            starting_height = self.config.starting_hotshot_height,
+            namespace_id = %namespace_id,
+            finalized_idx = self.finalized_idx,
+            "streamer started; polling espresso"
+        );
         tokio::spawn(async move {
             poll_hotshot_blocks(
                 &config,
@@ -140,6 +146,13 @@ impl<R: Rollup> Streamer<R> {
                         tracing::error!("hotshot block poller channel was closed");
                         continue;
                     };
+                    let tx_count: usize = transactions.iter().map(|t| t.transactions.len()).sum();
+                    tracing::debug!(
+                        height,
+                        ranges = transactions.len(),
+                        tx_count,
+                        "received hotshot block range from poller"
+                    );
                     self.handle_hotshot_transactions(transactions, height, espresso_finalization_sender.clone()).await;
                 },
                 // Retry broadcasting feed messages when we get a retry signal
@@ -190,6 +203,13 @@ impl<R: Rollup> Streamer<R> {
     ) {
         let parsed_rollup_entries =
             R::parse_hotshot_transactions(&self.rollup_config.stack, transactions, height);
+        tracing::debug!(
+            height,
+            entries = parsed_rollup_entries.len(),
+            queue_len = self.queue.len(),
+            stubs = self.stubs.len(),
+            "parsed rollup entries from hotshot block"
+        );
         self.filter_messages(parsed_rollup_entries);
 
         // Attempt an immediate broadcast; if the channel is full we'll retry via the ticker.
@@ -203,7 +223,9 @@ impl<R: Rollup> Streamer<R> {
             let seq = entry.sequence_number();
             let feed_message = R::convert_entry_to_feed_message(entry);
             match sender.try_send(feed_message) {
-                Ok(()) => {}
+                Ok(()) => {
+                    tracing::debug!(seq, "broadcast feed message to finalization channel");
+                }
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     tracing::warn!(
                         "finalization channel is full; cannot broadcast feed message with sequence number {seq}"
@@ -418,6 +440,17 @@ pub async fn poll_hotshot_blocks(
                 continue;
             }
         };
+        let tx_count: usize = hotshot_transactions
+            .iter()
+            .map(|t| t.transactions.len())
+            .sum();
+        tracing::info!(
+            from_block,
+            to_block,
+            ranges = hotshot_transactions.len(),
+            tx_count,
+            "fetched espresso block range"
+        );
         backoff = Duration::from_millis(config.initial_backoff_ms);
 
         let result = sender.send((hotshot_transactions, from_block)).await;

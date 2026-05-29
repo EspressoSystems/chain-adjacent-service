@@ -211,7 +211,20 @@ impl WsBroadcastServer {
         if let Some(ref confirmed) = bm.confirmed_sequence_number_message {
             self.shared.backlog.confirm(confirmed.sequence_number);
         }
+        let message_count = bm.messages.iter().flatten().count();
+        let confirmed_seq = bm
+            .confirmed_sequence_number_message
+            .as_ref()
+            .map(|c| c.sequence_number);
         self.shared.backlog.append(&bm);
+        let subscribers = self.shared.broadcast_tx.receiver_count();
+        tracing::debug!(
+            subscribers,
+            client_count = self.client_count(),
+            message_count,
+            confirmed_seq = ?confirmed_seq,
+            "broadcasting to clients"
+        );
         let _ = self.shared.broadcast_tx.send(Arc::new(bm));
     }
 
@@ -234,6 +247,7 @@ async fn accept_loop(listener: TcpListener, shared: Arc<SharedState>, cancel: Ca
             result = listener.accept() => {
                 match result {
                     Ok((stream, peer_addr)) => {
+                        tracing::debug!(peer = %peer_addr, "tcp accepted, awaiting ws upgrade");
                         let shared = shared.clone();
                         let cancel = cancel.clone();
                         tokio::spawn(async move {
@@ -279,13 +293,18 @@ async fn handle_connection(
 
             // Validate client version if required.
             if require_version {
-                let version_ok = req
+                let client_version = req
                     .headers()
                     .get(HEADER_FEED_CLIENT_VERSION)
                     .and_then(|v| v.to_str().ok())
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .is_some_and(|v| v >= FEED_CLIENT_VERSION);
+                    .and_then(|s| s.parse::<u64>().ok());
+                let version_ok = client_version.is_some_and(|v| v >= FEED_CLIENT_VERSION);
                 if !version_ok {
+                    tracing::warn!(
+                        client_version = ?client_version,
+                        required = FEED_CLIENT_VERSION,
+                        "rejecting client: feed version too old"
+                    );
                     return Ok::<_, hyper::Error>(
                         Response::builder()
                             .status(StatusCode::BAD_REQUEST)
@@ -314,7 +333,8 @@ async fn handle_connection(
             let (mut response, upgrade_fut) =
                 match WebSocket::upgrade_with_options(&mut req, options) {
                     Ok(pair) => pair,
-                    Err(_) => {
+                    Err(e) => {
+                        tracing::warn!(error = %e, "rejecting client: ws upgrade failed");
                         return Ok(Response::builder()
                             .status(StatusCode::BAD_REQUEST)
                             .body(Empty::new())
@@ -369,7 +389,14 @@ async fn handle_connection(
         return Ok(());
     }
 
-    tracing::debug!(peer = %peer_addr, requested_seq_num = seq_num, compression = compression_accepted, "client connected");
+    let client_count = shared.client_count.fetch_add(1, Ordering::Relaxed) + 1;
+    tracing::info!(
+        peer = %peer_addr,
+        requested_seq_num = seq_num,
+        compression = compression_accepted,
+        client_count,
+        "client connected"
+    );
 
     run_ws_client(ws, peer_addr, shared, cancel, seq_num).await
 }
@@ -382,7 +409,6 @@ async fn run_ws_client(
     cancel: CancellationToken,
     seq_num: u64,
 ) -> Result<(), WsBroadcastServerError> {
-    shared.client_count.fetch_add(1, Ordering::Relaxed);
     let mut rx = shared.broadcast_tx.subscribe();
     let (mut sink, mut stream_rx) = ws.split();
 
@@ -393,6 +419,7 @@ async fn run_ws_client(
     let backlog = shared.backlog.get_since(seq_num);
     let mut last_sent_seq: Option<u64> = None;
     if !backlog.is_empty() {
+        let backlog_len = backlog.len();
         last_sent_seq = backlog.last().map(|m| m.sequence_number);
         let bm = BroadcastMessage {
             version: 1,
@@ -405,29 +432,41 @@ async fn run_ws_client(
             .is_err()
         {
             tracing::warn!(peer = %peer_addr, "write timeout sending backlog");
-            shared.client_count.fetch_sub(1, Ordering::Relaxed);
+            let remaining = shared.client_count.fetch_sub(1, Ordering::Relaxed) - 1;
+            tracing::info!(
+                peer = %peer_addr,
+                reason = "backlog_write_timeout",
+                client_count = remaining,
+                "client disconnected"
+            );
             return Ok(());
         }
+        tracing::debug!(
+            peer = %peer_addr,
+            backlog_len,
+            last_sent_seq = ?last_sent_seq,
+            "sent backlog to client"
+        );
     }
 
     let mut last_heard = Instant::now();
     let mut ping_timer = tokio::time::interval(ping_interval);
     ping_timer.tick().await;
 
-    loop {
+    let reason: &'static str = loop {
         tokio::select! {
-            _ = cancel.cancelled() => break,
+            _ = cancel.cancelled() => break "cancelled",
             _ = ping_timer.tick() => {
                 if last_heard.elapsed() > client_timeout {
                     tracing::debug!(peer = %peer_addr, "client timed out");
-                    break;
+                    break "client_timeout";
                 }
                 if tokio::time::timeout(
                     write_timeout,
                     sink.send(Frame::ping("")),
                 ).await.is_err() {
                     tracing::debug!(peer = %peer_addr, "write timeout sending ping");
-                    break;
+                    break "ping_write_timeout";
                 }
             }
             msg = rx.recv() => {
@@ -441,36 +480,47 @@ async fn run_ws_client(
                                 sink.send(Frame::text(payload)),
                             ).await;
                             match send_result {
-                                Ok(Ok(())) => {}
-                                Ok(Err(_)) => break,
+                                Ok(Ok(())) => {
+                                    tracing::trace!(
+                                        peer = %peer_addr,
+                                        last_sent_seq = ?last_sent_seq,
+                                        "sent message to client"
+                                    );
+                                }
+                                Ok(Err(_)) => break "send_error",
                                 Err(_) => {
                                     tracing::debug!(peer = %peer_addr, "write timeout");
-                                    break;
+                                    break "send_timeout";
                                 }
                             }
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!(peer = %peer_addr, lagged = n, "client lagged, disconnecting");
-                        break;
+                        break "lagged";
                     }
-                    Err(_) => break,
+                    Err(_) => break "broadcast_closed",
                 }
             }
             frame = stream_rx.next() => {
                 match frame {
-                    Some(frame) if frame.opcode() == OpCode::Close => break,
-                    None => break,
+                    Some(frame) if frame.opcode() == OpCode::Close => break "close_frame",
+                    None => break "stream_ended",
                     Some(_) => {
                         last_heard = Instant::now();
                     }
                 }
             }
         }
-    }
+    };
 
-    shared.client_count.fetch_sub(1, Ordering::Relaxed);
-    tracing::debug!(peer = %peer_addr, "client disconnected");
+    let remaining = shared.client_count.fetch_sub(1, Ordering::Relaxed) - 1;
+    tracing::info!(
+        peer = %peer_addr,
+        reason,
+        client_count = remaining,
+        "client disconnected"
+    );
     Ok(())
 }
 
