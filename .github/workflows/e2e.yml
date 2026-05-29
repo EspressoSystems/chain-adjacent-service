@@ -2,9 +2,9 @@ name: E2E Tests
 
 on:
   push:
-    branches: [main]
+    branches: [main, integration-nitro-v3.9.9]
   pull_request:
-    branches: [main]
+    branches: [main, integration-nitro-v3.9.9]
   workflow_dispatch:
 
 env:
