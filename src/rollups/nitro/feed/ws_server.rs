@@ -409,7 +409,6 @@ async fn run_ws_client(
     cancel: CancellationToken,
     seq_num: u64,
 ) -> Result<(), WsBroadcastServerError> {
-    shared.client_count.fetch_add(1, Ordering::Relaxed);
     let mut rx = shared.broadcast_tx.subscribe();
     let (mut sink, mut stream_rx) = ws.split();
 

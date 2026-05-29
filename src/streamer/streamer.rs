@@ -444,7 +444,7 @@ pub async fn poll_hotshot_blocks(
             .iter()
             .map(|t| t.transactions.len())
             .sum();
-        tracing::debug!(
+        tracing::info!(
             from_block,
             to_block,
             ranges = hotshot_transactions.len(),
