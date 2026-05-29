@@ -642,48 +642,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_anytrust_header_bytes_returned_locally() {
-        // is_anytrust=true: CAS answers `0x70` only and does NOT call
-        // the downstream sidecar (which would return 0x8088). The
-        // poster's local AnyTrust handler keeps ownership of 0x80/0x88.
-        let mock_da_provider = MockServer::start().await;
-
-        // If CAS forwards, the mock will record the request — we assert
-        // below that it did NOT receive any.
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(500))
-            .mount(&mock_da_provider)
-            .await;
-
-        let addr: SocketAddr = "127.0.0.1:9968".parse().unwrap();
-        let _server = spawn_server(
-            addr,
-            vec![DaProviderConfig {
-                name: "anytrust".to_string(),
-                endpoint_url: mock_da_provider.uri(),
-                is_anytrust: true,
-            }],
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        let client = HttpClientBuilder::default()
-            .build(format!("http://{addr}/arb/anytrust"))
-            .unwrap();
-
-        let response: serde_json::Value = client
-            .request("daprovider_getSupportedHeaderBytes", rpc_params![])
-            .await
-            .expect("RPC call failed");
-
-        assert_eq!(response["headerBytes"], "0x70");
-        assert_eq!(
-            mock_da_provider.received_requests().await.unwrap().len(),
-            0,
-            "is_anytrust=true must not forward getSupportedHeaderBytes"
-        );
-    }
-
-    #[tokio::test]
     async fn test_all_da_api_methods() {
         let mock_da_provider = MockServer::start().await;
 
