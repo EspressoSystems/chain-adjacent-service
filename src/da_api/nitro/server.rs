@@ -123,9 +123,7 @@ async fn handle_rpc(State(state): State<ServerState>, body: Bytes) -> Result<Res
         RECOVER_PAYLOAD_AND_PREIMAGES => {
             handle_recover_inner(state, parsed, RECOVER_PAYLOAD_AND_PREIMAGES).await
         }
-        GET_SUPPORTED_HEADER_BYTES
-            if state.da_config.name == "calldata" || state.da_config.is_anytrust =>
-        {
+        GET_SUPPORTED_HEADER_BYTES if state.da_config.name == "calldata" => {
             respond_header_bytes(&parsed["id"], &[ESPRESSO_HEADER_BYTE])
         }
         GET_SUPPORTED_HEADER_BYTES => handle_supported_header_bytes_forwarded(state, parsed).await,

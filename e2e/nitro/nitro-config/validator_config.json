@@ -45,13 +45,11 @@
                 "jwtsecret": "/nitro-config/val_jwt.hex"
             }
         },
-        "da": {
-            "anytrust": {
+        "data-availability": {
+            "enable": true,
+            "rest-aggregator": {
                 "enable": true,
-                "rest-aggregator": {
-                    "enable": true,
-                    "urls": ["http://das-mirror:9877"]
-                }
+                "urls": ["http://das-mirror:9877"]
             }
         }
     },

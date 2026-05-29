@@ -146,18 +146,26 @@ impl NitroNode {
         assert!(status.success(), "`docker compose up --wait poster` failed");
     }
 
-    pub fn start_das_committee(&self) {
-        run_compose(&[
-            "compose",
-            "--profile",
-            "anytrust",
-            "up",
-            "-d",
-            "--wait",
-            "das-committee-a",
-            "das-committee-b",
-            "das-mirror",
-        ]);
+    pub fn start_das_committee(&self, sequencer_inbox_address: &str) {
+        let status = compose_command()
+            .args([
+                "compose",
+                "--profile",
+                "anytrust",
+                "up",
+                "-d",
+                "--wait",
+                "das-committee-a",
+                "das-committee-b",
+                "das-mirror",
+            ])
+            .env("SEQUENCER_INBOX_ADDRESS", sequencer_inbox_address)
+            .status()
+            .expect("failed to run `docker compose up --wait das-committee`");
+        assert!(
+            status.success(),
+            "`docker compose up --wait das-committee` failed"
+        );
     }
 
     pub fn start_anytrust_daprovider(&self, sequencer_inbox_address: &str) {
