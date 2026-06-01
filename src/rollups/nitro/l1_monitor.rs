@@ -214,6 +214,107 @@ impl BatchCursorFetcher<BatchCursor> for NitroBatchCursorFetcher {
     }
 }
 
+/// Minimal RPC surface the startup checkpoint scan needs. Abstracted so the
+/// backward-scan logic can be unit-tested without a live L1.
+#[async_trait]
+pub trait LogScanner: Sync {
+    async fn get_block_number(&self) -> Result<u64, L1MonitorError>;
+    async fn get_logs(
+        &self,
+        filter: &Filter,
+    ) -> Result<Vec<alloy::rpc::types::Log>, L1MonitorError>;
+}
+
+#[async_trait]
+impl LogScanner for RootProvider {
+    async fn get_block_number(&self) -> Result<u64, L1MonitorError> {
+        Provider::get_block_number(self)
+            .await
+            .map_err(L1MonitorError::from)
+    }
+
+    async fn get_logs(
+        &self,
+        filter: &Filter,
+    ) -> Result<Vec<alloy::rpc::types::Log>, L1MonitorError> {
+        Provider::get_logs(self, filter)
+            .await
+            .map_err(L1MonitorError::from)
+    }
+}
+
+/// Walk backwards from chain head in `log_scan_step`-sized windows, looking
+/// for the most recent `EspressoCertificateVerified` event emitted by
+/// `sequencer_inbox`.
+///
+/// * `max_l1_blocks_to_scan_on_startup == 0` → scan the entire chain; return
+///   a default checkpoint if no event is found.
+/// * Otherwise stop after that many blocks and return `CheckpointNotFound`.
+pub async fn scan_for_latest_checkpoint<S: LogScanner>(
+    scanner: &S,
+    sequencer_inbox: Address,
+    log_scan_step: u64,
+    max_l1_blocks_to_scan_on_startup: u64,
+) -> Result<CasCheckpoint<BatchCursor>, nitro::Error> {
+    let latest_block = scanner.get_block_number().await?;
+
+    let mut to_block = latest_block;
+
+    let earliest_allowed = if max_l1_blocks_to_scan_on_startup > 0 {
+        latest_block.saturating_sub(max_l1_blocks_to_scan_on_startup - 1)
+    } else {
+        0
+    };
+
+    loop {
+        let from_block = to_block.saturating_sub(log_scan_step).max(earliest_allowed);
+
+        let filter = Filter::new()
+            .address(sequencer_inbox)
+            .event_signature(ISequencerInbox::EspressoCertificateVerified::SIGNATURE_HASH)
+            .from_block(from_block)
+            .to_block(to_block);
+
+        let logs = scanner.get_logs(&filter).await?;
+
+        if let Some(log) = logs.last() {
+            let event = ISequencerInbox::EspressoCertificateVerified::decode_log(&log.inner)
+                .map_err(|e| L1MonitorError::Contract(e.to_string()))?;
+
+            let hotshot_height = event.data.hotshotBlock.to::<u64>();
+            let delayed_message_read = event.data.delayedMessageRead.to::<u64>();
+            let message_count = event.data.messageCount.to::<u64>();
+
+            tracing::info!(
+                hotshot_height,
+                delayed_message_read,
+                message_count,
+                "found latest EspressoCertificateVerified event"
+            );
+
+            return Ok(CasCheckpoint::new(
+                BatchCursor {
+                    last_batch_delayed_messages_read: delayed_message_read,
+                    next_batch_start_pos: message_count,
+                },
+                hotshot_height,
+            ));
+        }
+
+        if from_block == earliest_allowed {
+            if max_l1_blocks_to_scan_on_startup > 0 {
+                return Err(
+                    L1MonitorError::CheckpointNotFound(max_l1_blocks_to_scan_on_startup).into(),
+                );
+            }
+            tracing::warn!("no EspressoCertificateVerified event found on-chain");
+            return Ok(CasCheckpoint::new(BatchCursor::default(), 0));
+        }
+
+        to_block = from_block.saturating_sub(1);
+    }
+}
+
 impl L1Monitor<BatchCursor, nitro::Error> for NitroL1Monitor {
     async fn fetch_latest_batch_cursor_on_fresh_deployment(
         &self,
@@ -233,78 +334,13 @@ impl L1Monitor<BatchCursor, nitro::Error> for NitroL1Monitor {
     async fn fetch_latest_checkpoint_on_startup(
         &self,
     ) -> Result<CasCheckpoint<BatchCursor>, nitro::Error> {
-        let latest_block = self
-            .provider
-            .get_block_number()
-            .await
-            .map_err(L1MonitorError::from)?;
-
-        let mut to_block = latest_block;
-
-        let earliest_allowed = if self.max_l1_blocks_to_scan_on_startup > 0 {
-            latest_block.saturating_sub(self.max_l1_blocks_to_scan_on_startup - 1)
-        } else {
-            0
-        };
-
-        // Walk backwards in chunks of `log_scan_step` until we find a
-        // EspressoCertificateVerified event.
-        loop {
-            let from_block = to_block
-                .saturating_sub(self.log_scan_step)
-                .max(earliest_allowed);
-
-            let filter = Filter::new()
-                .address(self.sequencer_inbox_address)
-                .event_signature(ISequencerInbox::EspressoCertificateVerified::SIGNATURE_HASH)
-                .from_block(from_block)
-                .to_block(to_block);
-
-            let logs = self
-                .provider
-                .get_logs(&filter)
-                .await
-                .map_err(L1MonitorError::from)?;
-
-            // Take the most recent event (last in the returned list).
-            if let Some(log) = logs.last() {
-                let event = ISequencerInbox::EspressoCertificateVerified::decode_log(&log.inner)
-                    .map_err(|e| L1MonitorError::Contract(e.to_string()))?;
-
-                let hotshot_height = event.data.hotshotBlock.to::<u64>();
-                let delayed_message_read = event.data.delayedMessageRead.to::<u64>();
-                let message_count = event.data.messageCount.to::<u64>();
-
-                tracing::info!(
-                    hotshot_height,
-                    delayed_message_read,
-                    message_count,
-                    "found latest EspressoCertificateVerified event"
-                );
-
-                return Ok(CasCheckpoint::new(
-                    BatchCursor {
-                        last_batch_delayed_messages_read: delayed_message_read,
-                        next_batch_start_pos: message_count,
-                    },
-                    hotshot_height,
-                ));
-            }
-
-            if from_block == earliest_allowed {
-                if self.max_l1_blocks_to_scan_on_startup > 0 {
-                    return Err(L1MonitorError::CheckpointNotFound(
-                        self.max_l1_blocks_to_scan_on_startup,
-                    )
-                    .into());
-                }
-                // Scanned the entire chain — no event found.
-                tracing::warn!("no EspressoCertificateVerified event found on-chain");
-                return Ok(CasCheckpoint::new(BatchCursor::default(), 0));
-            }
-
-            to_block = from_block.saturating_sub(1);
-        }
+        scan_for_latest_checkpoint(
+            &self.provider,
+            self.sequencer_inbox_address,
+            self.log_scan_step,
+            self.max_l1_blocks_to_scan_on_startup,
+        )
+        .await
     }
 
     async fn start(&self, l1_finalized_msg_idx_sender: watch::Sender<u64>) {
@@ -359,98 +395,5 @@ impl L1Monitor<BatchCursor, nitro::Error> for NitroL1Monitor {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use alloy::primitives::address;
-
-    const SEQUENCER_INBOX: Address = address!("7D38b171aCC8a61f4092817a08a51D99cC85Ef74");
-
-    async fn setup_monitor() -> NitroL1Monitor {
-        rustls::crypto::ring::default_provider()
-            .install_default()
-            .ok();
-        let ws_url = std::env::var("L1_WS_URL")
-            .unwrap_or_else(|_| "wss://arbitrum-sepolia.drpc.org".to_string());
-        let config = L1MonitorConfig {
-            ws_url,
-            sequencer_inbox_address: SEQUENCER_INBOX,
-            log_scan_step: 10_000,
-            max_l1_blocks_to_scan_on_startup: 0,
-            l1_finalized_poll_interval_ms: 12_000,
-        };
-        NitroL1Monitor::new(&config)
-            .await
-            .expect("failed to create monitor")
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn new_resolves_bridge_address() {
-        let monitor = setup_monitor().await;
-        assert_ne!(monitor.bridge_address, Address::ZERO);
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn fetch_message_count_returns_nonzero() {
-        let monitor = setup_monitor().await;
-        let count = monitor
-            .fetch_message_count(BlockNumberOrTag::Latest)
-            .await
-            .unwrap();
-        assert!(count > 0, "expected nonzero message count, got {count}");
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn fetch_message_count_finalized() {
-        let monitor = setup_monitor().await;
-        let finalized = monitor
-            .fetch_message_count(BlockNumberOrTag::Finalized)
-            .await
-            .unwrap();
-        let latest = monitor
-            .fetch_message_count(BlockNumberOrTag::Latest)
-            .await
-            .unwrap();
-        assert!(finalized > 0);
-        assert!(
-            latest >= finalized,
-            "latest ({latest}) < finalized ({finalized})"
-        );
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn fetch_delayed_messages_read_returns_nonzero() {
-        let monitor = setup_monitor().await;
-        let count = monitor
-            .fetch_delayed_messages_read(BlockNumberOrTag::Latest)
-            .await
-            .unwrap();
-        assert!(
-            count > 0,
-            "expected nonzero delayed messages read, got {count}"
-        );
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn fetch_latest_batch_info_on_startup_returns_valid_info() {
-        let monitor = setup_monitor().await;
-        let info = monitor
-            .fetch_latest_batch_cursor_on_fresh_deployment()
-            .await
-            .expect("fetch failed");
-        assert!(
-            info.next_batch_start_pos > 0,
-            "expected nonzero next_batch_start_pos, got {}",
-            info.next_batch_start_pos
-        );
-        assert!(
-            info.last_batch_delayed_messages_read > 0,
-            "expected nonzero last_batch_delayed_messages_read, got {}",
-            info.last_batch_delayed_messages_read
-        );
-    }
-}
+#[path = "l1_monitor_tests.rs"]
+mod tests;

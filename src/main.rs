@@ -138,7 +138,11 @@ async fn run<R: Rollup>(
         while !msgs.is_empty() {
             let payload = R::build_espresso_tx_payload(&mut msgs);
             if payload.is_empty() {
-                panic!("build_espresso_tx_payload returned empty payload for non-empty messages");
+                tracing::error!(
+                    remaining = msgs.len(),
+                    "build_espresso_tx_payload returned empty payload for non-empty messages; skipping batch"
+                );
+                break;
             }
             let tx = espresso_types::Transaction::new(namespace_id, payload);
             txes.push(tx);
@@ -198,10 +202,7 @@ async fn run<R: Rollup>(
     tokio::try_join!(
         async { submitter_task.await.map_err(anyhow::Error::from) },
         async { feed_task.await.map_err(anyhow::Error::from) },
-        async {
-            streamer_task.await;
-            Ok::<(), anyhow::Error>(())
-        },
+        streamer_task,
         async { da_task.await.map_err(anyhow::Error::from) },
         async {
             l1_monitor_task.await;

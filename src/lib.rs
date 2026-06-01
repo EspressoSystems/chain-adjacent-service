@@ -1,6 +1,7 @@
 pub mod config;
 pub mod da_api;
 pub mod espresso_client;
+#[cfg(any(test, feature = "e2e"))]
 pub mod espresso_e2e;
 pub mod key_manager;
 pub mod rollups;
