@@ -56,7 +56,7 @@ cat > "$DUMP_CONFIG" <<EOF
 EOF
 
 KEYSET_HEX=$(docker run --rm \
-    --entrypoint /usr/local/bin/anytrusttool \
+    --entrypoint /usr/local/bin/datool \
     -v "$DUMP_CONFIG:/config.json:ro" \
     "$NITRO_IMAGE" \
     dumpkeyset --conf.file /config.json \
@@ -119,6 +119,22 @@ docker run --rm \
     "$INNER_CALLDATA"
 
 echo "Validator $VALIDATOR_ADDRESS authorized on rollup $ROLLUP"
+
+python3 - "$CONFIG_DIR/deployed_chain_info.json" "$CONFIG_DIR/deployed_chain_info_poster.json" <<'PY'
+import json
+import sys
+
+src, dst = sys.argv[1], sys.argv[2]
+with open(src, "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+
+for entry in data:
+    entry["chain-config"]["arbitrum"]["DataAvailabilityCommittee"] = False
+
+with open(dst, "w", encoding="utf-8") as fh:
+    json.dump(data, fh, indent=2)
+    fh.write("\n")
+PY
 
 # ── Snapshot & cleanup ────────────────────────────────────────────────────────
 

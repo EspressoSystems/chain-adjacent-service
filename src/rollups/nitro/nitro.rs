@@ -439,43 +439,27 @@ pub fn verify_broadcast_feed_message_signature(
     }
 }
 
-/// Mirrors `BroadcastFeedMessage.SignatureHash` in
-/// broadcaster/message/message.go from upstream nitro v3.10. Hashes the
-/// hand-picked subset of fields covered by the sequencer signature, prefixed
-/// with "Arbitrum Nitro Feed:".
+/// Mirrors `MessageWithMetadata.Hash` in
+/// arbos/arbostypes/messagewithmeta.go from upstream nitro v3.9.9.
+/// Hash = keccak256("Arbitrum Nitro Feed:" || seq_num(8) || chain_id(8) || delayed_messages_read(8) || rlp(message))
 pub fn signature_hash(msg: &BroadcastFeedMessage, chain_id: u64) -> Result<FixedBytes<32>> {
     let l1_msg = msg
         .message
         .message
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("BroadcastFeedMessage missing L1IncomingMessage"))?;
-    let header = l1_msg
-        .header
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("BroadcastFeedMessage missing L1IncomingMessageHeader"))?;
+
+    let mut extra_data = [0u8; 24];
+    extra_data[..8].copy_from_slice(&msg.sequence_number.to_be_bytes());
+    extra_data[8..16].copy_from_slice(&chain_id.to_be_bytes());
+    extra_data[16..].copy_from_slice(&msg.message.delayed_messages_read.to_be_bytes());
+
+    let rlp_message = alloy_rlp::encode(l1_msg);
 
     let mut hasher = Keccak256::new();
     hasher.update(b"Arbitrum Nitro Feed:");
-    hasher.update(chain_id.to_be_bytes());
-    hasher.update(msg.sequence_number.to_be_bytes());
-    if let Some(block_hash) = &msg.block_hash {
-        hasher.update(block_hash.as_slice());
-    }
-    hasher.update(&msg.block_metadata);
-    hasher.update(msg.message.delayed_messages_read.to_be_bytes());
-
-    hasher.update([header.kind]);
-    hasher.update(header.poster.as_slice());
-    hasher.update(header.block_number.to_be_bytes());
-    hasher.update(header.timestamp.to_be_bytes());
-    if let Some(request_id) = &header.request_id {
-        hasher.update(request_id.as_slice());
-    }
-    if let Some(base_fee) = &header.l1_base_fee {
-        // Match Go big.Int.Bytes(): minimal big-endian representation.
-        hasher.update(base_fee.to_be_bytes_trimmed_vec());
-    }
-    hasher.update(&l1_msg.l2msg);
+    hasher.update(extra_data);
+    hasher.update(&rlp_message);
 
     Ok(hasher.finalize())
 }

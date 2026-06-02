@@ -2,7 +2,7 @@ name: CAS CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, integration-nitro-v3.9.9]
   pull_request:
 
 env:

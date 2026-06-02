@@ -30,6 +30,8 @@ use crate::{
 const HEADER_CONTENT_TYPE: &str = "application/json";
 
 const ESPRESSO_HEADER_BYTE: u8 = 0x70;
+const ANYTRUST_DAS_HEADER_BYTE: u8 = 0x80;
+const ANYTRUST_DAS_TREE_HEADER_BYTE: u8 = 0x88;
 
 const STORE: &str = "daprovider_store";
 const GET_MAX_MESSAGE_SIZE: &str = "daprovider_getMaxMessageSize";
@@ -123,11 +125,17 @@ async fn handle_rpc(State(state): State<ServerState>, body: Bytes) -> Result<Res
         RECOVER_PAYLOAD_AND_PREIMAGES => {
             handle_recover_inner(state, parsed, RECOVER_PAYLOAD_AND_PREIMAGES).await
         }
-        GET_SUPPORTED_HEADER_BYTES
-            if state.da_config.name == "calldata" || state.da_config.is_anytrust =>
-        {
+        GET_SUPPORTED_HEADER_BYTES if state.da_config.name == "calldata" => {
             respond_header_bytes(&parsed["id"], &[ESPRESSO_HEADER_BYTE])
         }
+        GET_SUPPORTED_HEADER_BYTES if state.da_config.is_anytrust => respond_header_bytes(
+            &parsed["id"],
+            &[
+                ESPRESSO_HEADER_BYTE,
+                ANYTRUST_DAS_HEADER_BYTE,
+                ANYTRUST_DAS_TREE_HEADER_BYTE,
+            ],
+        ),
         GET_SUPPORTED_HEADER_BYTES => handle_supported_header_bytes_forwarded(state, parsed).await,
         GET_MAX_MESSAGE_SIZE => match state.max_message_size {
             Some(max_size) => {
@@ -677,7 +685,7 @@ mod tests {
             .await
             .expect("RPC call failed");
 
-        assert_eq!(response["headerBytes"], "0x70");
+        assert_eq!(response["headerBytes"], "0x708088");
         assert_eq!(
             mock_da_provider.received_requests().await.unwrap().len(),
             0,

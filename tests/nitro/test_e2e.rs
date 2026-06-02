@@ -375,9 +375,9 @@ pub(crate) fn write_cas_config(
     path
 }
 
-// https://github.com/EspressoSystems/nitro-contracts/blob/ec47f8578cc0837347af9de5bf6c34ed3e037d93/src/rollup/IRollupCore.sol#L26
-const ASSERTION_CREATED_TOPIC: alloy::primitives::B256 =
-    alloy::primitives::b256!("901c3aee23cf4478825462caaab375c606ab83516060388344f0650340753630");
+// Pre-BoLD: NodeCreated event (v3.9.9 / legacy contracts)
+const NODE_CREATED_TOPIC: alloy::primitives::B256 =
+    alloy::primitives::b256!("4f4caa9e67fb994e349dd35d1ad0ce23053d4323f83ce11dc817b5435031d096");
 
 fn read_rollup_address() -> Address {
     let path = Path::new(GENERATED_CONFIG_DIR).join("deployment.json");
@@ -397,7 +397,7 @@ fn read_rollup_address() -> Address {
 async fn wait_for_assertion_created(provider: &RootProvider, rollup: Address, from_block: u64) {
     let filter = Filter::new()
         .address(rollup)
-        .event_signature(ASSERTION_CREATED_TOPIC)
+        .event_signature(NODE_CREATED_TOPIC)
         .from_block(from_block);
 
     let deadline = Instant::now() + Duration::from_secs(5 * 60);
@@ -588,7 +588,7 @@ async fn run_e2e(route: CasRoute) {
     let anytrust = matches!(route, CasRoute::Anytrust);
 
     if anytrust {
-        nitro_node.start_das_committee();
+        nitro_node.start_das_committee(&sequencer_inbox.to_string());
         println!("DAS committee + mirror started");
         nitro_node.start_anytrust_daprovider(&sequencer_inbox.to_string());
         println!("daprovider-anytrust sidecar started");
