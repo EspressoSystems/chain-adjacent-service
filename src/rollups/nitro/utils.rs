@@ -25,6 +25,11 @@ pub fn recover_signer_address(message_hash: FixedBytes<32>, signature: &[u8]) ->
         return Err(anyhow::anyhow!("invalid signature"));
     }
 
+    if signature.normalize_s().is_some() {
+        tracing::warn!("non-canonical high-S signature rejected");
+        return Err(anyhow::anyhow!("non-canonical high-S signature"));
+    }
+
     let hash = B256::from_slice(message_hash.as_slice());
     match signature.recover_address_from_prehash(&hash) {
         Ok(signer) => Ok(signer),

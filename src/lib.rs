@@ -67,7 +67,5 @@ pub async fn cas_init() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    // TODO: implement the logic to start CAS in nitro rollup mode
-
     Ok(())
 }

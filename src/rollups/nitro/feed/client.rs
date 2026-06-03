@@ -11,7 +11,7 @@ use yawc::{CompressionLevel, DeflateOptions, HttpRequest, Options, TcpWebSocket,
 
 use super::message::BroadcastFeedMessage;
 use super::message::BroadcastMessage;
-use crate::rollups::nitro::nitro::verify_broadcast_feed_message_signature;
+use crate::rollups::nitro::nitro::{FeedMessageVerifier, verify_broadcast_feed_message_signature};
 use crate::utils::exponential_backoff;
 use crate::ws_proxy_connect::connect_yawc;
 
@@ -102,6 +102,7 @@ pub struct BroadcasterClient {
     next_seq_num: u64,
     first_reconnect_attempt: bool,
     espresso_submission_channel: mpsc::Sender<BroadcastFeedMessage>,
+    verifier: FeedMessageVerifier,
 }
 
 impl BroadcasterClient {
@@ -112,6 +113,24 @@ impl BroadcasterClient {
         current_message_count: u64,
         espresso_submission_channel: mpsc::Sender<BroadcastFeedMessage>,
     ) -> Self {
+        Self::new_with_verifier(
+            config,
+            websocket_url,
+            chain_id,
+            current_message_count,
+            espresso_submission_channel,
+            verify_broadcast_feed_message_signature,
+        )
+    }
+
+    pub fn new_with_verifier(
+        config: BroadcasterClientConfig,
+        websocket_url: String,
+        chain_id: u64,
+        current_message_count: u64,
+        espresso_submission_channel: mpsc::Sender<BroadcastFeedMessage>,
+        verifier: FeedMessageVerifier,
+    ) -> Self {
         Self {
             config,
             websocket_url,
@@ -119,6 +138,7 @@ impl BroadcasterClient {
             next_seq_num: current_message_count,
             first_reconnect_attempt: true,
             espresso_submission_channel,
+            verifier,
         }
     }
 
@@ -448,11 +468,12 @@ impl BroadcasterClient {
 
         let chain_id = self.chain_id;
         let sequencer_addresses = self.config.trusted_sequencer_addresses.clone();
+        let verifier = self.verifier;
 
         let broadcast_feed_messages = tokio::task::spawn_blocking(move || {
             let mut verified = Vec::new();
             for message in msg.messages.into_iter().flatten() {
-                match verify_broadcast_feed_message_signature(chain_id, &sequencer_addresses, &message) {
+                match verifier(chain_id, &sequencer_addresses, &message) {
                     Ok(()) => verified.push(message),
                     Err(e) => {
                         tracing::error!(seq_num = message.sequence_number, error = %e, "invalid signature for broadcast message, skipping");
@@ -537,7 +558,7 @@ pub mod testing {
         sequencer_addresses: Vec<Address>,
     ) -> (BroadcasterClient, mpsc::Receiver<BroadcastFeedMessage>) {
         let (tx, rx) = mpsc::channel(256);
-        let client = BroadcasterClient::new(
+        let client = BroadcasterClient::new_with_verifier(
             BroadcasterClientConfig {
                 trusted_sequencer_addresses: sequencer_addresses,
                 ..Default::default()
@@ -546,6 +567,7 @@ pub mod testing {
             TEST_NAMESPACE_ID,
             0,
             tx,
+            |_, _, _| Ok(()),
         );
         (client, rx)
     }

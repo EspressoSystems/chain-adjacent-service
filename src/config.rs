@@ -72,6 +72,7 @@ pub struct AdvancedConfig {
     pub espresso_finalized_message_channel_capacity: usize,
     pub verification_channel_capacity: usize,
     pub hotshot_transaction_channel_capacity: usize,
+    pub submitter_input_channel_capacity: usize,
 }
 
 impl Default for AdvancedConfig {
@@ -80,6 +81,7 @@ impl Default for AdvancedConfig {
             espresso_finalized_message_channel_capacity: 100,
             verification_channel_capacity: 100,
             hotshot_transaction_channel_capacity: 300,
+            submitter_input_channel_capacity: 100,
         }
     }
 }

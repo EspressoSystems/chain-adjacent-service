@@ -1,6 +1,8 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::{Arc, Mutex};
+
+use parking_lot::Mutex;
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
@@ -89,7 +91,7 @@ impl Backlog {
 
     /// Append messages, skipping duplicates with seq <= tail.
     fn append(&self, bm: &BroadcastMessage) {
-        let mut msgs = self.messages.lock().expect("messages lock");
+        let mut msgs = self.messages.lock();
         for m in bm.messages.iter().flatten() {
             if let Some(tail_seq) = msgs.last().map(|m| m.sequence_number)
                 && m.sequence_number <= tail_seq
@@ -101,27 +103,21 @@ impl Backlog {
     }
 
     fn confirm(&self, confirmed: u64) {
-        let mut msgs = self.messages.lock().expect("messages lock");
+        let mut msgs = self.messages.lock();
         msgs.retain(|m| m.sequence_number > confirmed);
     }
 
     pub(super) fn count(&self) -> usize {
-        self.messages
-            .lock()
-            .map(|m| m.len())
-            .expect("messages lock")
+        self.messages.lock().len()
     }
 
     fn get_since(&self, from_seq: u64) -> Vec<BroadcastFeedMessage> {
         self.messages
             .lock()
-            .map(|msgs| {
-                msgs.iter()
-                    .filter(|m| m.sequence_number >= from_seq)
-                    .cloned()
-                    .collect()
-            })
-            .expect("messages lock")
+            .iter()
+            .filter(|m| m.sequence_number >= from_seq)
+            .cloned()
+            .collect()
     }
 }
 
@@ -180,7 +176,7 @@ impl WsBroadcastServer {
             accept_loop(listener, shared, accept_cancel).await;
         });
 
-        let mut state = self.state.lock().expect("state lock");
+        let mut state = self.state.lock();
         *state = Some(ServerRunState {
             cancel,
             listener_addr: local_addr,
@@ -190,19 +186,19 @@ impl WsBroadcastServer {
     }
 
     pub(super) fn stop(&self) {
-        let mut state = self.state.lock().expect("state lock");
+        let mut state = self.state.lock();
         if let Some(s) = state.take() {
             s.cancel.cancel();
         }
     }
 
     pub(super) fn started(&self) -> bool {
-        let state = self.state.lock().expect("state lock");
+        let state = self.state.lock();
         state.is_some()
     }
 
     pub(super) fn listener_addr(&self) -> Option<SocketAddr> {
-        let state = self.state.lock().expect("state lock");
+        let state = self.state.lock();
         state.as_ref().map(|s| s.listener_addr)
     }
 

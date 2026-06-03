@@ -9,7 +9,9 @@ use crate::{
         mock_rollup::{MockEntry, MockRollup, make_entry, make_mock_espresso_transaction},
     },
     rollups::rollup::RollupQueueEntry,
-    streamer::streamer::{Streamer, find_contiguous_entries_after, poll_hotshot_blocks},
+    streamer::streamer::{
+        BroadcastRetry, Streamer, find_contiguous_entries_after, poll_hotshot_blocks,
+    },
 };
 use std::time::Duration;
 
@@ -276,9 +278,16 @@ async fn test_poll_hotshot_blocks_and_process() {
     );
 
     let (espresso_finalized_sender, _) = mpsc::channel(100);
+    let (retry_tx, _retry_rx) = mpsc::channel::<()>(1);
+    let mut retry = BroadcastRetry::new(retry_tx);
     while let Ok((transactions, height)) = rx.try_recv() {
         streamer
-            .handle_hotshot_transactions(transactions, height, espresso_finalized_sender.clone())
+            .handle_hotshot_transactions(
+                transactions,
+                height,
+                espresso_finalized_sender.clone(),
+                &mut retry,
+            )
             .await;
     }
 
@@ -349,11 +358,18 @@ async fn test_reverse_order_fills_stubs_then_finalization_promotes() {
     });
 
     let (feed_sender, _feed_rx) = mpsc::channel(100);
+    let (retry_tx, _retry_rx) = mpsc::channel::<()>(1);
+    let mut retry = BroadcastRetry::new(retry_tx);
     while streamer.queue.len() < 3 || streamer.stubs.len() < 4 {
         match tokio::time::timeout(Duration::from_secs(30), rx.recv()).await {
             Ok(Some((transactions, height))) => {
                 streamer
-                    .handle_hotshot_transactions(transactions, height, feed_sender.clone())
+                    .handle_hotshot_transactions(
+                        transactions,
+                        height,
+                        feed_sender.clone(),
+                        &mut retry,
+                    )
                     .await;
             }
             _ => break,

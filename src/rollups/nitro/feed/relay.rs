@@ -220,7 +220,13 @@ mod tests {
             loop {
                 let frame = downstream.next().await.expect("stream ended");
                 let payload = frame.into_payload();
-                let bm: BroadcastMessage = serde_json::from_slice(&payload).expect("json");
+                if payload.is_empty() {
+                    continue;
+                }
+                let bm: BroadcastMessage = match serde_json::from_slice(&payload) {
+                    Ok(bm) => bm,
+                    Err(_) => continue,
+                };
                 if let Some(msg) = bm.messages.into_iter().flatten().next() {
                     return msg;
                 }
