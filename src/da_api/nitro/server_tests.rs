@@ -453,9 +453,9 @@ async fn test_recover_payload_forwards_raw_msg_when_cas_cert_invalid() {
         .build(format!("http://{addr}/arb/anytrust"))
         .unwrap();
 
-    // 50 bytes: > SEQUENCER_HEADER_LEN (40) so the length precheck passes,
-    // but the byte at position 40 is 0x00 (not 0x70), so CasCertificate::from_bytes errors.
-    let raw_msg = Bytes::from(vec![0u8; 50]);
+    let mut raw_msg_vec = vec![0u8; 50];
+    raw_msg_vec[SEQUENCER_HEADER_LEN] = 0xff;
+    let raw_msg = Bytes::from(raw_msg_vec);
 
     let response: Result<RecoverPayloadResult, _> = client
         .request(
@@ -997,10 +997,12 @@ async fn test_store_error_response_is_forwarded_unchanged() {
 
 #[tokio::test]
 async fn test_non_store_da_api_error_responses_are_forwarded_unchanged() {
+    let mut recover_msg = vec![0u8; 50];
+    recover_msg[SEQUENCER_HEADER_LEN] = 0xff;
     let recover_params = json!([
         1u64,
         b256!("0x0000000000000000000000000000000000000000000000000000000000000000"),
-        Bytes::from(vec![0u8; 50])
+        Bytes::from(recover_msg)
     ]);
 
     let cases = [

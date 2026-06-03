@@ -31,6 +31,12 @@ use crate::{
 pub(super) const HEADER_CONTENT_TYPE: &str = "application/json";
 
 const ESPRESSO_HEADER_BYTE: u8 = 0x70;
+const ANYTRUST_HEADER_BYTES: [u8; 2] = [0x80, 0x88];
+const CALLDATA_HEADER_BYTE: u8 = 0x00;
+
+fn is_anytrust_header(byte: u8) -> bool {
+    ANYTRUST_HEADER_BYTES.contains(&byte)
+}
 
 const STORE: &str = "daprovider_store";
 const GET_MAX_MESSAGE_SIZE: &str = "daprovider_getMaxMessageSize";
@@ -50,6 +56,7 @@ pub struct ServerState {
     /// for forwarded providers like Celestia or AnyTrust where the
     /// downstream owns the size limit).
     pub max_message_size: Option<u64>,
+    pub calldata_max_size: u64,
 }
 
 impl ServerState {
@@ -58,6 +65,7 @@ impl ServerState {
         client: reqwest::Client,
         verification_channel: VerificationSender,
         key_manager: Arc<KeyManager>,
+        calldata_max_size: u64,
     ) -> Self {
         Self {
             da_config,
@@ -65,6 +73,7 @@ impl ServerState {
             verification_channel,
             key_manager,
             max_message_size: None,
+            calldata_max_size,
         }
     }
 
@@ -87,6 +96,19 @@ pub fn build_app(
 ) -> Result<Router, DaApiError> {
     let http = reqwest::Client::new();
 
+    for provider in &providers {
+        if provider.endpoint_url.is_empty() && provider.anytrust_fallback_url.is_some() {
+            return Err(DaApiError::Configuration(format!(
+                "provider '{}' has anytrust_fallback_url set but endpoint_url is empty; \
+                 anytrust_fallback_url is only consulted after the primary endpoint requests \
+                 fallback, so without a primary endpoint it is never reached. \
+                 If anytrust is the only writer you need, set endpoint_url to the anytrust \
+                 sidecar URL and is_anytrust = true instead.",
+                provider.name
+            )));
+        }
+    }
+
     let mut app = Router::new();
     providers.push(DaProviderConfig::calldata());
     for provider in providers {
@@ -96,6 +118,7 @@ pub fn build_app(
             http.clone(),
             verification_channel.clone(),
             key_manager.clone(),
+            calldata_max_size,
         );
         // Calldata is the only built-in provider that owns its own size
         // limit; everything else forwards getMaxMessageSize downstream.
@@ -380,8 +403,9 @@ async fn handle_recover_inner(
         sequencer_msg
     };
 
-    if state.da_config.name == "calldata" {
-        // Calldata returns the inner batch payload with the seq header stripped.
+    let inner_header = da_certificate.get(SEQUENCER_HEADER_LEN).copied();
+
+    if state.da_config.name == "calldata" || inner_header == Some(CALLDATA_HEADER_BYTE) {
         let payload = &da_certificate[SEQUENCER_HEADER_LEN..];
         let result = serde_json::json!({
             "jsonrpc": "2.0",
@@ -400,7 +424,10 @@ async fn handle_recover_inner(
         }
     }
 
-    let endpoint = state.current_endpoint();
+    let endpoint = match state.da_config.anytrust_fallback_url.as_deref() {
+        Some(url) if !url.is_empty() && inner_header.is_some_and(is_anytrust_header) => url,
+        _ => state.current_endpoint(),
+    };
 
     let forwarded_body = serde_json::json!({
         "jsonrpc": "2.0",
