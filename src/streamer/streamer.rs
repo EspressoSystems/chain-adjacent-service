@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use anyhow::Result;
 use espresso_types::NamespaceId;
 use tokio::sync::{mpsc, watch};
 
@@ -70,7 +71,7 @@ impl<R: Rollup> Streamer<R> {
         mut l1_finalized_msg_idx: watch::Receiver<u64>,
         mut verification_receiver: VerificationReceiver,
         espresso_finalization_sender: mpsc::Sender<R::FeedMessage>,
-    ) {
+    ) -> Result<()> {
         self.finalized_idx = *l1_finalized_msg_idx.borrow();
 
         // Event-driven retry: we only trigger a delayed retry when `try_send` reports backpressure.
@@ -90,7 +91,7 @@ impl<R: Rollup> Streamer<R> {
             finalized_idx = self.finalized_idx,
             "streamer started; polling espresso"
         );
-        tokio::spawn(async move {
+        let mut poller_handle = tokio::spawn(async move {
             poll_hotshot_blocks(
                 &config,
                 &client,
@@ -102,6 +103,16 @@ impl<R: Rollup> Streamer<R> {
         });
         loop {
             tokio::select! {
+                // If the poller ever exits (returns or panics), the streamer can
+                // no longer make progress — surface the failure instead of
+                // silently looping on empty channels.
+                poller_result = &mut poller_handle => {
+                    return match poller_result {
+                        Ok(Ok(())) => Err(anyhow::anyhow!("hotshot poller exited unexpectedly")),
+                        Ok(Err(err)) => Err(err.context("hotshot poller failed")),
+                        Err(join_err) => Err(anyhow::anyhow!("hotshot poller task panicked: {join_err}")),
+                    };
+                },
                 // New L1 finalized message index: prune the queue and update finalized_idx
                 // Also update last_broadcast_position to ensure we don't broadcast messages that are finalized by L1
                 changed = l1_finalized_msg_idx.changed() => {
@@ -402,7 +413,7 @@ pub async fn poll_hotshot_blocks(
     next_hotshot_block_num: u64,
     namespace_id: NamespaceId,
     sender: mpsc::Sender<(Vec<NamespaceTransactionsInRange>, u64)>,
-) {
+) -> Result<()> {
     let mut from_block = next_hotshot_block_num;
     let mut backoff = Duration::from_millis(config.initial_backoff_ms);
 
@@ -424,7 +435,10 @@ pub async fn poll_hotshot_blocks(
         }
         // to block is set to latest_block_height + 1 because fetch_namespace_transactions_in_range is explusive of the last block
         // otherwise its set to from_block + HOTSHOT_RANGE_LIMIT
-        let to_block = std::cmp::min(from_block + HOTSHOT_RANGE_LIMIT, latest_block_height + 1);
+        let to_block = std::cmp::min(
+            from_block.saturating_add(HOTSHOT_RANGE_LIMIT),
+            latest_block_height.saturating_add(1),
+        );
         let hotshot_transactions = match client
             .fetch_namespace_transactions_in_range(namespace_id, from_block, to_block)
             .await
@@ -453,398 +467,15 @@ pub async fn poll_hotshot_blocks(
         );
         backoff = Duration::from_millis(config.initial_backoff_ms);
 
-        let result = sender.send((hotshot_transactions, from_block)).await;
-
-        if let Err(err) = result {
-            tracing::error!("failed to send hotshot transactions through channel: {err}");
-            return;
-        }
+        sender
+            .send((hotshot_transactions, from_block))
+            .await
+            .map_err(|err| anyhow::anyhow!("hotshot transactions channel closed: {err}"))?;
 
         from_block = to_block
     }
 }
 
 #[cfg(test)]
-pub mod testing {
-    use espresso_types::NamespaceId;
-    use tokio::sync::mpsc;
-
-    use crate::{
-        config::{AdvancedConfig, RollupConfig, RollupType::Nitro, StreamerConfig},
-        espresso_client::client::EspressoClient,
-        espresso_e2e::{
-            espresso_dev_node::EspressoDevNode,
-            mock_rollup::{MockEntry, MockRollup, make_entry, make_mock_espresso_transaction},
-        },
-        rollups::rollup::RollupQueueEntry,
-        streamer::streamer::{Streamer, find_contiguous_entries_after, poll_hotshot_blocks},
-    };
-    use std::time::Duration;
-
-    fn make_streamer(starting_pos: u64) -> Streamer<MockRollup> {
-        make_streamer_with_cap(starting_pos, 1000)
-    }
-
-    fn make_streamer_with_cap(
-        starting_pos: u64,
-        max_full_queue_entries: usize,
-    ) -> Streamer<MockRollup> {
-        let client = EspressoClient::new("http://127.0.0.1".to_string(), 30);
-        Streamer::new(
-            client,
-            StreamerConfig {
-                initial_backoff_ms: 1,
-                max_backoff_ms: 1,
-                starting_pos,
-                starting_hotshot_height: 1,
-                retry_broadcast_delay_ms: 1000,
-                max_full_queue_entries,
-            },
-            RollupConfig {
-                namespace_id: 1918988905u64,
-                stack: (),
-                ty: Nitro,
-            },
-            AdvancedConfig::default(),
-            None,
-        )
-    }
-
-    fn queue_positions(streamer: &Streamer<MockRollup>) -> Vec<u64> {
-        streamer.queue.iter().map(|e| e.sequence_number()).collect()
-    }
-
-    fn entry_positions<T: RollupQueueEntry>(entries: Vec<T>) -> Vec<u64> {
-        entries.into_iter().map(|e| e.sequence_number()).collect()
-    }
-
-    #[test]
-    fn test_find_contiguous_entries_after() {
-        assert!(find_contiguous_entries_after::<MockEntry>(&[], 0).is_empty());
-
-        let queue = vec![make_entry(1, 1), make_entry(2, 1), make_entry(3, 1)];
-        let got = find_contiguous_entries_after(&queue, 0);
-        assert_eq!(entry_positions(got), vec![1, 2, 3]);
-
-        // Skip entries at/below last_pos
-        let queue = vec![make_entry(1, 1), make_entry(2, 1), make_entry(3, 1)];
-        let got = find_contiguous_entries_after(&queue, 1);
-        assert_eq!(entry_positions(got), vec![2, 3]);
-
-        // Stop at the first gap
-        let queue = vec![make_entry(2, 1), make_entry(4, 1), make_entry(5, 1)];
-        let got = find_contiguous_entries_after(&queue, 1);
-        assert_eq!(entry_positions(got), vec![2]);
-
-        // If the first entry after last_pos is not last_pos+1, nothing is contiguous.
-        let queue = vec![make_entry(5, 1), make_entry(6, 1)];
-        let got = find_contiguous_entries_after(&queue, 3);
-        assert!(got.is_empty());
-
-        // Note: this helper assumes `queue` is strictly increasing. Duplicates/out-of-order values
-        // will stop the scan early.
-        let queue = vec![make_entry(2, 1), make_entry(2, 1), make_entry(3, 1)];
-        let got = find_contiguous_entries_after(&queue, 1);
-        assert_eq!(entry_positions(got), vec![2]);
-    }
-
-    #[test]
-    fn test_filter_messages() {
-        // Empty queue: lowest seq first, all get sorted
-        let mut streamer = make_streamer(1);
-        streamer.filter_messages(vec![
-            make_entry(1, 1),
-            make_entry(5, 1),
-            make_entry(4, 1),
-            make_entry(2, 1),
-            make_entry(3, 1),
-        ]);
-
-        assert_eq!(queue_positions(&streamer), vec![1, 2, 3, 4, 5]);
-
-        // Duplicates are not added
-        let mut streamer = make_streamer(1);
-        streamer.filter_messages(vec![make_entry(5, 1)]);
-        streamer.filter_messages(vec![make_entry(5, 1)]);
-        assert_eq!(queue_positions(&streamer), vec![5]);
-
-        // Skips positions which are less than the starting position
-        let mut streamer = make_streamer(5);
-        streamer.filter_messages(vec![make_entry(5, 1)]);
-        streamer.filter_messages(vec![make_entry(1, 1)]);
-        assert_eq!(queue_positions(&streamer), vec![5]);
-    }
-
-    fn stub_positions(streamer: &Streamer<MockRollup>) -> Vec<u64> {
-        streamer.stubs.keys().copied().collect()
-    }
-
-    fn stub_entries(streamer: &Streamer<MockRollup>) -> Vec<(u64, u64)> {
-        streamer.stubs.iter().map(|(s, h)| (*s, *h)).collect()
-    }
-
-    #[test]
-    fn test_filter_messages_overflows_to_stubs() {
-        let mut streamer = make_streamer_with_cap(1, 3);
-        streamer.filter_messages(vec![
-            make_entry(1, 10),
-            make_entry(2, 10),
-            make_entry(3, 11),
-            make_entry(4, 12),
-            make_entry(5, 13),
-        ]);
-        assert_eq!(queue_positions(&streamer), vec![1, 2, 3]);
-        assert_eq!(stub_positions(&streamer), vec![4, 5]);
-        assert_eq!(stub_entries(&streamer), vec![(4, 12), (5, 13)]);
-
-        streamer.filter_messages(vec![make_entry(0, 9)]);
-        assert_eq!(queue_positions(&streamer), vec![1, 2, 3]);
-        assert_eq!(stub_positions(&streamer), vec![4, 5]);
-
-        let mut streamer = make_streamer_with_cap(1, 3);
-        streamer.filter_messages(vec![
-            make_entry(2, 20),
-            make_entry(4, 22),
-            make_entry(6, 24),
-        ]);
-        assert_eq!(queue_positions(&streamer), vec![2, 4, 6]);
-        streamer.filter_messages(vec![make_entry(3, 21)]);
-        assert_eq!(queue_positions(&streamer), vec![2, 3, 4]);
-        assert_eq!(stub_entries(&streamer), vec![(6, 24)]);
-
-        streamer.filter_messages(vec![make_entry(6, 24)]);
-        assert_eq!(queue_positions(&streamer), vec![2, 3, 4]);
-        assert_eq!(stub_entries(&streamer), vec![(6, 24)]);
-
-        streamer.filter_messages(vec![make_entry(3, 21)]);
-        assert_eq!(queue_positions(&streamer), vec![2, 3, 4]);
-        assert_eq!(stub_entries(&streamer), vec![(6, 24)]);
-    }
-
-    #[test]
-    fn test_filter_messages_leaves_stubs_alone() {
-        let mut streamer = make_streamer_with_cap(1, 2);
-        streamer.filter_messages(vec![
-            make_entry(1, 10),
-            make_entry(2, 11),
-            make_entry(3, 12),
-            make_entry(4, 13),
-        ]);
-        assert_eq!(queue_positions(&streamer), vec![1, 2]);
-        assert_eq!(stub_entries(&streamer), vec![(3, 12), (4, 13)]);
-
-        streamer.queue.drain(..);
-
-        streamer.filter_messages(vec![make_entry(3, 12), make_entry(4, 13)]);
-        assert!(queue_positions(&streamer).is_empty());
-        assert_eq!(stub_entries(&streamer), vec![(3, 12), (4, 13)]);
-
-        streamer.filter_messages(vec![make_entry(3, 99)]);
-        assert_eq!(stub_entries(&streamer), vec![(3, 12), (4, 13)]);
-    }
-
-    #[tokio::test]
-    async fn test_drifting_seq_overflows_to_stubs_and_finalization_clears() {
-        let mut s = make_streamer_with_cap(1, 3);
-
-        s.filter_messages(vec![
-            make_entry(2, 10),
-            make_entry(3, 11),
-            make_entry(4, 12),
-            make_entry(5, 13),
-            make_entry(6, 14),
-        ]);
-        assert_eq!(queue_positions(&s), vec![2, 3, 4]);
-        assert_eq!(stub_entries(&s), vec![(5, 13), (6, 14)]);
-        assert_eq!(s.last_broadcast_position, 0);
-
-        s.stubs.clear();
-        s.handle_finalization(4).await;
-        assert_eq!(queue_positions(&s), Vec::<u64>::new());
-        assert_eq!(s.finalized_idx, 4);
-        assert_eq!(s.last_broadcast_position, 4);
-
-        s.stubs.insert(5, 13);
-        s.stubs.insert(6, 14);
-        s.handle_finalization(5).await;
-        assert_eq!(stub_entries(&s), vec![(6, 14)]);
-        assert_eq!(s.finalized_idx, 5);
-    }
-
-    #[tokio::test]
-    async fn test_handle_finalization_noop_when_not_advancing() {
-        let mut s = make_streamer_with_cap(1, 5);
-        s.filter_messages(vec![make_entry(2, 10), make_entry(3, 11)]);
-        s.handle_finalization(2).await;
-        assert_eq!(queue_positions(&s), vec![3]);
-        assert_eq!(s.finalized_idx, 2);
-        assert_eq!(s.last_broadcast_position, 2);
-
-        // Stale/equal finalized idx must be a no-op (no queue mutation, no position regression).
-        s.handle_finalization(1).await;
-        s.handle_finalization(2).await;
-        assert_eq!(queue_positions(&s), vec![3]);
-        assert_eq!(s.finalized_idx, 2);
-        assert_eq!(s.last_broadcast_position, 2);
-    }
-
-    #[tokio::test]
-    async fn test_poll_hotshot_blocks_and_process() {
-        let node = EspressoDevNode::start().await;
-
-        let mut streamer = Streamer::new(
-            node.client.clone(),
-            StreamerConfig {
-                initial_backoff_ms: 100,
-                max_backoff_ms: 500,
-                starting_hotshot_height: 1,
-                starting_pos: 1,
-                retry_broadcast_delay_ms: 1000,
-                max_full_queue_entries: 1000,
-            },
-            RollupConfig {
-                namespace_id: 1918988905u64,
-                stack: (),
-                ty: Nitro,
-            },
-            AdvancedConfig::default(),
-            None,
-        );
-
-        // Submit at least 10 transactions to the Espresso sequencer
-        let mut submitted_transactions = Vec::new();
-        for seq in 1..=10 {
-            let tx = make_mock_espresso_transaction(seq);
-            let tx_hash = node
-                .client
-                .submit_transaction(tx)
-                .await
-                .expect("failed to submit transaction");
-            submitted_transactions.push((seq, tx_hash));
-        }
-
-        let start_poll_block = 0;
-        // make sure the channel size is greater than test data size
-        let (tx, mut rx) = mpsc::channel(100);
-        let timeout_result = tokio::time::timeout(
-            Duration::from_secs(30),
-            poll_hotshot_blocks(
-                &streamer.config,
-                &streamer.client,
-                start_poll_block,
-                NamespaceId::from(streamer.rollup_config.namespace_id),
-                tx,
-            ),
-        )
-        .await;
-        assert!(
-            timeout_result.is_err(),
-            "expected poll_hotshot_blocks to keep polling and hit timeout"
-        );
-
-        let (espresso_finalized_sender, _) = mpsc::channel(100);
-        while let Ok((transactions, height)) = rx.try_recv() {
-            streamer
-                .handle_hotshot_transactions(
-                    transactions,
-                    height,
-                    espresso_finalized_sender.clone(),
-                )
-                .await;
-        }
-
-        // Verify the queue was populated with entries from polled blocks
-        assert!(
-            !streamer.queue.is_empty(),
-            "expected queue to have entries after polling"
-        );
-
-        let positions = queue_positions(&streamer);
-        for expected_seq in 1..=10 {
-            assert!(
-                positions.contains(&expected_seq),
-                "expected parsed sequence number {expected_seq} to be present, got {positions:?}"
-            );
-        }
-
-        // Entries must be strictly ascending (sorted, no duplicates)
-        for window in positions.windows(2) {
-            assert!(
-                window[0] < window[1],
-                "expected strictly ascending sequence numbers, got {positions:?}"
-            );
-        }
-
-        node.stop();
-    }
-
-    #[tokio::test]
-    async fn test_reverse_order_fills_stubs_then_finalization_promotes() {
-        let node = EspressoDevNode::start().await;
-
-        for seq in (1u64..=10).rev() {
-            let tx = make_mock_espresso_transaction(seq);
-            node.client
-                .submit_transaction(tx)
-                .await
-                .expect("failed to submit transaction");
-        }
-
-        // Cap the queue at 3 and start at seq=4 so seqs 1..=3 are ignored.
-        // last_broadcast_position stays at 0 since no contiguous run from 1 exists.
-        let mut streamer = Streamer::<MockRollup>::new(
-            node.client.clone(),
-            StreamerConfig {
-                initial_backoff_ms: 100,
-                max_backoff_ms: 500,
-                starting_hotshot_height: 1,
-                starting_pos: 4,
-                retry_broadcast_delay_ms: 1000,
-                max_full_queue_entries: 3,
-            },
-            RollupConfig {
-                namespace_id: 1918988905u64,
-                stack: (),
-                ty: Nitro,
-            },
-            AdvancedConfig::default(),
-            None,
-        );
-
-        let (tx, mut rx) = mpsc::channel(100);
-        let poller_config = streamer.config.clone();
-        let poller_client = streamer.client.clone();
-        let poller_ns = NamespaceId::from(streamer.rollup_config.namespace_id);
-        let poller = tokio::spawn(async move {
-            poll_hotshot_blocks(&poller_config, &poller_client, 0, poller_ns, tx).await;
-        });
-
-        let (feed_sender, _feed_rx) = mpsc::channel(100);
-        while streamer.queue.len() < 3 || streamer.stubs.len() < 4 {
-            match tokio::time::timeout(Duration::from_secs(30), rx.recv()).await {
-                Ok(Some((transactions, height))) => {
-                    streamer
-                        .handle_hotshot_transactions(transactions, height, feed_sender.clone())
-                        .await;
-                }
-                _ => break,
-            }
-        }
-        poller.abort();
-
-        assert_eq!(queue_positions(&streamer), vec![4, 5, 6]);
-        assert_eq!(stub_positions(&streamer), vec![7, 8, 9, 10]);
-
-        streamer.handle_finalization(6).await;
-        assert_eq!(queue_positions(&streamer), vec![7, 8, 9]);
-        assert_eq!(stub_positions(&streamer), vec![10]);
-        assert_eq!(streamer.finalized_idx, 6);
-        assert_eq!(streamer.last_broadcast_position, 6);
-
-        streamer.handle_finalization(9).await;
-        assert_eq!(queue_positions(&streamer), vec![10]);
-        assert!(streamer.stubs.is_empty());
-
-        node.stop();
-    }
-}
+#[path = "streamer_tests.rs"]
+pub mod testing;

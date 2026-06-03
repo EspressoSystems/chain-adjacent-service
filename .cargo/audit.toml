@@ -1,0 +1,44 @@
+[advisories]
+# Mirrors EspressoSystems/espresso-network/.cargo/audit.toml plus a few
+# advisories filed after their last update. Every entry is a transitive
+# dep we cannot bump directly — revisit when the espresso-network pin
+# moves. Unmaintained-crate warnings are surfaced informationally and
+# are not enumerated here.
+
+ignore = [
+    # --- inherited from espresso-network ---
+    # DoS in WebPKI that comes with tide_disco
+    "RUSTSEC-2023-0052",
+    # Tungstenite DoS — via async-tungstenite -> tide-websockets / surf-disco
+    "RUSTSEC-2023-0065",
+    # Unfixed "Marvin" RSA vulnerability, unused in sqlite dependency
+    "RUSTSEC-2023-0071",
+    # rustls busted, dependency of unmaintained tide
+    "RUSTSEC-2024-0336",
+    # AES overflow panic — pinned by tide-websockets having no release
+    "RUSTSEC-2025-0009",
+    # ANSI escape log poisoning — still here via ark-relations
+    "RUSTSEC-2025-0055",
+    # hickory-proto NSEC3 loop — only via libp2p-mdns; mdns not enabled
+    "RUSTSEC-2026-0118",
+    # hickory-proto O(n^2) name compression — libp2p does lookups one at a time
+    "RUSTSEC-2026-0119",
+
+    # --- newer advisories filed after upstream's last refresh ---
+    # aws-lc-sys 0.37.1 — transitive via hotshot networking stack
+    "RUSTSEC-2026-0044", # X.509 name constraints bypass
+    "RUSTSEC-2026-0045", # AES-CCM tag verification timing side channel
+    "RUSTSEC-2026-0046", # PKCS7_verify cert chain bypass
+    "RUSTSEC-2026-0047", # PKCS7_verify signature bypass
+    "RUSTSEC-2026-0048", # CRL distribution point scope check
+    # rustls-webpki 0.101.7 — old TLS stack pulled in transitively
+    "RUSTSEC-2026-0098", # URI name constraints
+    "RUSTSEC-2026-0099", # Wildcard name constraints
+    "RUSTSEC-2026-0104", # CRL parsing panic
+    # ring <0.17 unmaintained advisory (vuln-type, not just warning)
+    "RUSTSEC-2025-0010",
+    # rand custom-logger unsoundness — narrow, transitive
+    "RUSTSEC-2026-0097",
+    # lru IterMut Stacked Borrows — transitive
+    "RUSTSEC-2026-0002",
+]

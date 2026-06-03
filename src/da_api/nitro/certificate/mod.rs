@@ -267,10 +267,6 @@ impl CasCertificate {
     ) -> DaApiResult<()> {
         self.validate_structure()?;
 
-        if self.cas_signature == [0u8; 65] {
-            return Err(DaApiError::InvalidCasSignature);
-        }
-
         let payload = build_payload(
             self.start_message_pos,
             self.end_message_pos,
