@@ -49,6 +49,8 @@ pub struct DaProviderConfig {
     /// (which unwraps `0x70` then forwards the inner `0x80` cert to the
     /// sidecar).
     pub is_anytrust: bool,
+
+    pub anytrust_fallback_url: Option<String>,
 }
 
 impl DaProviderConfig {
@@ -57,6 +59,7 @@ impl DaProviderConfig {
             name: "calldata".to_string(),
             endpoint_url: "".to_string(),
             is_anytrust: false,
+            anytrust_fallback_url: None,
         }
     }
 }
