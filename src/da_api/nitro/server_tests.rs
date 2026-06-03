@@ -87,11 +87,13 @@ async fn test_namespace_endpoints() {
                 name: "celestia".to_string(),
                 endpoint_url: mock_da_provider.uri(),
                 is_anytrust: false,
+                anytrust_fallback_url: None,
             },
             DaProviderConfig {
                 name: "anytrust".to_string(),
                 endpoint_url: mock_da_provider2.uri(),
                 is_anytrust: false,
+                anytrust_fallback_url: None,
             },
         ],
     );
@@ -175,6 +177,7 @@ async fn test_anytrust_header_bytes_returned_locally() {
             name: "anytrust".to_string(),
             endpoint_url: mock_da_provider.uri(),
             is_anytrust: true,
+            anytrust_fallback_url: None,
         }],
     );
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -207,6 +210,7 @@ async fn test_all_da_api_methods() {
             name: "anytrust".to_string(),
             endpoint_url: mock_da_provider.uri(),
             is_anytrust: false,
+            anytrust_fallback_url: None,
         }],
     );
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -440,6 +444,7 @@ async fn test_recover_payload_forwards_raw_msg_when_cas_cert_invalid() {
             name: "anytrust".to_string(),
             endpoint_url: mock_da_provider.uri(),
             is_anytrust: false,
+            anytrust_fallback_url: None,
         }],
     );
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -448,9 +453,9 @@ async fn test_recover_payload_forwards_raw_msg_when_cas_cert_invalid() {
         .build(format!("http://{addr}/arb/anytrust"))
         .unwrap();
 
-    // 50 bytes: > SEQUENCER_HEADER_LEN (40) so the length precheck passes,
-    // but the byte at position 40 is 0x00 (not 0x70), so CasCertificate::from_bytes errors.
-    let raw_msg = Bytes::from(vec![0u8; 50]);
+    let mut raw_msg_vec = vec![0u8; 50];
+    raw_msg_vec[SEQUENCER_HEADER_LEN] = 0xff;
+    let raw_msg = Bytes::from(raw_msg_vec);
 
     let response: Result<RecoverPayloadResult, _> = client
         .request(
@@ -502,6 +507,7 @@ async fn test_recover_payload_rejects_invalid_cas_cert_when_header_byte_present(
             name: "anytrust".to_string(),
             endpoint_url: mock_da_provider.uri(),
             is_anytrust: false,
+            anytrust_fallback_url: None,
         }],
     );
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -551,6 +557,7 @@ async fn test_recover_payload_rejects_short_sequencer_msg() {
             name: "anytrust".to_string(),
             endpoint_url: mock_da_provider.uri(),
             is_anytrust: false,
+            anytrust_fallback_url: None,
         }],
     );
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -599,6 +606,7 @@ async fn test_store_success_returns_cas_certificate() {
             name: "anytrust".to_string(),
             endpoint_url: mock_da_provider.uri(),
             is_anytrust: false,
+            anytrust_fallback_url: None,
         }],
     );
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -635,6 +643,7 @@ async fn test_store_malformed_response_returns_parsing_error() {
             name: "anytrust".to_string(),
             endpoint_url: mock_da_provider.uri(),
             is_anytrust: false,
+            anytrust_fallback_url: None,
         }],
     );
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -685,6 +694,7 @@ async fn test_store_fallback_to_calldata_on_fallback_error() {
             name: "anytrust".to_string(),
             endpoint_url: mock_da_provider.uri(),
             is_anytrust: false,
+            anytrust_fallback_url: None,
         }],
     );
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -737,6 +747,7 @@ async fn test_store_wrong_field_name_in_response_fails_parsing() {
             name: "anytrust".to_string(),
             endpoint_url: mock_da_provider.uri(),
             is_anytrust: false,
+            anytrust_fallback_url: None,
         }],
     );
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -833,6 +844,7 @@ async fn test_store_da_provider_generic_error_propagates() {
             name: "anytrust".to_string(),
             endpoint_url: mock_da_provider.uri(),
             is_anytrust: false,
+            anytrust_fallback_url: None,
         }],
     );
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -881,6 +893,7 @@ async fn test_store_message_too_large_error_propagates() {
             name: "celestia".to_string(),
             endpoint_url: mock_da_provider.uri(),
             is_anytrust: false,
+            anytrust_fallback_url: None,
         }],
     );
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -956,6 +969,7 @@ async fn test_store_error_response_is_forwarded_unchanged() {
                 name: "anytrust".to_string(),
                 endpoint_url: mock_da_provider.uri(),
                 is_anytrust: false,
+                anytrust_fallback_url: None,
             }],
         );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -983,10 +997,12 @@ async fn test_store_error_response_is_forwarded_unchanged() {
 
 #[tokio::test]
 async fn test_non_store_da_api_error_responses_are_forwarded_unchanged() {
+    let mut recover_msg = vec![0u8; 50];
+    recover_msg[SEQUENCER_HEADER_LEN] = 0xff;
     let recover_params = json!([
         1u64,
         b256!("0x0000000000000000000000000000000000000000000000000000000000000000"),
-        Bytes::from(vec![0u8; 50])
+        Bytes::from(recover_msg)
     ]);
 
     let cases = [
@@ -1080,6 +1096,7 @@ async fn test_non_store_da_api_error_responses_are_forwarded_unchanged() {
                 name: "anytrust".to_string(),
                 endpoint_url: mock_da_provider.uri(),
                 is_anytrust: false,
+                anytrust_fallback_url: None,
             }],
         );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
