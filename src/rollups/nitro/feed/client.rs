@@ -102,7 +102,7 @@ pub struct BroadcasterClient {
     next_seq_num: u64,
     first_reconnect_attempt: bool,
     espresso_submission_channel: mpsc::Sender<BroadcastFeedMessage>,
-    verifier: FeedMessageVerifier,
+    verify_signature: FeedMessageVerifier,
 }
 
 impl BroadcasterClient {
@@ -129,7 +129,7 @@ impl BroadcasterClient {
         chain_id: u64,
         current_message_count: u64,
         espresso_submission_channel: mpsc::Sender<BroadcastFeedMessage>,
-        verifier: FeedMessageVerifier,
+        verify_signature: FeedMessageVerifier,
     ) -> Self {
         Self {
             config,
@@ -138,7 +138,7 @@ impl BroadcasterClient {
             next_seq_num: current_message_count,
             first_reconnect_attempt: true,
             espresso_submission_channel,
-            verifier,
+            verify_signature,
         }
     }
 
@@ -468,12 +468,12 @@ impl BroadcasterClient {
 
         let chain_id = self.chain_id;
         let sequencer_addresses = self.config.trusted_sequencer_addresses.clone();
-        let verifier = self.verifier;
+        let verify_signature = self.verify_signature;
 
         let broadcast_feed_messages = tokio::task::spawn_blocking(move || {
             let mut verified = Vec::new();
             for message in msg.messages.into_iter().flatten() {
-                match verifier(chain_id, &sequencer_addresses, &message) {
+                match verify_signature(chain_id, &sequencer_addresses, &message) {
                     Ok(()) => verified.push(message),
                     Err(e) => {
                         tracing::error!(seq_num = message.sequence_number, error = %e, "invalid signature for broadcast message, skipping");

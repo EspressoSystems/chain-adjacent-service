@@ -80,7 +80,7 @@ impl FeedRelay {
         espresso_submission_channel: mpsc::Sender<BroadcastFeedMessage>,
         espresso_rx: mpsc::Receiver<BroadcastFeedMessage>,
         l1_finalized_msg_idx: watch::Receiver<u64>,
-        verifier: FeedMessageVerifier,
+        verify_signature: FeedMessageVerifier,
     ) -> Self {
         let broadcaster = broadcaster::Broadcaster::new(config.server, chain_id);
 
@@ -90,7 +90,7 @@ impl FeedRelay {
             chain_id,
             config.current_message_count,
             espresso_submission_channel,
-            verifier,
+            verify_signature,
         );
         Self {
             broadcaster,

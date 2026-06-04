@@ -2,9 +2,12 @@ use std::io::Read;
 
 use anyhow::{Result, bail};
 
+const BROTLI_READ_BUFFER_BYTES: usize = 4096;
+
+/// Decompresses the input using Brotli and checks that the output size does not exceed `max_size`.
 pub fn decompress(input: &[u8], max_size: usize) -> Result<Vec<u8>> {
     let mut output = Vec::new();
-    brotli::Decompressor::new(input, 4096)
+    brotli::Decompressor::new(input, BROTLI_READ_BUFFER_BYTES)
         .take(max_size as u64 + 1)
         .read_to_end(&mut output)
         .map_err(|e| anyhow::anyhow!("brotli decompression failed: {e}"))?;

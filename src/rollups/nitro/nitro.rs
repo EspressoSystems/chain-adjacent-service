@@ -345,7 +345,7 @@ impl Nitro {
     pub fn parse_nitro_hotshot_payload(
         config: &NitroConfig,
         tx_payload: &[u8],
-        verifier: FeedMessageVerifier,
+        verify_signature: FeedMessageVerifier,
     ) -> Result<Vec<BroadcastFeedMessage>> {
         // Parse the header first
         // First 8 bytes indicate the length of the header
@@ -379,7 +379,7 @@ impl Nitro {
             current_pos += message_size as usize;
             let message: BroadcastFeedMessage = serde_json::from_slice(message_bytes)
                 .map_err(|e| anyhow::anyhow!("failed to parse nitro hotshot message: {e}"))?;
-            match verifier(
+            match verify_signature(
                 config.chain_id,
                 &config.feed.client.trusted_sequencer_addresses,
                 &message,

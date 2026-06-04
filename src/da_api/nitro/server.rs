@@ -353,6 +353,17 @@ async fn handle_recover_inner(
         "received DA certificate request"
     );
 
+    // Batch data recover is invoked twice for the same logical batch:
+    //   1. checkBatchCorrectness, where the batcher passes
+    //      `[seq header | espresso cert | batch data]`.
+    //   2. the L1 reader after posting, which only sees
+    //      `[seq header | batch data]` (the espresso cert is stripped
+    //      before the batch hits L1).
+    //
+    // Case #1 fully validates the CAS cert (including TEE signature
+    // verification); case #2 has no CAS cert and we forward the raw msg.
+    // A CAS-claiming message that fails validation must surface the error
+    // rather than silently falling back to legacy forwarding.
     let da_certificate = match sequencer_msg.get(SEQUENCER_HEADER_LEN).copied() {
         Some(ESPRESSO_HEADER_BYTE) => try_extract_da_sequencer_msg_from_espresso_da_cert(
             &sequencer_msg,
