@@ -24,7 +24,6 @@ use alloy::primitives::Bytes;
 use alloy::primitives::FixedBytes;
 use alloy::primitives::{Address, Keccak256};
 use anyhow::Result;
-use espresso_types::NamespaceId;
 use std::collections::VecDeque;
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -264,18 +263,6 @@ impl Rollup for Nitro {
 }
 
 impl Nitro {
-    pub fn new(
-        legacy_signer_addresses: Vec<Address>,
-        namespace_id: NamespaceId,
-        chain_id: u64,
-    ) -> Self {
-        Self {
-            legacy_signer_addresses,
-            namespace_id,
-            chain_id,
-        }
-    }
-
     pub fn verify_broadcast_feed_message(
         config: &NitroConfig,
         message: &BroadcastFeedMessage,

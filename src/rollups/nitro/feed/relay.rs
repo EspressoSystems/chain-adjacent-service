@@ -9,6 +9,7 @@ use crate::rollups::nitro::feed::{
     broadcaster::{BroadcasterConfig, BroadcasterError},
     client::{BroadcasterClientConfig, BroadcasterClientError},
 };
+use crate::rollups::nitro::nitro::FeedMessageVerifier;
 
 use super::{broadcaster, client, message::BroadcastFeedMessage};
 
@@ -64,6 +65,32 @@ impl FeedRelay {
             chain_id,
             config.current_message_count,
             espresso_submission_channel,
+        );
+        Self {
+            broadcaster,
+            client,
+            espresso_rx,
+            l1_finalized_msg_idx,
+        }
+    }
+
+    pub fn new_with_verifier(
+        chain_id: u64,
+        config: FeedConfig,
+        espresso_submission_channel: mpsc::Sender<BroadcastFeedMessage>,
+        espresso_rx: mpsc::Receiver<BroadcastFeedMessage>,
+        l1_finalized_msg_idx: watch::Receiver<u64>,
+        verifier: FeedMessageVerifier,
+    ) -> Self {
+        let broadcaster = broadcaster::Broadcaster::new(config.server, chain_id);
+
+        let client = client::BroadcasterClient::new_with_verifier(
+            config.client,
+            config.web_socket_url,
+            chain_id,
+            config.current_message_count,
+            espresso_submission_channel,
+            verifier,
         );
         Self {
             broadcaster,
@@ -179,7 +206,14 @@ mod tests {
             current_message_count: 0,
         };
 
-        let relay = FeedRelay::new(CHAIN_ID, config, submission_tx, espresso_rx, l1_rx);
+        let relay = FeedRelay::new_with_verifier(
+            CHAIN_ID,
+            config,
+            submission_tx,
+            espresso_rx,
+            l1_rx,
+            |_, _, _| Ok(()),
+        );
         let relay_handle = tokio::spawn(async move { relay.start().await });
 
         // -- Mock streamer: modify the message and delay 2 s --
