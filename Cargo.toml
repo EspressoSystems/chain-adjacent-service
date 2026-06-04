@@ -55,9 +55,9 @@ brotli = "7"
 bytes = "1.11.0"
 committable = { git = "https://github.com/EspressoSystems/commit.git" }
 clap = { version = "4", features = ["derive", "env"] }
-espresso-types = { git = "https://github.com/EspressoSystems/espresso-network.git" }
+espresso-types = { git = "https://github.com/EspressoSystems/espresso-network.git", rev = "0d10e7f93b6b481f5f45a4b39bf23430559fffa2" }
 futures = "0.3"
-hotshot-types = { git = "https://github.com/EspressoSystems/espresso-network.git" }
+hotshot-types = { git = "https://github.com/EspressoSystems/espresso-network.git", rev = "0d10e7f93b6b481f5f45a4b39bf23430559fffa2" }
 http = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server"] }
