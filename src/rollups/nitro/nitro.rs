@@ -86,11 +86,16 @@ impl Rollup for Nitro {
                 }
 
                 // Fall back to legacy format
-                entries.extend(Self::legacy_parse_nitro_hotshot_payload(
-                    config,
-                    tx.payload(),
-                    hotshot_height,
-                ));
+                let legacy_entries =
+                    Self::legacy_parse_nitro_hotshot_payload(config, tx.payload(), hotshot_height);
+                if !legacy_entries.is_empty() {
+                    tracing::warn!(
+                        entries = legacy_entries.len(),
+                        hotshot_height,
+                        "V1 parse failed for espresso tx; falling back to legacy format"
+                    );
+                }
+                entries.extend(legacy_entries);
             }
             // There is a namespace transaction for each hotshot height
             // even if there are no transactions
