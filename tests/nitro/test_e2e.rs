@@ -9,6 +9,9 @@ use axum::Router;
 use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::routing::post;
+use base64::Engine;
+use base64::engine::general_purpose;
+use espresso_types::{NamespaceId, Transaction};
 use reqwest::Client;
 use serde_json::{Value, json};
 use std::io::Cursor;
@@ -1393,4 +1396,145 @@ async fn test_e2e_external_da_fallback_to_anytrust() {
 
     drop(nitro_node);
     drop(mock);
+}
+
+// This base64 data is the raw Espresso transaction payload from a real legacy-format
+// transaction on the Espresso Decaf testnet:
+// https://explorer.decaf.testnet.espresso.network/transaction/9516848-0
+const LEGACY_TX_BASE64: &str = "AAAAAAAAAEF6kNpljmHHp84DpMq843KWZxw79PAwsT77pNpWzluVdlJJTapjujnJaf825FdSceMTSOWKYdZGMV0qlGHNehSHAAAAAAAAF6NHAAAAAAAAAFP4UfhL+EUNlO3rfipGB0Mr0RW63zcDEIMqR4h8g6eWH4RqIG1ioAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAfxAhAExc1CAgtcigwH8QQ==";
+const LEGACY_SIGNER_ADDRESS: &str = "0xedEb7E2a4607432Bd115badf370310832A47887C";
+
+#[tokio::test]
+async fn test_e2e_legacy_feed_format() {
+    let nitro_node = NitroNode::start(NitroNodeConfig {
+        no_l2_traffic: true,
+    })
+    .await;
+    println!("Nitro stack started (no L2 traffic)");
+
+    let espresso = EspressoDevNode::connect().await;
+    let starting_hotshot_height = espresso
+        .client
+        .fetch_latest_hotshot_block_height()
+        .await
+        .expect("failed to fetch latest hotshot block height")
+        + 1;
+    println!("Espresso dev node ready; starting_hotshot_height = {starting_hotshot_height}");
+
+    let namespace_id = NamespaceId::from(412346u64);
+    let legacy_tx_bytes = general_purpose::STANDARD
+        .decode(LEGACY_TX_BASE64)
+        .expect("decode legacy tx base64");
+
+    let _hash = espresso
+        .client
+        .submit_transaction(Transaction::new(namespace_id, legacy_tx_bytes))
+        .await
+        .expect("submit legacy tx");
+    println!("Submitted legacy-format transaction to Espresso");
+
+    let target_height = starting_hotshot_height + 5;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        if Instant::now() >= deadline {
+            panic!("Espresso did not reach height {target_height} in time");
+        }
+        match espresso.client.fetch_latest_hotshot_block_height().await {
+            Ok(h) if h >= target_height => {
+                println!(
+                    "Espresso at height {h} (target {target_height}); legacy payload finalized"
+                );
+                break;
+            }
+            _ => sleep(Duration::from_secs(1)).await,
+        }
+    }
+
+    let sequencer_inbox = read_sequencer_inbox_address();
+    let tee_verifier_address = read_tee_verifier_address();
+
+    let cas_config_path = write_cas_config(
+        starting_hotshot_height,
+        CasRoute::Calldata,
+        &sequencer_inbox,
+        tee_verifier_address,
+        true,
+        None,
+        None,
+        None,
+    );
+
+    let raw = std::fs::read_to_string(&cas_config_path)
+        .unwrap_or_else(|e| panic!("read CAS config: {e}"));
+    let mut config: Value =
+        serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse CAS config: {e}"));
+    config["rollup"]["stack"]["legacy_signer_addresses"] = json!([LEGACY_SIGNER_ADDRESS]);
+    std::fs::write(
+        &cas_config_path,
+        serde_json::to_string_pretty(&config).expect("serialize patched config"),
+    )
+    .unwrap_or_else(|e| panic!("write patched CAS config: {e}"));
+    println!(
+        "CAS config written to {} with legacy_signer_addresses=[{LEGACY_SIGNER_ADDRESS}]",
+        cas_config_path.display()
+    );
+
+    let cas_log_path = std::env::temp_dir().join("cas-e2e-legacy-feed-format.log");
+    let probe_url = CasRoute::Calldata.rpc_url_local();
+    let cas = spawn_cas_with_retries_to_file(&cas_config_path, &probe_url, &cas_log_path).await;
+    println!("CAS started (logs at {})", cas_log_path.display());
+
+    sleep(Duration::from_secs(5)).await;
+
+    let _ = std::process::Command::new("docker")
+        .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/e2e/nitro"))
+        .args(["compose", "up", "-d", "--wait", "tx-generator"])
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .expect("start tx-generator");
+    println!("tx-generator started (V1 traffic flowing)");
+
+    let l1 = connect_l1_ws_with_retries().await;
+    let from_block = l1
+        .get_block_number()
+        .await
+        .expect("failed to read L1 head block number");
+
+    nitro_node.start_poster(CAS_FEED_URL, CasRoute::Calldata.rpc_url_for_poster());
+    println!("Poster started");
+
+    wait_for_batches_on_l1(&l1, from_block, 2, sequencer_inbox).await;
+    println!("Observed >=2 batches on L1");
+
+    drop(cas);
+
+    let cas_logs = std::fs::read_to_string(&cas_log_path)
+        .unwrap_or_else(|e| panic!("read CAS log {}: {e}", cas_log_path.display()));
+
+    let legacy_marker = "falling back to legacy format";
+    assert!(
+        cas_logs.contains(legacy_marker),
+        "CAS log at {} does not contain the legacy-fallback marker \"{legacy_marker}\"",
+        cas_log_path.display(),
+    );
+    println!("CAS logs confirm legacy fallback path was exercised");
+
+    let legacy_parse_error = "failed to parse legacy hotshot payload";
+    assert!(
+        !cas_logs.contains(legacy_parse_error),
+        "CAS log at {} contains a legacy parse error \"{legacy_parse_error}\"",
+        cas_log_path.display(),
+    );
+
+    let signer_rejection = "is not in the list of legacy signer addresses";
+    assert!(
+        !cas_logs.contains(signer_rejection),
+        "CAS log at {} contains a legacy signer rejection;",
+        cas_log_path.display(),
+    );
+
+    println!("All legacy-format E2E assertions passed");
+
+    drop(nitro_node);
 }
