@@ -1,45 +1,40 @@
 use alloy::primitives::{Bytes, U64};
 use axum::response::{IntoResponse, Response};
+use reqwest::StatusCode;
 use serde_json::Value;
 use tracing::warn;
 
 use crate::da_api::{
     error::DaApiError,
     nitro::{
+        certificate::ESPRESSO_CERT_SIZE,
         server::{HEADER_CONTENT_TYPE, ServerState},
         types::{DAStoreResponse, JsonRpcError},
     },
 };
 
-/// Result of resolving the downstream-DA cert for a `daprovider_store` call.
 pub enum DownstreamCertOutcome {
-    /// Use this cert as the downstream payload inside the CAS certificate.
-    /// For the fallback / calldata path this is the raw batch data itself.
     Cert(Bytes),
-    /// Forward the downstream's response back to the caller unchanged
-    /// (non-fallback error from the downstream provider).
     Forward(Response),
 }
 
-/// Forward the store request to the configured downstream DA provider and
-/// classify the response: cert, fallback-to-calldata, or pass-through error.
-///
-/// Pulled out of `handle_store` so the main flow reads top-to-bottom.
-pub async fn resolve_downstream_cert(
+enum StoreOutcome {
+    Cert(Bytes),
+    Fallback(String),
+    Forward(Response),
+}
+
+async fn store_via(
     state: &ServerState,
-    data: Bytes,
+    endpoint: &str,
+    data: &Bytes,
     timeout: U64,
     body_id: &Value,
-) -> Result<DownstreamCertOutcome, DaApiError> {
-    let endpoint = state.current_endpoint();
-    if endpoint.is_empty() {
-        return Ok(DownstreamCertOutcome::Cert(data));
-    }
-
+) -> Result<StoreOutcome, DaApiError> {
     let forwarded_body = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "daprovider_store",
-        "params": [&data, timeout],
+        "params": [data, timeout],
         "id": body_id,
     });
 
@@ -58,7 +53,7 @@ pub async fn resolve_downstream_cert(
         .map_err(|e| DaApiError::ParsingError(e.to_string()))?;
 
     if !status.is_success() {
-        return Ok(DownstreamCertOutcome::Forward(
+        return Ok(StoreOutcome::Forward(
             (
                 status,
                 [(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)],
@@ -77,17 +72,10 @@ pub async fn resolve_downstream_cert(
             .unwrap_or_else(|_| DaApiError::DownstreamDa(err_val.to_string()));
 
         return match da_err {
-            DaApiError::FallbackRequested(ref msg) => {
-                warn!(
-                    provider = %state.da_config.name,
-                    reason = %msg,
-                    "DA provider requested fallback; using calldata"
-                );
-                Ok(DownstreamCertOutcome::Cert(data))
-            }
-            _ => Ok(DownstreamCertOutcome::Forward(
+            DaApiError::FallbackRequested(msg) => Ok(StoreOutcome::Fallback(msg)),
+            _ => Ok(StoreOutcome::Forward(
                 (
-                    status,
+                    StatusCode::OK,
                     [(axum::http::header::CONTENT_TYPE, HEADER_CONTENT_TYPE)],
                     bytes,
                 )
@@ -98,7 +86,65 @@ pub async fn resolve_downstream_cert(
 
     let raw_cert: DAStoreResponse = serde_json::from_value(downstream_json["result"].clone())
         .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
-    Ok(DownstreamCertOutcome::Cert(
-        raw_cert.serialized_da_certificate,
-    ))
+    Ok(StoreOutcome::Cert(raw_cert.serialized_da_certificate))
+}
+
+pub async fn resolve_downstream_cert(
+    state: &ServerState,
+    data: Bytes,
+    timeout: U64,
+    body_id: &Value,
+) -> Result<DownstreamCertOutcome, DaApiError> {
+    let endpoint = state.current_endpoint();
+    if endpoint.is_empty() {
+        return Ok(DownstreamCertOutcome::Cert(data));
+    }
+
+    match store_via(state, endpoint, &data, timeout, body_id).await? {
+        StoreOutcome::Cert(cert) => Ok(DownstreamCertOutcome::Cert(cert)),
+        StoreOutcome::Forward(resp) => Ok(DownstreamCertOutcome::Forward(resp)),
+        StoreOutcome::Fallback(reason) => {
+            let anytrust = state
+                .da_config
+                .anytrust_fallback_url
+                .as_deref()
+                .filter(|s| !s.is_empty());
+
+            if let Some(anytrust_url) = anytrust {
+                warn!(
+                    provider = %state.da_config.name,
+                    reason = %reason,
+                    "primary DA requested fallback; trying anytrust sidecar"
+                );
+                match store_via(state, anytrust_url, &data, timeout, body_id).await? {
+                    StoreOutcome::Cert(cert) => return Ok(DownstreamCertOutcome::Cert(cert)),
+                    StoreOutcome::Forward(resp) => {
+                        warn!(
+                            provider = %state.da_config.name,
+                            "anytrust returned error; propagating"
+                        );
+                        return Ok(DownstreamCertOutcome::Forward(resp));
+                    }
+                    StoreOutcome::Fallback(anytrust_reason) => {
+                        warn!(
+                            provider = %state.da_config.name,
+                            reason = %anytrust_reason,
+                            "anytrust also requested fallback; using calldata"
+                        );
+                    }
+                }
+            } else {
+                warn!(
+                    provider = %state.da_config.name,
+                    reason = %reason,
+                    "DA provider requested fallback; using calldata"
+                );
+            }
+
+            if (ESPRESSO_CERT_SIZE as u64 + data.len() as u64) > state.calldata_max_size {
+                return Err(DaApiError::DynamicBatchingResize);
+            }
+            Ok(DownstreamCertOutcome::Cert(data))
+        }
+    }
 }

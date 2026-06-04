@@ -33,6 +33,7 @@ fn spawn_server(addr: SocketAddr, da_provider_url: String) -> JoinHandle<()> {
             name: "referenceda".to_string(),
             endpoint_url: da_provider_url,
             is_anytrust: false,
+            anytrust_fallback_url: None,
         }],
         ..Default::default()
     };
