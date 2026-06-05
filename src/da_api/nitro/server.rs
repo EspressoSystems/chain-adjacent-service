@@ -391,24 +391,18 @@ async fn handle_recover_inner(
     //      `[seq header | batch data]` (the espresso cert is stripped
     //      before the batch hits L1).
     //
-    // try_extract parses and fully validates the CAS cert (including TEE
-    // signature verification) in case #1; case #2 has no CAS cert and we
-    // forward the raw msg. We distinguish the two by the CAS version byte
-    // immediately after the sequencer header: a CAS-claiming message that
-    // fails validation must surface the error rather than silently falling
-    // back to legacy forwarding (would otherwise bypass signature checks).
-    let claims_cas_cert = sequencer_msg
-        .get(SEQUENCER_HEADER_LEN)
-        .is_some_and(|b| *b == ESPRESSO_HEADER_BYTE);
-    let da_certificate = if claims_cas_cert {
-        try_extract_da_sequencer_msg_from_espresso_da_cert(
+    // Case #1 fully validates the CAS cert (including TEE signature
+    // verification); case #2 has no CAS cert and we forward the raw msg.
+    // A CAS-claiming message that fails validation must surface the error
+    // rather than silently falling back to legacy forwarding.
+    let da_certificate = match sequencer_msg.get(SEQUENCER_HEADER_LEN).copied() {
+        Some(ESPRESSO_HEADER_BYTE) => try_extract_da_sequencer_msg_from_espresso_da_cert(
             &sequencer_msg,
             state.key_manager.signer().address(),
             state.key_manager.parent_chain_id(),
             state.key_manager.tee_verifier_address(),
-        )?
-    } else {
-        sequencer_msg
+        )?,
+        _ => sequencer_msg,
     };
 
     let inner_header = da_certificate.get(SEQUENCER_HEADER_LEN).copied();

@@ -89,9 +89,151 @@ pub(super) fn parse_batch(batch_content: Bytes) -> Result<Vec<BatchMessage>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BatchMessage, parse_batch};
+    use super::{
+        BATCH_SEGMENT_KIND_DELAYED_MESSAGES, BATCH_SEGMENT_KIND_L2_MESSAGE,
+        BATCH_SEGMENT_KIND_L2_MESSAGE_BROTLI, BROTLI_HEADER_BYTE, BatchMessage,
+        MAX_DECOMPRESSED_LEN, MAX_L2_MESSAGE_SIZE, MAX_SEGMENTS, parse_batch,
+    };
     use alloy::primitives::Bytes;
+    use alloy_rlp::Encodable;
     use serde::Deserialize;
+
+    fn brotli_compress(data: &[u8]) -> Vec<u8> {
+        let params = brotli::enc::BrotliEncoderParams {
+            quality: 1,
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        brotli::BrotliCompress(&mut std::io::Cursor::new(data), &mut out, &params).unwrap();
+        out
+    }
+
+    fn rlp_encode(bytes: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        alloy_rlp::Bytes::copy_from_slice(bytes).encode(&mut out);
+        out
+    }
+
+    fn wrap_brotli(inner: &[u8]) -> Bytes {
+        let mut payload = vec![BROTLI_HEADER_BYTE];
+        payload.extend_from_slice(&brotli_compress(inner));
+        Bytes::from(payload)
+    }
+
+    #[test]
+    fn empty_payload_errors() {
+        let err = parse_batch(Bytes::new()).unwrap_err();
+        assert!(err.to_string().contains("empty"));
+    }
+
+    #[test]
+    fn unsupported_header_byte_errors() {
+        let err = parse_batch(Bytes::from(vec![0x42, 0, 0, 0])).unwrap_err();
+        assert!(err.to_string().contains("unsupported batch header byte"));
+    }
+
+    #[test]
+    fn invalid_brotli_errors() {
+        let payload = Bytes::from(vec![BROTLI_HEADER_BYTE, 0xff, 0xff, 0xff, 0xff]);
+        assert!(parse_batch(payload).is_err());
+    }
+
+    #[test]
+    fn malformed_rlp_errors() {
+        let inner = vec![0x81, 0x00];
+        let err = parse_batch(wrap_brotli(&inner)).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("error parsing sequencer message segment")
+        );
+    }
+
+    #[test]
+    fn parses_l2_msg_segment() {
+        let segment = [&[BATCH_SEGMENT_KIND_L2_MESSAGE][..], b"hello"].concat();
+        let inner = rlp_encode(&segment);
+        let messages = parse_batch(wrap_brotli(&inner)).unwrap();
+        assert_eq!(messages, vec![BatchMessage::L2Msg(Bytes::from("hello"))]);
+    }
+
+    #[test]
+    fn parses_delayed_msg_segment() {
+        let segment = vec![BATCH_SEGMENT_KIND_DELAYED_MESSAGES];
+        let inner = rlp_encode(&segment);
+        let messages = parse_batch(wrap_brotli(&inner)).unwrap();
+        assert_eq!(messages, vec![BatchMessage::DelayedMsg]);
+    }
+
+    #[test]
+    fn parses_brotli_l2_msg_segment() {
+        let inner_l2 = b"compressed payload";
+        let segment = [
+            &[BATCH_SEGMENT_KIND_L2_MESSAGE_BROTLI][..],
+            &brotli_compress(inner_l2),
+        ]
+        .concat();
+        let inner = rlp_encode(&segment);
+        let messages = parse_batch(wrap_brotli(&inner)).unwrap();
+        assert_eq!(
+            messages,
+            vec![BatchMessage::L2Msg(Bytes::copy_from_slice(inner_l2))]
+        );
+    }
+
+    #[test]
+    fn brotli_l2_msg_oversize_is_dropped() {
+        let huge = vec![0u8; MAX_L2_MESSAGE_SIZE + 1];
+        let segment = [
+            &[BATCH_SEGMENT_KIND_L2_MESSAGE_BROTLI][..],
+            &brotli_compress(&huge),
+        ]
+        .concat();
+        let l2_inner = rlp_encode(&segment);
+
+        let delayed_inner = rlp_encode(&[BATCH_SEGMENT_KIND_DELAYED_MESSAGES]);
+
+        let mut combined = Vec::new();
+        combined.extend_from_slice(&l2_inner);
+        combined.extend_from_slice(&delayed_inner);
+
+        let messages = parse_batch(wrap_brotli(&combined)).unwrap();
+        assert_eq!(messages, vec![BatchMessage::DelayedMsg]);
+    }
+
+    #[test]
+    fn unknown_kind_skipped() {
+        let segment = vec![0xff, 0x01, 0x02];
+        let inner = rlp_encode(&segment);
+        let messages = parse_batch(wrap_brotli(&inner)).unwrap();
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn empty_segment_skipped() {
+        let inner = rlp_encode(&[]);
+        let messages = parse_batch(wrap_brotli(&inner)).unwrap();
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn max_segments_enforced() {
+        let mut inner = Vec::new();
+        let one = rlp_encode(&[BATCH_SEGMENT_KIND_DELAYED_MESSAGES]);
+        for _ in 0..=MAX_SEGMENTS {
+            inner.extend_from_slice(&one);
+        }
+        let err = parse_batch(wrap_brotli(&inner)).unwrap_err();
+        assert!(err.to_string().contains("too many segments"));
+    }
+
+    #[test]
+    fn decompressed_oversize_errors() {
+        let huge = vec![0u8; MAX_DECOMPRESSED_LEN + 1];
+        let mut payload = vec![BROTLI_HEADER_BYTE];
+        payload.extend_from_slice(&brotli_compress(&huge));
+        let err = parse_batch(Bytes::from(payload)).unwrap_err();
+        assert!(err.to_string().contains("too large"));
+    }
 
     #[derive(Deserialize)]
     struct TestBatch {

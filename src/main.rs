@@ -130,7 +130,8 @@ async fn run<R: Rollup>(
     let config = R::resolve_config_with_checkpoint(config, batch_cursor.clone(), hotshot_height);
 
     let client = EspressoClient::from_config(config.espresso_client.clone());
-    let (submitter_sender, submitter_receiver) = mpsc::channel::<R::FeedMessage>(100);
+    let (submitter_sender, submitter_receiver) =
+        mpsc::channel::<R::FeedMessage>(config.advanced.submitter_input_channel_capacity);
 
     let build_tx_fn = |namespace_id: NamespaceId, msgs: Vec<R::FeedMessage>| {
         let mut msgs = msgs;
