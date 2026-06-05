@@ -3509,6 +3509,7 @@ dependencies = [
  "hyper-util",
  "jsonrpsee",
  "k256",
+ "parking_lot",
  "rand 0.9.2",
  "reqwest 0.13.2",
  "rustls 0.23.36",

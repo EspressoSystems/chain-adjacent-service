@@ -10,6 +10,7 @@ use crate::da_api::nitro::types::JsonRpcError;
 /// The daclient matches this via `strings.Contains` to restore error identity
 /// over RPC, causing the batch poster to invalidate and rebuild smaller.
 pub const NITRO_ERR_MESSAGE_TOO_LARGE: &str = "message too large for current DA backend";
+pub const NITRO_ERR_FALLBACK_REQUESTED: &str = "DA provider requests fallback to next writer";
 
 #[derive(Debug, Error)]
 pub enum DaApiError {
@@ -137,9 +138,7 @@ impl From<JsonRpcError> for DaApiError {
     fn from(err: JsonRpcError) -> Self {
         match err.message {
             msg if msg.contains(NITRO_ERR_MESSAGE_TOO_LARGE) => DaApiError::DynamicBatchingResize,
-            msg if msg.contains("DA provider requests fallback to next writer") => {
-                DaApiError::FallbackRequested(msg)
-            }
+            msg if msg.contains(NITRO_ERR_FALLBACK_REQUESTED) => DaApiError::FallbackRequested(msg),
             _ => DaApiError::DownstreamDa(err.message),
         }
     }
@@ -172,13 +171,6 @@ impl IntoResponse for DaApiError {
         )
             .into_response()
     }
-}
-
-/// Check if an error is a certificate validation error.
-/// Nitro detects this by checking if the error message contains
-/// "certificate validation failed".
-pub fn is_certificate_validation_error(err: &DaApiError) -> bool {
-    err.to_string().contains("certificate validation failed")
 }
 
 pub type DaApiResult<T> = Result<T, DaApiError>;
