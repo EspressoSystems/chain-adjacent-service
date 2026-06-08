@@ -25,6 +25,14 @@ pub fn recover_signer_address(message_hash: FixedBytes<32>, signature: &[u8]) ->
         return Err(anyhow::anyhow!("invalid signature"));
     }
 
+    // EIP-2: reject high-S to prevent signature malleability ((r, s) and (r, n - s)
+    // recover to the same address, so without this an attacker can produce a
+    // distinct 65-byte blob with identical signer).
+    if signature.normalize_s().is_some() {
+        tracing::warn!("non-canonical high-S signature rejected");
+        return Err(anyhow::anyhow!("non-canonical high-S signature"));
+    }
+
     let hash = B256::from_slice(message_hash.as_slice());
     match signature.recover_address_from_prehash(&hash) {
         Ok(signer) => Ok(signer),

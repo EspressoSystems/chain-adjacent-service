@@ -87,9 +87,15 @@ pub struct RollupConfig<C> {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct AdvancedConfig {
+    /// streamer → feed relay. ~1 batch worth of finalized feed messages.
     pub espresso_finalized_message_channel_capacity: usize,
+    /// DA store → streamer verify replies; sized for concurrent in-flight stores.
     pub verification_channel_capacity: usize,
+    /// hotshot poller → streamer. Poller fetches `HOTSHOT_RANGE_LIMIT`-sized
+    /// windows, so this buffers a few windows ahead of the streamer.
     pub hotshot_transaction_channel_capacity: usize,
+    /// streamer → submitter. Same scale as the finalized-message channel.
+    pub submitter_input_channel_capacity: usize,
 }
 
 impl Default for AdvancedConfig {
@@ -98,6 +104,7 @@ impl Default for AdvancedConfig {
             espresso_finalized_message_channel_capacity: 100,
             verification_channel_capacity: 100,
             hotshot_transaction_channel_capacity: 300,
+            submitter_input_channel_capacity: 100,
         }
     }
 }
@@ -142,5 +149,5 @@ fn default_max_register_attempts() -> u8 {
 }
 
 fn default_attestation_client_timeout_secs() -> u64 {
-    30
+    5 * 60 // 5 minutes
 }

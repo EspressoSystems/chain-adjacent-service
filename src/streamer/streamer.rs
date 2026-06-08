@@ -35,10 +35,32 @@ pub struct Streamer<R: Rollup> {
     cursor_fetcher: Option<Arc<dyn BatchCursorFetcher<R::BatchCursor>>>,
     finalized_idx: u64,
     last_broadcast_position: u64,
+}
 
-    // Used to schedule a single delayed retry when the finalization channel is full.
-    broadcast_retry_scheduled: bool,
-    broadcast_retry_tx: Option<mpsc::Sender<()>>,
+pub struct BroadcastRetry {
+    tx: mpsc::Sender<()>,
+    scheduled: bool,
+}
+
+impl BroadcastRetry {
+    pub fn new(tx: mpsc::Sender<()>) -> Self {
+        Self {
+            tx,
+            scheduled: false,
+        }
+    }
+
+    fn schedule(&mut self, delay: Duration) {
+        if self.scheduled {
+            return;
+        }
+        self.scheduled = true;
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            let _ = tx.send(()).await;
+        });
+    }
 }
 
 impl<R: Rollup> Streamer<R> {
@@ -59,9 +81,6 @@ impl<R: Rollup> Streamer<R> {
             cursor_fetcher,
             finalized_idx: 0,
             last_broadcast_position: 0,
-
-            broadcast_retry_scheduled: false,
-            broadcast_retry_tx: None,
         }
     }
 
@@ -74,9 +93,8 @@ impl<R: Rollup> Streamer<R> {
     ) -> Result<()> {
         self.finalized_idx = *l1_finalized_msg_idx.borrow();
 
-        // Event-driven retry: we only trigger a delayed retry when `try_send` reports backpressure.
         let (broadcast_retry_tx, mut broadcast_retry_rx) = mpsc::channel::<()>(1);
-        self.broadcast_retry_tx = Some(broadcast_retry_tx);
+        let mut retry = BroadcastRetry::new(broadcast_retry_tx);
 
         let (sender, mut receiver) = mpsc::channel::<(Vec<NamespaceTransactionsInRange>, u64)>(
             self.advanced_config.hotshot_transaction_channel_capacity,
@@ -132,7 +150,9 @@ impl<R: Rollup> Streamer<R> {
                         Ok(entries) => entries,
                         Err(err) => {
                             tracing::error!("failed to parse batch data for verification: {err}");
-                            let _ = sender.send(crate::VerificationResult::failure());
+                            if sender.send(crate::VerificationResult::failure()).is_err() {
+                                tracing::warn!("verification reply channel closed before failure result could be delivered");
+                            }
                             continue;
                         }
                     };
@@ -147,7 +167,9 @@ impl<R: Rollup> Streamer<R> {
                         None => R::BatchCursor::default(),
                     };
                     let verification_result = R::verify_batch_messages(&entries, &self.queue, &context);
-                    let _ = sender.send(verification_result);
+                    if sender.send(verification_result).is_err() {
+                        tracing::warn!("verification reply channel closed before result could be delivered");
+                    }
 
                 },
                 // New hotshot transactions from the poller: parse and add to the queue,
@@ -164,17 +186,17 @@ impl<R: Rollup> Streamer<R> {
                         tx_count,
                         "received hotshot block range from poller"
                     );
-                    self.handle_hotshot_transactions(transactions, height, espresso_finalization_sender.clone()).await;
+                    self.handle_hotshot_transactions(transactions, height, espresso_finalization_sender.clone(), &mut retry).await;
                 },
                 // Retry broadcasting feed messages when we get a retry signal
                 // (due to backpressure on the finalization channel)
-                retry = broadcast_retry_rx.recv() => {
-                    if retry.is_none() {
+                signal = broadcast_retry_rx.recv() => {
+                    if signal.is_none() {
                         tracing::error!("broadcast retry channel was closed");
                         continue;
                     }
-                    self.broadcast_retry_scheduled = false;
-                    self.try_broadcast_feed_message(espresso_finalization_sender.clone()).await;
+                    retry.scheduled = false;
+                    self.try_broadcast_feed_message(espresso_finalization_sender.clone(), &mut retry).await;
                 }
             }
         }
@@ -211,6 +233,7 @@ impl<R: Rollup> Streamer<R> {
         transactions: Vec<NamespaceTransactionsInRange>,
         height: u64,
         sender: mpsc::Sender<R::FeedMessage>,
+        retry: &mut BroadcastRetry,
     ) {
         let parsed_rollup_entries =
             R::parse_hotshot_transactions(&self.rollup_config.stack, transactions, height);
@@ -223,11 +246,14 @@ impl<R: Rollup> Streamer<R> {
         );
         self.filter_messages(parsed_rollup_entries);
 
-        // Attempt an immediate broadcast; if the channel is full we'll retry via the ticker.
-        self.try_broadcast_feed_message(sender).await;
+        self.try_broadcast_feed_message(sender, retry).await;
     }
 
-    pub async fn try_broadcast_feed_message(&mut self, sender: mpsc::Sender<R::FeedMessage>) {
+    pub async fn try_broadcast_feed_message(
+        &mut self,
+        sender: mpsc::Sender<R::FeedMessage>,
+        retry: &mut BroadcastRetry,
+    ) {
         let contiguous_entries =
             find_contiguous_entries_after(&self.queue, self.last_broadcast_position);
         for entry in contiguous_entries {
@@ -241,21 +267,7 @@ impl<R: Rollup> Streamer<R> {
                     tracing::warn!(
                         "finalization channel is full; cannot broadcast feed message with sequence number {seq}"
                     );
-                    // Downstream channel is full. Schedule exactly one delayed retry.
-                    if !self.broadcast_retry_scheduled {
-                        self.broadcast_retry_scheduled = true;
-                        if let Some(tx) = self.broadcast_retry_tx.clone() {
-                            let delay = Duration::from_millis(self.config.retry_broadcast_delay_ms);
-                            tokio::spawn(async move {
-                                tokio::time::sleep(delay).await;
-                                let _ = tx.send(()).await;
-                            });
-                        } else {
-                            tracing::warn!(
-                                "finalization channel is full but retry channel is not configured"
-                            );
-                        }
-                    }
+                    retry.schedule(Duration::from_millis(self.config.retry_broadcast_delay_ms));
                     return;
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => {
