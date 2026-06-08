@@ -24,7 +24,6 @@ use alloy::primitives::Bytes;
 use alloy::primitives::FixedBytes;
 use alloy::primitives::{Address, Keccak256};
 use anyhow::Result;
-use espresso_types::NamespaceId;
 use std::collections::VecDeque;
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -73,9 +72,11 @@ impl Rollup for Nitro {
         for namespace_tx in namespace_transactions {
             for tx in namespace_tx.transactions {
                 // Try V1 format first
-                if let Ok(broadcast_messages) =
-                    Self::parse_nitro_hotshot_payload(config, tx.payload())
-                {
+                if let Ok(broadcast_messages) = Self::parse_nitro_hotshot_payload(
+                    config,
+                    tx.payload(),
+                    verify_broadcast_feed_message_signature,
+                ) {
                     for message in broadcast_messages {
                         entries.push(NitroRollupQueueEntry {
                             feed_message: message,
@@ -267,18 +268,6 @@ impl Rollup for Nitro {
 }
 
 impl Nitro {
-    pub fn new(
-        legacy_signer_addresses: Vec<Address>,
-        namespace_id: NamespaceId,
-        chain_id: u64,
-    ) -> Self {
-        Self {
-            legacy_signer_addresses,
-            namespace_id,
-            chain_id,
-        }
-    }
-
     pub fn verify_broadcast_feed_message(
         config: &NitroConfig,
         message: &BroadcastFeedMessage,
@@ -361,6 +350,7 @@ impl Nitro {
     pub fn parse_nitro_hotshot_payload(
         config: &NitroConfig,
         tx_payload: &[u8],
+        verify_signature: FeedMessageVerifier,
     ) -> Result<Vec<BroadcastFeedMessage>> {
         // Parse the header first
         // First 8 bytes indicate the length of the header
@@ -394,7 +384,7 @@ impl Nitro {
             current_pos += message_size as usize;
             let message: BroadcastFeedMessage = serde_json::from_slice(message_bytes)
                 .map_err(|e| anyhow::anyhow!("failed to parse nitro hotshot message: {e}"))?;
-            match verify_broadcast_feed_message_signature(
+            match verify_signature(
                 config.chain_id,
                 &config.feed.client.trusted_sequencer_addresses,
                 &message,
@@ -410,21 +400,8 @@ impl Nitro {
     }
 }
 
-// TODO: Replace this `cfg(test)` bypass with an injected verifier (e.g. via trait or function param).
-// The current approach is a temporary simplification to avoid plumbing signature verification
-// through all call sites, which would significantly increase PR complexity.
-// In the long term, verification logic should be decoupled and testable without conditional compilation.
-#[cfg(test)]
-pub fn verify_broadcast_feed_message_signature(
-    _chain_id: u64,
-    _sequencer_addresses: &[Address],
-    _msg: &BroadcastFeedMessage,
-) -> Result<()> {
-    // Skip signature verification in unit tests for simplicity, as test messages may not have valid signatures
-    Ok(())
-}
+pub type FeedMessageVerifier = fn(u64, &[Address], &BroadcastFeedMessage) -> Result<()>;
 
-#[cfg(not(test))]
 pub fn verify_broadcast_feed_message_signature(
     chain_id: u64,
     sequencer_addresses: &[Address],

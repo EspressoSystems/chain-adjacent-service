@@ -152,8 +152,8 @@ pub struct L1IncomingMessageHeader {
     #[serde(rename = "requestId")]
     pub request_id: Option<B256>,
     // Go's big.Int marshals as a bare JSON decimal number; alloy's U256 defaults to "0x…" hex.
-    // as a reason we had to write a custom serializer/deseralizer `go_bigint_u56`
-    #[serde(rename = "baseFeeL1", with = "go_bigint_u56")]
+    // as a reason we had to write a custom serializer/deseralizer `go_bigint_u256`
+    #[serde(rename = "baseFeeL1", with = "go_bigint_u256")]
     pub l1_base_fee: Option<U256>,
 }
 
@@ -404,7 +404,7 @@ fn decode_optional_b256_allow_nil_list(buf: &[u8]) -> Result<Option<B256>, Error
 
 /// Custom serde for `Option<U256>` bridges Go's `*big.Int`. Go cannot parse hex strings and alloy
 /// doesn't emit decimal numbers as a reason we need this serializer/deserializer.
-mod go_bigint_u56 {
+mod go_bigint_u256 {
     use alloy::primitives::U256;
     use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
 

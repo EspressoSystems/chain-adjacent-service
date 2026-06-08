@@ -455,7 +455,7 @@ fn test_build_payload_empty_input() {
     assert!(messages.is_empty());
 
     let config = make_nitro_config();
-    let parsed = Nitro::parse_nitro_hotshot_payload(&config, &payload).unwrap();
+    let parsed = Nitro::parse_nitro_hotshot_payload(&config, &payload, |_, _, _| Ok(())).unwrap();
     assert!(parsed.is_empty());
 }
 
@@ -471,7 +471,7 @@ fn test_build_payload_roundtrip() {
 
     // Decoded messages must match the originals, in order.
     let config = make_nitro_config();
-    let parsed = Nitro::parse_nitro_hotshot_payload(&config, &payload).unwrap();
+    let parsed = Nitro::parse_nitro_hotshot_payload(&config, &payload, |_, _, _| Ok(())).unwrap();
     assert_eq!(parsed.len(), original_seqs.len());
     for (parsed_msg, expected_seq) in parsed.iter().zip(original_seqs.iter()) {
         assert_eq!(parsed_msg.sequence_number, *expected_seq);

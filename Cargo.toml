@@ -89,10 +89,10 @@ tracing-subscriber = { version = "0.3.22", features = ["fmt", "json"] }
 url = "2"
 yawc = "0.3"
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
+parking_lot = "0.12.5"
 
 [dev-dependencies]
 dotenvy = "0.15"
 wiremock = "0.6.5"
-hex = "0.4.3"
 k256 = { version = "0.13", features = ["ecdsa"] }
 secp256k1 = { version = "0.31", features = ["recovery"] }
