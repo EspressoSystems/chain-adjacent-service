@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crate::VerificationReceiver;
 use crate::config::{AdvancedConfig, RollupConfig, StreamerConfig};
-use crate::espresso_client::client::EspressoClient;
+use crate::espresso_client::light_client::LightClientReader;
 use crate::espresso_client::types::NamespaceTransactionsInRange;
 use crate::rollups::rollup::{BatchCursorFetcher, Rollup, RollupQueueEntry};
 use crate::utils::exponential_backoff;
@@ -20,7 +20,7 @@ const HOTSHOT_RANGE_LIMIT: u64 = 100;
 /// and managing the filtered queue of RollupQueueEntry which is a
 /// generic type over the rollup's messages which are sent in a batch
 pub struct Streamer<R: Rollup> {
-    client: EspressoClient,
+    client: LightClientReader,
     /// Full entries, sorted by sequence_number ascending. Capped at
     /// `config.max_full_queue_entries`. Overflow spills into `stubs`.
     queue: Vec<R::Entry>,
@@ -43,7 +43,7 @@ pub struct Streamer<R: Rollup> {
 
 impl<R: Rollup> Streamer<R> {
     pub fn new(
-        client: EspressoClient,
+        client: LightClientReader,
         config: StreamerConfig,
         rollup_config: RollupConfig<R::StackConfig>,
         advanced_config: AdvancedConfig,
@@ -343,7 +343,7 @@ impl<R: Rollup> Streamer<R> {
 
             let txns = match self
                 .client
-                .fetch_namespace_transactions_in_range(namespace_id, start, end)
+                .namespace_transactions_in_range(namespace_id, start, end)
                 .await
             {
                 Ok(txns) => txns,
@@ -409,7 +409,7 @@ fn find_contiguous_entries_after<T: RollupQueueEntry>(queue: &[T], last_pos: u64
 /// It uses exponential backoff to handle errors and retries.
 pub async fn poll_hotshot_blocks(
     config: &StreamerConfig,
-    client: &EspressoClient,
+    client: &LightClientReader,
     next_hotshot_block_num: u64,
     namespace_id: NamespaceId,
     sender: mpsc::Sender<(Vec<NamespaceTransactionsInRange>, u64)>,
@@ -418,7 +418,7 @@ pub async fn poll_hotshot_blocks(
     let mut backoff = Duration::from_millis(config.initial_backoff_ms);
 
     loop {
-        let latest_block_height = match client.fetch_latest_hotshot_block_height().await {
+        let latest_block_height = match client.block_height().await {
             Ok(height) => height,
             Err(err) => {
                 tracing::error!("error while fetching latest hotshot block height: {err}");
@@ -440,7 +440,7 @@ pub async fn poll_hotshot_blocks(
             latest_block_height.saturating_add(1),
         );
         let hotshot_transactions = match client
-            .fetch_namespace_transactions_in_range(namespace_id, from_block, to_block)
+            .namespace_transactions_in_range(namespace_id, from_block, to_block)
             .await
         {
             Ok(txns) => txns,

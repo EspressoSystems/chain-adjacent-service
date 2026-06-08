@@ -1,4 +1,7 @@
+use std::path::PathBuf;
+
 use alloy::primitives::Address;
+use light_client::state::Genesis;
 use serde::Deserialize;
 use url::Url;
 
@@ -10,6 +13,7 @@ use crate::{
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServiceConfig<C> {
     pub espresso_client: EspressoClientConfig,
+    pub light_client: LightClientConfig,
     #[serde(default)]
     pub streamer: StreamerConfig,
     pub rollup: RollupConfig<C>,
@@ -27,6 +31,20 @@ pub struct ServiceConfig<C> {
     /// to start from the wrong point and fail to make progress until restarted with the correct value.
     #[serde(default)]
     pub is_fresh_deployment: bool,
+}
+
+/// The query-node URL is reused from [`EspressoClientConfig::base_url`] (one node serves
+/// submit and read endpoints), so only the root of trust and cache location live here.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LightClientConfig {
+    /// Root of trust; must match the network the query node serves. Sourced from the
+    /// network's `genesis.toml`, delivered via the enclave secrets path.
+    pub genesis: Genesis,
+
+    /// Verified-state cache (leaves + stake tables) location. `None` = in-memory, rebuilt
+    /// via catch-up each start; persist across enclave restarts to avoid that cost.
+    #[serde(default)]
+    pub db_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

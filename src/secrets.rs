@@ -214,6 +214,13 @@ mod tests {
             "espresso_client": {
                 "base_url": "http://placeholder.invalid/"
             },
+            "light_client": {
+                "genesis": {
+                    "epoch_height": 100,
+                    "first_epoch_with_dynamic_stake_table": 1,
+                    "stake_table": []
+                }
+            },
             "rollup": {
                 "type": "nitro",
                 "namespace_id": 1,

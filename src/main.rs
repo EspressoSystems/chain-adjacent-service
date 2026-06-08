@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use chain_adjacent_service::config::{RollupType, TeeType};
 use chain_adjacent_service::da_api;
 use chain_adjacent_service::espresso_client::client::EspressoClient;
+use chain_adjacent_service::espresso_client::light_client::LightClientReader;
 use chain_adjacent_service::key_manager::attestation_client::HttpAttestationVerifierClient;
 use chain_adjacent_service::key_manager::key_manager::KeyManager;
 use chain_adjacent_service::key_manager::tee_verifier::TEEVerifier;
@@ -172,11 +173,18 @@ async fn run<R: Rollup>(
         l1_finalized_msg_idx_receiver.clone(),
     );
 
-    let client = EspressoClient::from_config(config.espresso_client);
+    // Inbound consumption is verified by the light client (rooted in genesis), so the query
+    // node is untrusted. It reuses the same Espresso node URL as submission.
+    let light_client_reader = LightClientReader::new(
+        config.light_client.genesis,
+        config.espresso_client.base_url,
+        config.light_client.db_path,
+    )
+    .await?;
     let (verification_sender, verification_receiver) =
         mpsc::channel(config.advanced.verification_channel_capacity);
     let mut streamer: Streamer<R> = Streamer::new(
-        client,
+        light_client_reader,
         config.streamer,
         config.rollup,
         config.advanced,

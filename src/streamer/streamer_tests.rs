@@ -3,7 +3,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     config::{AdvancedConfig, RollupConfig, RollupType::Nitro, StreamerConfig},
-    espresso_client::client::EspressoClient,
+    espresso_client::light_client::LightClientReader,
     espresso_e2e::{
         espresso_dev_node::EspressoDevNode,
         mock_rollup::{MockEntry, MockRollup, make_entry, make_mock_espresso_transaction},
@@ -13,15 +13,17 @@ use crate::{
 };
 use std::time::Duration;
 
-fn make_streamer(starting_pos: u64) -> Streamer<MockRollup> {
-    make_streamer_with_cap(starting_pos, 1000)
+async fn make_streamer(starting_pos: u64) -> Streamer<MockRollup> {
+    make_streamer_with_cap(starting_pos, 1000).await
 }
 
-fn make_streamer_with_cap(
+async fn make_streamer_with_cap(
     starting_pos: u64,
     max_full_queue_entries: usize,
 ) -> Streamer<MockRollup> {
-    let client = EspressoClient::new("http://127.0.0.1".to_string(), 30);
+    // Queue-logic tests never poll, so an in-memory reader with an empty genesis is fine.
+    let client =
+        LightClientReader::new_for_test(url::Url::parse("http://127.0.0.1").unwrap()).await;
     Streamer::new(
         client,
         StreamerConfig {
@@ -40,6 +42,16 @@ fn make_streamer_with_cap(
         AdvancedConfig::default(),
         None,
     )
+}
+
+/// Reader backed by the dockerized dev node, deriving its genesis from the node's
+/// `/config/hotshot` so the light client actually verifies. Requires a dev-node image that
+/// serves `/light-client` (EspressoSystems/espresso-network#4453).
+async fn dev_node_reader(base_url: url::Url) -> LightClientReader {
+    let genesis = crate::espresso_client::light_client::genesis_from_node(&base_url).await;
+    LightClientReader::new(genesis, base_url, None)
+        .await
+        .expect("build dev node reader")
 }
 
 fn queue_positions(streamer: &Streamer<MockRollup>) -> Vec<u64> {
@@ -80,10 +92,10 @@ fn test_find_contiguous_entries_after() {
     assert_eq!(entry_positions(got), vec![2]);
 }
 
-#[test]
-fn test_filter_messages() {
+#[tokio::test]
+async fn test_filter_messages() {
     // Empty queue: lowest seq first, all get sorted
-    let mut streamer = make_streamer(1);
+    let mut streamer = make_streamer(1).await;
     streamer.filter_messages(vec![
         make_entry(1, 1),
         make_entry(5, 1),
@@ -95,13 +107,13 @@ fn test_filter_messages() {
     assert_eq!(queue_positions(&streamer), vec![1, 2, 3, 4, 5]);
 
     // Duplicates are not added
-    let mut streamer = make_streamer(1);
+    let mut streamer = make_streamer(1).await;
     streamer.filter_messages(vec![make_entry(5, 1)]);
     streamer.filter_messages(vec![make_entry(5, 1)]);
     assert_eq!(queue_positions(&streamer), vec![5]);
 
     // Skips positions which are less than the starting position
-    let mut streamer = make_streamer(5);
+    let mut streamer = make_streamer(5).await;
     streamer.filter_messages(vec![make_entry(5, 1)]);
     streamer.filter_messages(vec![make_entry(1, 1)]);
     assert_eq!(queue_positions(&streamer), vec![5]);
@@ -115,9 +127,9 @@ fn stub_entries(streamer: &Streamer<MockRollup>) -> Vec<(u64, u64)> {
     streamer.stubs.iter().map(|(s, h)| (*s, *h)).collect()
 }
 
-#[test]
-fn test_filter_messages_overflows_to_stubs() {
-    let mut streamer = make_streamer_with_cap(1, 3);
+#[tokio::test]
+async fn test_filter_messages_overflows_to_stubs() {
+    let mut streamer = make_streamer_with_cap(1, 3).await;
     streamer.filter_messages(vec![
         make_entry(1, 10),
         make_entry(2, 10),
@@ -133,7 +145,7 @@ fn test_filter_messages_overflows_to_stubs() {
     assert_eq!(queue_positions(&streamer), vec![1, 2, 3]);
     assert_eq!(stub_positions(&streamer), vec![4, 5]);
 
-    let mut streamer = make_streamer_with_cap(1, 3);
+    let mut streamer = make_streamer_with_cap(1, 3).await;
     streamer.filter_messages(vec![
         make_entry(2, 20),
         make_entry(4, 22),
@@ -153,9 +165,9 @@ fn test_filter_messages_overflows_to_stubs() {
     assert_eq!(stub_entries(&streamer), vec![(6, 24)]);
 }
 
-#[test]
-fn test_filter_messages_leaves_stubs_alone() {
-    let mut streamer = make_streamer_with_cap(1, 2);
+#[tokio::test]
+async fn test_filter_messages_leaves_stubs_alone() {
+    let mut streamer = make_streamer_with_cap(1, 2).await;
     streamer.filter_messages(vec![
         make_entry(1, 10),
         make_entry(2, 11),
@@ -177,7 +189,7 @@ fn test_filter_messages_leaves_stubs_alone() {
 
 #[tokio::test]
 async fn test_drifting_seq_overflows_to_stubs_and_finalization_clears() {
-    let mut s = make_streamer_with_cap(1, 3);
+    let mut s = make_streamer_with_cap(1, 3).await;
 
     s.filter_messages(vec![
         make_entry(2, 10),
@@ -205,7 +217,7 @@ async fn test_drifting_seq_overflows_to_stubs_and_finalization_clears() {
 
 #[tokio::test]
 async fn test_handle_finalization_noop_when_not_advancing() {
-    let mut s = make_streamer_with_cap(1, 5);
+    let mut s = make_streamer_with_cap(1, 5).await;
     s.filter_messages(vec![make_entry(2, 10), make_entry(3, 11)]);
     s.handle_finalization(2).await;
     assert_eq!(queue_positions(&s), vec![3]);
@@ -224,8 +236,9 @@ async fn test_handle_finalization_noop_when_not_advancing() {
 async fn test_poll_hotshot_blocks_and_process() {
     let node = EspressoDevNode::start().await;
 
+    let reader = dev_node_reader(node.client.config.base_url.clone()).await;
     let mut streamer = Streamer::new(
-        node.client.clone(),
+        reader,
         StreamerConfig {
             initial_backoff_ms: 100,
             max_backoff_ms: 500,
@@ -321,8 +334,9 @@ async fn test_reverse_order_fills_stubs_then_finalization_promotes() {
 
     // Cap the queue at 3 and start at seq=4 so seqs 1..=3 are ignored.
     // last_broadcast_position stays at 0 since no contiguous run from 1 exists.
+    let reader = dev_node_reader(node.client.config.base_url.clone()).await;
     let mut streamer = Streamer::<MockRollup>::new(
-        node.client.clone(),
+        reader,
         StreamerConfig {
             initial_backoff_ms: 100,
             max_backoff_ms: 500,
