@@ -246,7 +246,11 @@ async fn test_e2e_message_drift() {
         .await
         .expect("failed to read L1 head block number");
 
-    nitro_node.start_poster(CAS_FEED_URL, CasRoute::Calldata.rpc_url_for_poster());
+    nitro_node.start_poster(
+        CAS_FEED_URL,
+        CasRoute::Calldata.rpc_url_for_poster(),
+        &sequencer_inbox.to_string(),
+    );
 
     wait_for_batches_on_l1(&l1, from_block, 10, sequencer_inbox).await;
 

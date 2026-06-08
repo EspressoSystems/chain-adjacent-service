@@ -24,7 +24,14 @@ pub struct BroadcastFeedMessage {
     pub sequence_number: u64,
     pub message: MessageWithMetadata,
     #[serde_as(as = "serde_with::DefaultOnNull<Base64>")]
-    #[serde(default, rename = "signatureV2")]
+    #[cfg_attr(
+        feature = "nitro-v3_9_9",
+        serde(default, rename = "signature", alias = "signatureV2")
+    )]
+    #[cfg_attr(
+        not(feature = "nitro-v3_9_9"),
+        serde(default, rename = "signatureV2", alias = "signature")
+    )]
     pub signature: Vec<u8>,
     #[serde_as(as = "serde_with::DefaultOnNull<Base64>")]
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

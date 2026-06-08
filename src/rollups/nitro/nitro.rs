@@ -421,10 +421,40 @@ pub fn verify_broadcast_feed_message_signature(
     }
 }
 
+#[cfg(all(feature = "nitro-v3_9_9", feature = "nitro-v3_10"))]
+compile_error!("features `nitro-v3_9_9` and `nitro-v3_10` are mutually exclusive");
+
+/// Mirrors `MessageWithMetadata.Hash` in arbos/arbostypes/messagewithmeta.go
+/// from upstream nitro v3.9.9. Hash =
+/// keccak256("Arbitrum Nitro Feed:" || seq_num(8) || chain_id(8) || delayed_messages_read(8) || rlp(message))
+#[cfg(feature = "nitro-v3_9_9")]
+pub fn signature_hash(msg: &BroadcastFeedMessage, chain_id: u64) -> Result<FixedBytes<32>> {
+    let l1_msg = msg
+        .message
+        .message
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("BroadcastFeedMessage missing L1IncomingMessage"))?;
+
+    let mut extra_data = [0u8; 24];
+    extra_data[..8].copy_from_slice(&msg.sequence_number.to_be_bytes());
+    extra_data[8..16].copy_from_slice(&chain_id.to_be_bytes());
+    extra_data[16..].copy_from_slice(&msg.message.delayed_messages_read.to_be_bytes());
+
+    let rlp_message = alloy_rlp::encode(l1_msg);
+
+    let mut hasher = Keccak256::new();
+    hasher.update(b"Arbitrum Nitro Feed:");
+    hasher.update(extra_data);
+    hasher.update(&rlp_message);
+
+    Ok(hasher.finalize())
+}
+
 /// Mirrors `BroadcastFeedMessage.SignatureHash` in
 /// broadcaster/message/message.go from upstream nitro v3.10. Hashes the
 /// hand-picked subset of fields covered by the sequencer signature, prefixed
 /// with "Arbitrum Nitro Feed:".
+#[cfg(not(feature = "nitro-v3_9_9"))]
 pub fn signature_hash(msg: &BroadcastFeedMessage, chain_id: u64) -> Result<FixedBytes<32>> {
     let l1_msg = msg
         .message
