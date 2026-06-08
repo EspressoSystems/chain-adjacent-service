@@ -131,5 +131,5 @@ fn default_max_register_attempts() -> u8 {
 }
 
 fn default_attestation_client_timeout_secs() -> u64 {
-    30
+    300
 }
