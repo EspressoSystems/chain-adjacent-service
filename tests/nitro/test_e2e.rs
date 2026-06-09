@@ -322,7 +322,38 @@ pub(crate) fn read_tee_verifier_address() -> Address {
 /// preserves the `starting_hotshot_height` we wrote here instead of
 /// overwriting it with whatever it scans off L1.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn write_cas_config(
+/// Build the light-client genesis from the dev node's `/config/hotshot` (stake table + epoch
+/// params). The e2e dev node has a static validator set, so the genesis is fixed;
+/// `first_epoch = epoch_start_block / epoch_height + 3`.
+async fn devnode_light_client_genesis(base_url: &str) -> serde_json::Value {
+    let url = format!("{}/config/hotshot", base_url.trim_end_matches('/'));
+    let cfg: serde_json::Value = reqwest::Client::new()
+        .get(&url)
+        .send()
+        .await
+        .expect("fetch /config/hotshot")
+        .json()
+        .await
+        .expect("parse /config/hotshot");
+    let c = &cfg["config"];
+    let epoch_height = c["epoch_height"].as_u64().expect("config.epoch_height");
+    let epoch_start_block = c["epoch_start_block"]
+        .as_u64()
+        .expect("config.epoch_start_block");
+    let stake_table: Vec<serde_json::Value> = c["known_nodes_with_stake"]
+        .as_array()
+        .expect("config.known_nodes_with_stake")
+        .iter()
+        .map(|n| n["stake_table_entry"].clone())
+        .collect();
+    json!({
+        "epoch_height": epoch_height,
+        "first_epoch_with_dynamic_stake_table": epoch_start_block / epoch_height + 3,
+        "stake_table": stake_table,
+    })
+}
+
+pub(crate) async fn write_cas_config(
     starting_hotshot_height: u64,
     route: CasRoute,
     sequencer_inbox: &Address,
@@ -360,12 +391,12 @@ pub(crate) fn write_cas_config(
         }),
     };
 
-    let mut espresso_client = json!({
-        "base_url": espresso_base_url_override.unwrap_or("http://localhost:41000"),
-    });
+    let base_url = espresso_base_url_override.unwrap_or("http://localhost:41000");
+    let mut espresso_client = json!({ "base_url": base_url });
     if let Some(timeout) = client_timeout_secs {
         espresso_client["client_timeout_secs"] = json!(timeout);
     }
+    let light_client = json!({ "genesis": devnode_light_client_genesis(base_url).await });
 
     let mut streamer = json!({
         "starting_hotshot_height": starting_hotshot_height,
@@ -376,6 +407,7 @@ pub(crate) fn write_cas_config(
 
     let config = json!({
         "espresso_client": espresso_client,
+        "light_client": light_client,
         "streamer": streamer,
         "rollup": {
             "type": "nitro",
@@ -669,7 +701,8 @@ async fn run_e2e(route: CasRoute) {
         None,
         None,
         None,
-    );
+    )
+    .await;
     println!(
         "CAS config written to {} (starting_hotshot_height={starting_hotshot_height})",
         cas_config_path.display()
@@ -775,7 +808,8 @@ async fn test_e2e_l1_reorg() {
         None,
         None,
         None,
-    );
+    )
+    .await;
 
     let probe_url = CasRoute::Calldata.rpc_url_local();
     let cas = spawn_cas_with_retries(&cas_config_path, &probe_url).await;
@@ -908,7 +942,8 @@ async fn test_e2e_restart() {
         None,
         None,
         None,
-    );
+    )
+    .await;
     println!(
         "CAS config written to {} (starting_hotshot_height={starting_hotshot_height})",
         cas_config_path.display()
@@ -953,7 +988,8 @@ async fn test_e2e_restart() {
         None,
         None,
         None,
-    );
+    )
+    .await;
     let cas = spawn_cas_with_retries(&cas_restart_config_path, &probe_url).await;
     println!("CAS restarted; waiting for batch count to reach 4...");
     wait_for_batches_on_l1(&l1, from_block, 4, sequencer_inbox).await;
@@ -1104,7 +1140,8 @@ async fn test_e2e_anytrust_fallback_to_calldata() {
         None,
         None,
         None,
-    );
+    )
+    .await;
 
     let probe_url = CasRoute::Anytrust.rpc_url_local();
     let cas = spawn_cas_with_retries(&cas_config_path, &probe_url).await;
@@ -1163,7 +1200,8 @@ async fn test_e2e_espresso_downtime() {
         Some(1),
         None,
         None,
-    );
+    )
+    .await;
     let probe_url = route.rpc_url_local();
     let mut cas = spawn_cas_with_retries(&cas_config_path, &probe_url).await;
 
@@ -1263,7 +1301,8 @@ async fn test_e2e_malicious_batch_poster() {
         None,
         None,
         None,
-    );
+    )
+    .await;
 
     let probe_url = CasRoute::Calldata.rpc_url_local();
     let cas = spawn_cas_with_retries(&cas_config_path, &probe_url).await;
@@ -1344,7 +1383,8 @@ async fn test_e2e_external_da_fallback_to_anytrust() {
         None,
         None,
         None,
-    );
+    )
+    .await;
 
     let probe_url = route.rpc_url_local();
     let cas_log_path = std::env::temp_dir().join("cas-e2e-external-da-anytrust-fallback.log");
@@ -1462,7 +1502,8 @@ async fn test_e2e_legacy_feed_format() {
         None,
         None,
         None,
-    );
+    )
+    .await;
 
     let raw = std::fs::read_to_string(&cas_config_path)
         .unwrap_or_else(|e| panic!("read CAS config: {e}"));

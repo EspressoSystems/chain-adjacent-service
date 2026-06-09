@@ -235,7 +235,8 @@ async fn test_e2e_message_drift() {
         None,
         Some(&proxy_url),
         Some(10),
-    );
+    )
+    .await;
 
     let probe_url = CasRoute::Calldata.rpc_url_local();
     let cas = spawn_cas_with_retries(&cas_config_path, &probe_url).await;
