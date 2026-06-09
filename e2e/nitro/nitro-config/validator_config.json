@@ -44,15 +44,6 @@
                 "url": "ws://validation-node:8549",
                 "jwtsecret": "/nitro-config/val_jwt.hex"
             }
-        },
-        "da": {
-            "anytrust": {
-                "enable": true,
-                "rest-aggregator": {
-                    "enable": true,
-                    "urls": ["http://das-mirror:9877"]
-                }
-            }
         }
     },
     "execution": {

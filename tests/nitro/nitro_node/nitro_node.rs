@@ -115,7 +115,12 @@ impl NitroNode {
         }
     }
 
-    pub fn start_poster(&self, cas_feed_url: &str, cas_calldata_rpc_url: &str) {
+    pub fn start_poster(
+        &self,
+        cas_feed_url: &str,
+        cas_calldata_rpc_url: &str,
+        sequencer_inbox_address: &str,
+    ) {
         let _ = compose_command()
             .args([
                 "compose",
@@ -141,23 +146,32 @@ impl NitroNode {
             ])
             .env("CAS_FEED_URL", cas_feed_url)
             .env("CAS_CALLDATA_RPC_URL", cas_calldata_rpc_url)
+            .env("SEQUENCER_INBOX_ADDRESS", sequencer_inbox_address)
             .status()
             .expect("failed to run `docker compose up --wait poster`");
         assert!(status.success(), "`docker compose up --wait poster` failed");
     }
 
-    pub fn start_das_committee(&self) {
-        run_compose(&[
-            "compose",
-            "--profile",
-            "anytrust",
-            "up",
-            "-d",
-            "--wait",
-            "das-committee-a",
-            "das-committee-b",
-            "das-mirror",
-        ]);
+    pub fn start_das_committee(&self, sequencer_inbox_address: &str) {
+        let status = compose_command()
+            .args([
+                "compose",
+                "--profile",
+                "anytrust",
+                "up",
+                "-d",
+                "--wait",
+                "das-committee-a",
+                "das-committee-b",
+                "das-mirror",
+            ])
+            .env("SEQUENCER_INBOX_ADDRESS", sequencer_inbox_address)
+            .status()
+            .expect("failed to run `docker compose up --wait das-committee`");
+        assert!(
+            status.success(),
+            "`docker compose up --wait das-committee` failed"
+        );
     }
 
     pub fn start_anytrust_daprovider(&self, sequencer_inbox_address: &str) {

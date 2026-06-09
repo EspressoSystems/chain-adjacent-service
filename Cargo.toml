@@ -4,7 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
+default = ["nitro-v3_9_9"]
 e2e = []
+nitro-v3_9_9 = []
+nitro-v3_10 = []
 
 [lib]
 name = "chain_adjacent_service"
