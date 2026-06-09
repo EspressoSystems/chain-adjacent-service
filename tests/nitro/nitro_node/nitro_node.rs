@@ -17,6 +17,7 @@ pub struct NitroNodeConfig {
 pub struct NitroNode {
     _config: NitroNodeConfig,
     _lifecycle_permit: Option<OwnedSemaphorePermit>,
+    reuse: bool,
 }
 
 fn compose_lifecycle_semaphore() -> &'static std::sync::Arc<Semaphore> {
@@ -81,7 +82,13 @@ impl NitroNode {
             .await
             .expect("lifecycle semaphore closed");
 
-        let _ = compose_down_status();
+        let reuse = std::env::var("REUSE_NITRO_DOCKER").is_ok();
+
+        if reuse {
+            println!("REUSE_NITRO_DOCKER set — skipping compose down, reusing running stack");
+        } else {
+            let _ = compose_down_status();
+        }
 
         let startup = (|| -> Result<(), String> {
             println!("Loading pre-deployed L1 state (run `just generate-l1-state` to regenerate)");
@@ -103,7 +110,9 @@ impl NitroNode {
         })();
 
         if let Err(err) = startup {
-            let _ = compose_down_status();
+            if !reuse {
+                let _ = compose_down_status();
+            }
             panic!("{err}");
         }
 
@@ -112,6 +121,7 @@ impl NitroNode {
         Self {
             _config: config,
             _lifecycle_permit: Some(lifecycle_permit),
+            reuse,
         }
     }
 
@@ -222,6 +232,21 @@ impl NitroNode {
         run_compose(&["compose", "stop", "tx-generator"]);
     }
 
+    /// Remove test-specific (ephemeral) services but keep the base stack
+    /// (l1-anvil, espresso-dev-node, sequencer) running so the next test
+    /// can reuse them without a full restart cycle.
+    fn stop_ephemeral_services(&self) {
+        let _ = run_compose_result(&["compose", "unpause", "espresso-dev-node"]);
+
+        let _ = compose_command()
+            .args([
+                "compose", "rm", "-f", "-s", "-v", "poster", "tx-generator", "validator",
+                "validation-node", "das-committee-a", "das-committee-b", "das-mirror",
+                "daprovider-anytrust",
+            ])
+            .status();
+    }
+
     pub fn stop(&self) {
         let _ = run_compose_result(&["compose", "unpause", "espresso-dev-node"]);
         let status = compose_down_status();
@@ -250,6 +275,10 @@ impl NitroNode {
 
 impl Drop for NitroNode {
     fn drop(&mut self) {
-        self.stop();
+        if self.reuse {
+            self.stop_ephemeral_services();
+        } else {
+            self.stop();
+        }
     }
 }

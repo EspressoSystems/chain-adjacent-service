@@ -75,12 +75,30 @@ v3_9_9_env := "COMPOSE_FILE=docker-compose.yml:docker-compose.v3_9_9.yml " + \
 test-e2e filter="":
     RUST_BACKTRACE=1 cargo test --test nitro --no-default-features --features e2e,nitro-v3_10 {{filter}} -- --test-threads=1
 
+# Run non-DA E2E tests against Nitro v3.10 (skips anytrust / external-DA tests).
+test-e2e-non-da:
+    RUST_BACKTRACE=1 cargo test --test nitro --no-default-features --features e2e,nitro-v3_10 -- --test-threads=1 --skip anytrust
+
+# Run DA E2E tests against Nitro v3.10 (anytrust + external-DA tests only).
+test-e2e-da:
+    RUST_BACKTRACE=1 cargo test --test nitro --no-default-features --features e2e,nitro-v3_10 anytrust -- --test-threads=1
+
 # Run E2E tests against Nitro v3.9.9. Requires `just generate-l1-state-v3_9_9`
 # to have produced e2e/nitro/generated-config-v3_9_9/ first.
 # Pass an optional libtest filter, e.g. `just test-e2e-v3_9_9 test_e2e_anytrust`.
 test-e2e-v3_9_9 filter="":
     {{v3_9_9_env}} \
     RUST_BACKTRACE=1 cargo test --test nitro --no-default-features --features e2e,nitro-v3_9_9 {{filter}} -- --test-threads=1
+
+# Run non-DA E2E tests against Nitro v3.9.9.
+test-e2e-v3_9_9-non-da:
+    {{v3_9_9_env}} \
+    RUST_BACKTRACE=1 cargo test --test nitro --no-default-features --features e2e,nitro-v3_9_9 -- --test-threads=1 --skip anytrust
+
+# Run DA E2E tests against Nitro v3.9.9.
+test-e2e-v3_9_9-da:
+    {{v3_9_9_env}} \
+    RUST_BACKTRACE=1 cargo test --test nitro --no-default-features --features e2e,nitro-v3_9_9 anytrust -- --test-threads=1
 
 test:
     RUST_BACKTRACE=1 cargo test --all-features -- --test-threads=1
@@ -105,7 +123,7 @@ e2e-up:
 
 # Tear down the e2e Nitro stack. v3.10 default.
 e2e-down:
-    docker compose -f e2e/nitro/docker-compose.yml --profile poster down -v --remove-orphans
+    docker compose -f e2e/nitro/docker-compose.yml --profile poster --profile anytrust --profile validator down -v --remove-orphans
 
 # Bring up the e2e Nitro stack (v3.9.9). Sources .env then .env.v3_9_9 so
 # shared values stay in .env and only differences live in the overlay.
@@ -128,7 +146,7 @@ e2e-down-v3_9_9:
     source e2e/nitro/.env.v3_9_9
     set +a
     docker compose -f e2e/nitro/docker-compose.yml -f e2e/nitro/docker-compose.v3_9_9.yml \
-        --profile poster down -v --remove-orphans
+        --profile poster --profile anytrust --profile validator down -v --remove-orphans
 
 # ─── Cleanup ──────────────────────────────────────────────────────────────────
 

@@ -10,10 +10,11 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-Dwarnings"
+  REUSE_NITRO_DOCKER: "1"
 
 jobs:
-  e2e-v3_9_9:
-    name: E2E Tests (Nitro v3.9.9)
+  e2e-v3_9_9-non-da:
+    name: E2E Tests (Nitro v3.9.9, non-DA)
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -46,11 +47,56 @@ jobs:
 
       - uses: extractions/setup-just@v3
 
-      - name: Run E2E tests
-        run: just test-e2e-v3_9_9
+      - name: Run non-DA E2E tests
+        run: just test-e2e-v3_9_9-non-da
 
-  e2e-v3_10:
-    name: E2E Tests (Nitro v3.10)
+      - name: Cleanup Docker
+        if: always()
+        run: just e2e-down-v3_9_9
+
+  e2e-v3_9_9-da:
+    name: E2E Tests (Nitro v3.9.9, DA)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull Docker images
+        working-directory: e2e/nitro
+        run: |
+          set -a
+          source .env
+          source .env.v3_9_9
+          set +a
+          docker pull "$NITRO_IMAGE" &
+          docker pull "$ESPRESSO_DEV_NODE_IMAGE" &
+          docker pull ghcr.io/foundry-rs/foundry:latest &
+          docker pull ghcr.io/foundry-rs/foundry:v1.5.1 &
+          wait
+
+      - uses: extractions/setup-just@v3
+
+      - name: Run DA E2E tests
+        run: just test-e2e-v3_9_9-da
+
+      - name: Cleanup Docker
+        if: always()
+        run: just e2e-down-v3_9_9
+
+  e2e-v3_10-non-da:
+    name: E2E Tests (Nitro v3.10, non-DA)
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -82,5 +128,49 @@ jobs:
 
       - uses: extractions/setup-just@v3
 
-      - name: Run E2E tests
-        run: just test-e2e
+      - name: Run non-DA E2E tests
+        run: just test-e2e-non-da
+
+      - name: Cleanup Docker
+        if: always()
+        run: just e2e-down
+
+  e2e-v3_10-da:
+    name: E2E Tests (Nitro v3.10, DA)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull Docker images
+        working-directory: e2e/nitro
+        run: |
+          set -a
+          source .env
+          set +a
+          docker pull "$NITRO_IMAGE" &
+          docker pull "$ESPRESSO_DEV_NODE_IMAGE" &
+          docker pull ghcr.io/foundry-rs/foundry:latest &
+          docker pull ghcr.io/foundry-rs/foundry:v1.5.1 &
+          wait
+
+      - uses: extractions/setup-just@v3
+
+      - name: Run DA E2E tests
+        run: just test-e2e-da
+
+      - name: Cleanup Docker
+        if: always()
+        run: just e2e-down
