@@ -3,34 +3,40 @@
 # Run this after updating nitro-contracts or the rollup-creator image.
 #
 # Usage:
-#   ./e2e/nitro/generate-l1-state.sh                      # default (.env, v3.10)
-#   ./e2e/nitro/generate-l1-state.sh .env.v3_9_9          # v3.9.9
+#   ./e2e/nitro/generate-l1-state.sh                      # default (v3.10)
+#   ./e2e/nitro/generate-l1-state.sh .env.v3_9_9          # v3.9.9 overlay
 #
-# The env file sets NITRO_IMAGE, CONFIG_DIR (output dir, relative to this
-# script), ANYTRUST_TOOL_BIN (anytrusttool vs datool), and credentials.
-# If a sibling `docker-compose.<env-suffix>.yml` exists (e.g.
-# `docker-compose.v3_9_9.yml` for `.env.v3_9_9`), it is layered on top of the
-# base compose file automatically.
+# `.env` is always sourced first for shared values (ports, accounts,
+# espresso config). If an overlay file is passed, it is sourced afterwards
+# so its values win. A sibling `docker-compose.<overlay-suffix>.yml` (e.g.
+# `docker-compose.v3_9_9.yml`) is layered on top of the base compose file
+# automatically.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-ENV_FILE="${1:-.env}"
-ENV_PATH="$SCRIPT_DIR/$ENV_FILE"
-if [ ! -f "$ENV_PATH" ]; then
-    echo "ERROR: env file not found: $ENV_PATH" >&2
-    exit 1
-fi
+OVERLAY_FILE="${1:-}"
 
-# Source env file for NITRO_IMAGE, CONFIG_DIR, ANYTRUST_TOOL_BIN, credentials.
+# Always source the base .env, then the overlay (if any) so it can win.
+# Variables are exported into the shell env so docker compose picks them
+# up via its standard env inheritance — no --env-file needed.
 set -a
-# shellcheck disable=SC1090
-source "$ENV_PATH"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/.env"
+if [ -n "$OVERLAY_FILE" ]; then
+    OVERLAY_PATH="$SCRIPT_DIR/$OVERLAY_FILE"
+    if [ ! -f "$OVERLAY_PATH" ]; then
+        echo "ERROR: overlay env file not found: $OVERLAY_PATH" >&2
+        exit 1
+    fi
+    # shellcheck disable=SC1090
+    source "$OVERLAY_PATH"
+fi
 set +a
 
-: "${CONFIG_DIR:?CONFIG_DIR must be set in $ENV_FILE}"
-: "${ANYTRUST_TOOL_BIN:?ANYTRUST_TOOL_BIN must be set in $ENV_FILE}"
+: "${CONFIG_DIR:?CONFIG_DIR must be set}"
+: "${ANYTRUST_TOOL_BIN:?ANYTRUST_TOOL_BIN must be set}"
 
 BASE="$SCRIPT_DIR/docker-compose.yml"
 GENERATE_OVERRIDE="$SCRIPT_DIR/docker-compose.generate.yml"
@@ -39,19 +45,20 @@ DAS_KEYS_DIR="$SCRIPT_DIR/das-keys"
 
 DC_FILES=(-f "$BASE" -f "$GENERATE_OVERRIDE")
 
-# Layer version-specific compose override when the env-file name implies one.
-# `.env`        -> no extra override
+# Layer version-specific compose override when the overlay name implies one.
 # `.env.v3_9_9` -> docker-compose.v3_9_9.yml
-ENV_SUFFIX="${ENV_FILE#.env}"
-ENV_SUFFIX="${ENV_SUFFIX#.}"
-if [ -n "$ENV_SUFFIX" ]; then
-    VERSION_OVERRIDE="$SCRIPT_DIR/docker-compose.$ENV_SUFFIX.yml"
-    if [ -f "$VERSION_OVERRIDE" ]; then
-        DC_FILES+=(-f "$VERSION_OVERRIDE")
+if [ -n "$OVERLAY_FILE" ]; then
+    OVERLAY_SUFFIX="${OVERLAY_FILE#.env}"
+    OVERLAY_SUFFIX="${OVERLAY_SUFFIX#.}"
+    if [ -n "$OVERLAY_SUFFIX" ]; then
+        VERSION_OVERRIDE="$SCRIPT_DIR/docker-compose.$OVERLAY_SUFFIX.yml"
+        if [ -f "$VERSION_OVERRIDE" ]; then
+            DC_FILES+=(-f "$VERSION_OVERRIDE")
+        fi
     fi
 fi
 
-DC="docker compose --env-file $ENV_PATH ${DC_FILES[*]}"
+DC="docker compose ${DC_FILES[*]}"
 
 # ── Teardown ──────────────────────────────────────────────────────────────────
 

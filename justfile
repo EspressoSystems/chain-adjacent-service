@@ -64,18 +64,23 @@ docker-build tag="chain-adjacent-service:latest":
 
 # ─── Running tests ────────────────────────────────────────────────────────────
 
-# Run all E2E tests against Nitro v3.10 (tests must run sequentially)
-test-e2e:
-    RUST_BACKTRACE=1 cargo test --test nitro --no-default-features --features e2e,nitro-v3_10 -- --test-threads=1
+# Shared v3.9.9 env. Used by every recipe that needs to talk to the v3.9.9 stack.
+v3_9_9_env := "COMPOSE_FILE=docker-compose.yml:docker-compose.v3_9_9.yml " + \
+    "NITRO_IMAGE=ghcr.io/espressosystems/nitro-espresso-integration/nitro-node:support-espresso-v3.9.9 " + \
+    "CONFIG_DIR=generated-config-v3_9_9 " + \
+    "NITRO_E2E_VERSION=v3_9_9"
 
-# Run all E2E tests against Nitro v3.9.9. Requires `just generate-l1-state-v3_9_9`
+# Run all E2E tests against Nitro v3.10 (tests must run sequentially).
+# Pass an optional libtest filter, e.g. `just test-e2e test_e2e_anytrust`.
+test-e2e filter="":
+    RUST_BACKTRACE=1 cargo test --test nitro --no-default-features --features e2e,nitro-v3_10 {{filter}} -- --test-threads=1
+
+# Run E2E tests against Nitro v3.9.9. Requires `just generate-l1-state-v3_9_9`
 # to have produced e2e/nitro/generated-config-v3_9_9/ first.
-test-e2e-v3_9_9:
-    COMPOSE_FILE=docker-compose.yml:docker-compose.v3_9_9.yml \
-    NITRO_IMAGE=ghcr.io/espressosystems/nitro-espresso-integration/nitro-node:support-espresso-v3.9.9 \
-    CONFIG_DIR=generated-config-v3_9_9 \
-    NITRO_E2E_VERSION=v3_9_9 \
-    RUST_BACKTRACE=1 cargo test --test nitro --no-default-features --features e2e,nitro-v3_9_9 -- --test-threads=1
+# Pass an optional libtest filter, e.g. `just test-e2e-v3_9_9 test_e2e_anytrust`.
+test-e2e-v3_9_9 filter="":
+    {{v3_9_9_env}} \
+    RUST_BACKTRACE=1 cargo test --test nitro --no-default-features --features e2e,nitro-v3_9_9 {{filter}} -- --test-threads=1
 
 test:
     RUST_BACKTRACE=1 cargo test --all-features -- --test-threads=1
@@ -102,16 +107,27 @@ e2e-up:
 e2e-down:
     docker compose -f e2e/nitro/docker-compose.yml --profile poster down -v --remove-orphans
 
-# Bring up the e2e Nitro stack (v3.9.9).
+# Bring up the e2e Nitro stack (v3.9.9). Sources .env then .env.v3_9_9 so
+# shared values stay in .env and only differences live in the overlay.
 e2e-up-v3_9_9:
-    docker compose --env-file e2e/nitro/.env.v3_9_9 \
-        -f e2e/nitro/docker-compose.yml -f e2e/nitro/docker-compose.v3_9_9.yml \
+    #!/usr/bin/env bash
+    set -euo pipefail
+    set -a
+    source e2e/nitro/.env
+    source e2e/nitro/.env.v3_9_9
+    set +a
+    docker compose -f e2e/nitro/docker-compose.yml -f e2e/nitro/docker-compose.v3_9_9.yml \
         up -d --wait
 
 # Tear down the e2e Nitro stack (v3.9.9).
 e2e-down-v3_9_9:
-    docker compose --env-file e2e/nitro/.env.v3_9_9 \
-        -f e2e/nitro/docker-compose.yml -f e2e/nitro/docker-compose.v3_9_9.yml \
+    #!/usr/bin/env bash
+    set -euo pipefail
+    set -a
+    source e2e/nitro/.env
+    source e2e/nitro/.env.v3_9_9
+    set +a
+    docker compose -f e2e/nitro/docker-compose.yml -f e2e/nitro/docker-compose.v3_9_9.yml \
         --profile poster down -v --remove-orphans
 
 # ─── Cleanup ──────────────────────────────────────────────────────────────────
@@ -125,9 +141,14 @@ clean:
     (docker compose -f e2e/nitro/docker-compose.yml --profile poster down -v --remove-orphans) || true
 
     echo "Stopping e2e Nitro stack (v3.9.9)..."
-    (docker compose --env-file e2e/nitro/.env.v3_9_9 \
-        -f e2e/nitro/docker-compose.yml -f e2e/nitro/docker-compose.v3_9_9.yml \
-        --profile poster down -v --remove-orphans) || true
+    (
+        set -a
+        source e2e/nitro/.env
+        source e2e/nitro/.env.v3_9_9
+        set +a
+        docker compose -f e2e/nitro/docker-compose.yml -f e2e/nitro/docker-compose.v3_9_9.yml \
+            --profile poster down -v --remove-orphans
+    ) || true
 
     echo "Stopping espresso dev-node containers..."
     docker compose -f src/espresso_e2e/docker-compose.yml down -v --remove-orphans || true

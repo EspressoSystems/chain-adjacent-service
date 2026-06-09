@@ -35,6 +35,7 @@ jobs:
         working-directory: e2e/nitro
         run: |
           set -a
+          source .env
           source .env.v3_9_9
           set +a
           docker pull "$NITRO_IMAGE" &
@@ -48,8 +49,8 @@ jobs:
       - name: Run E2E tests
         run: just test-e2e-v3_9_9
 
-  e2e-v3_10-anytrust:
-    name: E2E Tests (Nitro v3.10, test_e2e_anytrust only)
+  e2e-v3_10:
+    name: E2E Tests (Nitro v3.10)
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -81,11 +82,5 @@ jobs:
 
       - uses: extractions/setup-just@v3
 
-      - name: Run test_e2e_anytrust
-        run: |
-          RUST_BACKTRACE=1 cargo test \
-            --test nitro \
-            --no-default-features \
-            --features e2e,nitro-v3_10 \
-            test_e2e::test_e2e_anytrust \
-            -- --test-threads=1 --exact
+      - name: Run E2E tests
+        run: just test-e2e
