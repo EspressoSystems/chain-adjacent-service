@@ -240,8 +240,18 @@ impl NitroNode {
 
         let _ = compose_command()
             .args([
-                "compose", "rm", "-f", "-s", "-v", "poster", "tx-generator", "validator",
-                "validation-node", "das-committee-a", "das-committee-b", "das-mirror",
+                "compose",
+                "rm",
+                "-f",
+                "-s",
+                "-v",
+                "poster",
+                "tx-generator",
+                "validator",
+                "validation-node",
+                "das-committee-a",
+                "das-committee-b",
+                "das-mirror",
                 "daprovider-anytrust",
             ])
             .status();
