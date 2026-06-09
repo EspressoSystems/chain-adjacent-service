@@ -353,6 +353,7 @@ async fn devnode_light_client_genesis(base_url: &str) -> serde_json::Value {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn write_cas_config(
     starting_hotshot_height: u64,
     route: CasRoute,
