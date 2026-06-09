@@ -1,9 +1,6 @@
 services:
   espresso-dev-node:
-    # TODO: switch to a registry tag once PR #4453 (enable light-client module in dev node)
-    # merges, e.g. ghcr.io/espressosystems/espresso-network/espresso-dev-node:main.
-    # For now this is the locally-loaded PR build artifact, which serves /light-client.
-    image: ghcr.io/espressosystems/espresso-network/espresso-dev-node:pr-4453
+    image: ghcr.io/espressosystems/espresso-network/espresso-dev-node:main
     platform: linux/amd64
     ports:
       - "$ESPRESSO_SEQUENCER_API_PORT:$ESPRESSO_SEQUENCER_API_PORT"
