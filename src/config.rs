@@ -43,6 +43,10 @@ pub struct StreamerConfig {
     /// Entries beyond this limit are stored as lightweight stubs (sequence_number, hotshot_height)
     /// and are promoted back to full entries when finalization creates room.
     pub max_full_queue_entries: usize,
+
+    /// How long the streamer will keep getting 404s from the espresso availability
+    /// endpoint before escalating to an error log (hotshot likely stalled).
+    pub hotshot_stall_warn_ms: u64,
 }
 
 impl Default for StreamerConfig {
@@ -54,6 +58,7 @@ impl Default for StreamerConfig {
             starting_pos: 0,
             starting_hotshot_height: 0,
             max_full_queue_entries: 1000,
+            hotshot_stall_warn_ms: 30_000,
         }
     }
 }

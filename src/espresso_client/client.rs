@@ -6,9 +6,13 @@ use crate::espresso_client::types::{
 use anyhow::{Result, bail};
 use committable::Commitment;
 use espresso_types::{NamespaceId, Transaction};
-use reqwest::Url;
+use reqwest::{StatusCode, Url};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, thiserror::Error)]
+#[error("resource not yet available (404)")]
+pub struct NotFound;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -130,6 +134,9 @@ impl EspressoClient {
     {
         let res = self.client.get(url).send().await?;
         if !res.status().is_success() {
+            if res.status() == StatusCode::NOT_FOUND {
+                return Err(anyhow::Error::new(NotFound));
+            }
             bail!("request failed with status {}", res.status());
         }
         Ok(res.json().await?)
