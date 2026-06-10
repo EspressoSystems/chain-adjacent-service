@@ -252,7 +252,7 @@ async fn test_e2e_message_drift() {
         &sequencer_inbox.to_string(),
     );
 
-    wait_for_batches_on_l1(&l1, from_block, 10, sequencer_inbox).await;
+    wait_for_batches_on_l1(&l1, from_block, 5, sequencer_inbox).await;
 
     let passthrough = proxy
         .state

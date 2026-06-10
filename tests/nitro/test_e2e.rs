@@ -561,7 +561,9 @@ pub(crate) async fn wait_for_batches_on_l1(
         .event_signature(SequencerBatchDelivered::SIGNATURE_HASH)
         .from_block(from_block);
 
-    let deadline = Instant::now() + Duration::from_secs(5 * 60);
+    // Scale timeout with batch count — CI runners can be slow (~100s/batch observed).
+    let per_batch_secs: u64 = 120;
+    let deadline = Instant::now() + Duration::from_secs(min as u64 * per_batch_secs);
     loop {
         if Instant::now() >= deadline {
             let count = provider
