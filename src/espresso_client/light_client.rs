@@ -66,9 +66,11 @@ impl LightClientReader {
         start: u64,
         end: u64,
     ) -> Result<Vec<NamespaceTransactionsInRange>> {
+        let start_usize = usize::try_from(start).context("start height exceeds usize limit")?;
+        let end_usize = usize::try_from(end).context("end height exceeds usize limit")?;
         let verified: Vec<Vec<Transaction>> = self
             .inner
-            .fetch_namespaces_in_range(start as usize, end as usize, namespace)
+            .fetch_namespaces_in_range(start_usize, end_usize, namespace)
             .await?;
 
         Ok(verified
@@ -104,7 +106,10 @@ impl LightClientReader {
 #[cfg(test)]
 pub(crate) async fn genesis_json_from_node(query_url: &Url) -> serde_json::Value {
     let cfg_url = query_url.join("config/hotshot").expect("join config url");
-    let cfg: serde_json::Value = reqwest::get(cfg_url)
+    let cfg: serde_json::Value = reqwest::Client::new()
+        .get(cfg_url)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
         .await
         .expect("fetch /config/hotshot")
         .json()
