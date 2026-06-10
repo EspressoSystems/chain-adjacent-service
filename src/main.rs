@@ -209,33 +209,27 @@ async fn run<R: Rollup>(
 
     info!("all tasks spawned; entering main event loop");
 
-    tokio::try_join!(
-        async {
-            let result = submitter_task.await.map_err(anyhow::Error::from);
+    tokio::select! {
+        res = submitter_task => {
             info!("submitter task exited");
-            result
-        },
-        async {
-            let result = feed_task.await.map_err(anyhow::Error::from);
+            res.map_err(anyhow::Error::from)?;
+        }
+        res = feed_task => {
             info!("feed relay task exited");
-            result
-        },
-        async {
-            let result = streamer_task.await;
+            res.map_err(anyhow::Error::from)?;
+        }
+        res = streamer_task => {
             info!("streamer task exited");
-            result
-        },
-        async {
-            let result = da_task.await.map_err(anyhow::Error::from);
+            res?;
+        }
+        res = da_task => {
             info!("DA API task exited");
-            result
-        },
-        async {
-            l1_monitor_task.await;
+            res.map_err(anyhow::Error::from)?;
+        }
+        _ = l1_monitor_task => {
             info!("L1 monitor task exited");
-            Ok::<(), anyhow::Error>(())
-        },
-    )?;
+        }
+    }
     info!("all tasks completed; shutting down");
     Ok(())
 }
