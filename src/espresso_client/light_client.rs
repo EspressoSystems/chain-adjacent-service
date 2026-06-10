@@ -122,13 +122,11 @@ impl LightClientReader {
     }
 }
 
-/// Derive a genesis JSON from a node's `/config/hotshot` — stake table + epoch params, with
-/// `first_epoch = epoch_start_block / epoch_height + 3` (validated against decaf's published
-/// genesis and a real mainnet run). Lets tests derive the trusted genesis instead of
-/// committing validator-key blobs. Returns JSON so tests can mutate it (e.g. the negative
-/// test swapping in a wrong stake table) before deserializing.
+/// Derive the trusted genesis from a node's `/config/hotshot` — stake table + epoch params,
+/// with `first_epoch = epoch_start_block / epoch_height + 3`. Lets tests derive the genesis
+/// from the node they verify against rather than committing validator-key blobs.
 #[cfg(test)]
-pub(crate) async fn genesis_json_from_node(query_url: &Url) -> Value {
+pub(crate) async fn genesis_from_node(query_url: &Url) -> Genesis {
     let config_url = query_url.join("config/hotshot").expect("join config url");
     let response: Value = reqwest::Client::new()
         .get(config_url)
@@ -154,115 +152,85 @@ pub(crate) async fn genesis_json_from_node(query_url: &Url) -> Value {
         .map(|node| node["stake_table_entry"].clone())
         .collect();
 
-    serde_json::json!({
+    serde_json::from_value(serde_json::json!({
         "epoch_height": epoch_height,
         "first_epoch_with_dynamic_stake_table": epoch_start_block / epoch_height + 3,
         "stake_table": stake_table,
-    })
+    }))
+    .expect("build genesis from node config")
 }
 
+/// Verifies the reader against a dockerized dev node (started in-test via `EspressoDevNode`,
+/// so it runs in CI). Genesis-regime only. Decaf on the devnet covers dynamic catch-up.
 #[cfg(test)]
-pub(crate) async fn genesis_from_node(query_url: &Url) -> Genesis {
-    serde_json::from_value(genesis_json_from_node(query_url).await)
-        .expect("genesis from node config")
-}
+mod dev_node {
+    use std::time::Duration;
 
-/// End-to-end verification against live Espresso nodes (network / Docker), so all are
-/// `#[ignore]`d. Run one with:
-///   cargo test -p chain-adjacent-service <name> -- --ignored --nocapture
-#[cfg(test)]
-mod live_verification {
+    use tokio::time::{Instant, sleep};
+
     use super::*;
+    use crate::espresso_e2e::espresso_dev_node::EspressoDevNode;
 
-    const MAINNET_URL: &str = "https://query.main.net.espresso.network/";
-    const DECAF_URL: &str = "https://query.decaf.testnet.espresso.network/";
-    const DEVNODE_URL: &str = "http://localhost:41000/";
-
-    // First block inside mainnet's first dynamic-stake-table epoch (minimal catch-up).
-    const MAINNET_DEFAULT_START: u64 = 10_960_300; // epoch 277 * 40_000
-
-    async fn reader(url: &str) -> LightClientReader {
-        let url = Url::parse(url).unwrap();
-        LightClientReader::new(genesis_from_node(&url).await, url, None)
+    /// Verified tx payloads for `namespace` over `[0, height)`.
+    async fn payloads(
+        reader: &LightClientReader,
+        namespace: NamespaceId,
+        height: u64,
+    ) -> Vec<Vec<u8>> {
+        if height == 0 {
+            return Vec::new();
+        }
+        reader
+            .namespace_transactions_in_range(namespace, 0, height)
             .await
-            .expect("build reader")
+            .expect("verified namespace range")
+            .into_iter()
+            .flat_map(|block| block.transactions)
+            .map(|tx| tx.payload().to_vec())
+            .collect()
     }
 
-    // Surface the light client's catch-up/verification tracing to test output.
-    fn init_tracing() {
-        let _ = tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::DEBUG)
-            .with_test_writer()
-            .try_init();
-    }
-
-    /// Fetch `[start, start+3)` and assert one verified entry per height. Any namespace works
-    /// (absent ones return a verified absence proof), so it needn't exist on the network.
-    async fn assert_verifies_range(reader: &LightClientReader, label: &str, start: u64) {
-        let end = start + 3;
-        let blocks = reader
-            .namespace_transactions_in_range(NamespaceId::from(1u64), start, end)
-            .await
-            .expect("verified namespace range");
-
-        let txs: usize = blocks.iter().map(|b| b.transactions.len()).sum();
-        println!(
-            "{label} verified [{start}, {end}): {} blocks, {txs} txs",
-            blocks.len()
-        );
-        assert_eq!(blocks.len(), (end - start) as usize);
-    }
-
-    // Production case. `MAINNET_SMOKE_START` overrides the height to test deeper catch-up.
+    // Each namespace returns exactly its own verified tx (content + isolation); an unused
+    // namespace verifies as empty (absence).
     #[tokio::test]
-    #[ignore = "hits the public mainnet node; run with --ignored"]
-    async fn mainnet_verifies_namespace_range() {
-        init_tracing();
-        let start = std::env::var("MAINNET_SMOKE_START")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(MAINNET_DEFAULT_START);
-        let reader = reader(MAINNET_URL).await;
-        assert_verifies_range(&reader, "MAINNET", start).await;
-    }
-
-    // mainnet's epoch params but decaf's (real, valid, foreign) validators → mainnet's proofs
-    // MUST be rejected (a BLS pairing failure). Proves verification isn't a no-op.
-    #[tokio::test]
-    #[ignore = "hits the public mainnet + decaf nodes; run with --ignored"]
-    async fn mainnet_rejects_wrong_stake_table() {
-        init_tracing();
-        let mut g = genesis_json_from_node(&Url::parse(MAINNET_URL).unwrap()).await;
-        g["stake_table"] =
-            genesis_json_from_node(&Url::parse(DECAF_URL).unwrap()).await["stake_table"].clone();
-        let bad: Genesis = serde_json::from_value(g).unwrap();
-
-        let reader = LightClientReader::new(bad, Url::parse(MAINNET_URL).unwrap(), None)
+    async fn verifies_namespace_content_isolation_and_absence() {
+        let node = EspressoDevNode::start().await;
+        let url = node.client.config.base_url.clone();
+        let reader = LightClientReader::new(genesis_from_node(&url).await, url, None)
             .await
             .expect("build reader");
-        let res = reader
-            .namespace_transactions_in_range(
-                NamespaceId::from(1u64),
-                MAINNET_DEFAULT_START,
-                MAINNET_DEFAULT_START + 3,
-            )
-            .await;
 
-        println!("wrong-stake-table result: {res:?}");
-        assert!(
-            res.is_err(),
-            "must reject mainnet proofs under a wrong stake table"
-        );
-    }
+        let ns_a = NamespaceId::from(1u64);
+        let ns_b = NamespaceId::from(2u64);
+        let ns_unused = NamespaceId::from(3u64);
+        let tx_a = b"tx-a".to_vec();
+        let tx_b = b"tx-b".to_vec();
+        for (ns, tx) in [(ns_a, &tx_a), (ns_b, &tx_b)] {
+            node.client
+                .submit_transaction(Transaction::new(ns, tx.clone()))
+                .await
+                .expect("submit transaction");
+        }
 
-    // Local dev node; needs a `/light-client`-enabled image (PR #4453) running via
-    // `docker compose -f src/espresso_e2e/docker-compose.yml up -d`. No catch-up (static set).
-    #[tokio::test]
-    #[ignore = "needs dockerized dev node serving /light-client; run with --ignored"]
-    async fn devnode_verifies_namespace_range() {
-        let reader = reader(DEVNODE_URL).await;
-        let height = reader.block_height().await.expect("verified block height");
-        assert!(height > 2, "dev node should have produced some blocks");
-        assert_verifies_range(&reader, "DEV NODE", 1).await;
+        // Wait until both submitted txs are verified-visible (exits as soon as they appear).
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let height = loop {
+            let height = reader.block_height().await.expect("verified block height");
+            if !payloads(&reader, ns_a, height).await.is_empty()
+                && !payloads(&reader, ns_b, height).await.is_empty()
+            {
+                break height;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "submitted txs not verified in time"
+            );
+            sleep(Duration::from_millis(500)).await;
+        };
+
+        assert_eq!(payloads(&reader, ns_a, height).await, vec![tx_a]);
+        assert_eq!(payloads(&reader, ns_b, height).await, vec![tx_b]);
+        let unused = payloads(&reader, ns_unused, height).await;
+        assert!(unused.is_empty(), "unused namespace must verify as empty");
     }
 }
