@@ -111,8 +111,7 @@ fn maybe_delay_block_height(
     status: axum::http::StatusCode,
     resp_bytes: Vec<u8>,
 ) -> Vec<u8> {
-    let is_block_height =
-        method == axum::http::Method::GET && path.ends_with("node/block-height");
+    let is_block_height = method == axum::http::Method::GET && path.ends_with("node/block-height");
     // The height comes back in the light client's binary form: a 4-byte header followed by the
     // height as a little-endian u64 (12 bytes total). Only rewrite that exact shape.
     if !is_block_height || !status.is_success() || resp_bytes.len() != 12 {
@@ -127,7 +126,10 @@ fn maybe_delay_block_height(
         state
             .freeze_polls_remaining
             .store(state.drift_polls, Ordering::SeqCst);
-        println!("[proxy] pinning block height at {true_height} for {} polls", state.drift_polls);
+        println!(
+            "[proxy] pinning block height at {true_height} for {} polls",
+            state.drift_polls
+        );
     }
 
     let frozen = state.freeze_height.load(Ordering::SeqCst);
@@ -221,7 +223,10 @@ async fn test_e2e_message_drift() {
 
     let drifted = proxy.state.drifted.load(Ordering::SeqCst);
     println!("proxy stats: drifted={drifted}");
-    assert!(drifted, "block height was never delayed (drift window never engaged)");
+    assert!(
+        drifted,
+        "block height was never delayed (drift window never engaged)"
+    );
 
     drop(cas);
     drop(nitro_node);
