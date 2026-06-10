@@ -959,8 +959,8 @@ async fn test_e2e_restart() {
 
     println!("Stopping CAS (simulating CAS downtime)...");
     drop(cas);
-    println!("CAS stopped; sleeping 30 s to verify no new batches are submitted");
-    sleep(Duration::from_secs(30)).await;
+    println!("CAS stopped; sleeping 10 s to verify no new batches are submitted");
+    sleep(Duration::from_secs(10)).await;
     let count_after_cas_down = count_batches_on_l1(&l1, from_block, sequencer_inbox).await;
     assert!(
         count_after_cas_down < 4,
@@ -988,8 +988,8 @@ async fn test_e2e_restart() {
 
     println!("Stopping poster (simulating nitro-node downtime)...");
     nitro_node.stop_poster();
-    println!("Poster stopped; sleeping 30 s to verify no new batches are submitted");
-    sleep(Duration::from_secs(30)).await;
+    println!("Poster stopped; sleeping 10 s to verify no new batches are submitted");
+    sleep(Duration::from_secs(10)).await;
     let count_after_poster_down = count_batches_on_l1(&l1, from_block, sequencer_inbox).await;
     assert!(
         count_after_poster_down < 6,

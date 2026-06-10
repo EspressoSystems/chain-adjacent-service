@@ -4,6 +4,7 @@ use tokio::sync::{
     mpsc::{self, Receiver},
     watch,
 };
+use tracing::info;
 
 use crate::rollups::nitro::feed::{
     broadcaster::{BroadcasterConfig, BroadcasterError},
@@ -104,15 +105,18 @@ impl FeedRelay {
         // Start broadcaster server first
         let broadcaster = self.broadcaster;
         let _ = broadcaster.start().await?;
+        info!("feed relay broadcaster started");
 
         // Start upstream client in a background task
         let mut client = self.client;
         let mut client_task = tokio::spawn(async move { client.start().await });
+        info!("feed relay upstream client started");
 
         loop {
             tokio::select! {
                 l1_finalized_changed = self.l1_finalized_msg_idx.changed() => {
                     if l1_finalized_changed.is_err() {
+                        info!("L1 finalized index sender dropped; shutting down feed relay");
                         client_task.abort();
                         broadcaster.stop();
                         return Ok(());
@@ -120,9 +124,11 @@ impl FeedRelay {
                     // New L1 finalized index: notify broadcaster to prune backlog
                     // and confirm to subscribers
                     let finalized = *self.l1_finalized_msg_idx.borrow();
+                    info!(finalized, "L1 finalized index updated; confirming to broadcaster");
                     broadcaster.confirm(finalized);
                 }
                 client_result = &mut client_task => {
+                    info!("feed relay upstream client task exited");
                     match client_result {
                         Ok(inner) => return inner.map_err(FeedRelayError::from),
                         Err(err) => return Err(FeedRelayError::from(err)),
@@ -130,7 +136,7 @@ impl FeedRelay {
                 }
                 msg = self.espresso_rx.recv() => {
                     let Some(first_msg) = msg else {
-                        // channel has been closed
+                        info!("espresso finalization channel closed; shutting down feed relay");
                         client_task.abort();
                         broadcaster.stop();
                         return Ok(());
@@ -143,6 +149,10 @@ impl FeedRelay {
                         pending_messages.push(next_msg);
                     }
 
+                    info!(
+                        message_count = pending_messages.len(),
+                        "broadcasting espresso-finalized messages to subscribers"
+                    );
                     broadcaster.broadcast_feed_messages(pending_messages);
                 }
             }

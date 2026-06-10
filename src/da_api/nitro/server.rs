@@ -10,7 +10,7 @@ use axum::{
 };
 use serde_json::Value;
 use tokio::sync::oneshot;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{
     VerificationResult,
@@ -140,6 +140,12 @@ async fn handle_rpc(State(state): State<ServerState>, body: Bytes) -> Result<Res
         .as_str()
         .ok_or(DaApiError::InvalidRequest("missing method".to_string()))?;
 
+    info!(
+        method,
+        provider = %state.da_config.name,
+        "received DA RPC request"
+    );
+
     match method {
         STORE => handle_store(state, parsed).await,
         RECOVER_PAYLOAD => handle_recover_inner(state, parsed, RECOVER_PAYLOAD).await,
@@ -174,6 +180,12 @@ async fn handle_rpc(State(state): State<ServerState>, body: Bytes) -> Result<Res
 async fn forward_raw(state: ServerState, body: Bytes) -> Result<Response, DaApiError> {
     let endpoint = state.current_endpoint();
 
+    info!(
+        provider = %state.da_config.name,
+        endpoint,
+        "forwarding raw request to downstream"
+    );
+
     let resp = state
         .client
         .post(endpoint)
@@ -188,6 +200,13 @@ async fn forward_raw(state: ServerState, body: Bytes) -> Result<Response, DaApiE
         .bytes()
         .await
         .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
+
+    info!(
+        provider = %state.da_config.name,
+        status = %status,
+        response_bytes = bytes.len(),
+        "downstream forwarded response"
+    );
 
     Ok((
         status,
@@ -305,10 +324,22 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
         .map_err(|e| DaApiError::ChannelError(e.to_string()))?;
 
     if !success {
+        warn!(
+            provider = %state.da_config.name,
+            "CAS verification failed for store request"
+        );
         return Err(DaApiError::CertificateValidation(
             "CAS verification failed".to_string(),
         ));
     }
+
+    info!(
+        provider = %state.da_config.name,
+        start_message_position,
+        end_message_position,
+        start_espresso_block,
+        "store verification passed"
+    );
 
     let downstream_cert = match resolve_downstream_cert(&state, data, timeout, &body["id"]).await? {
         DownstreamCertOutcome::Cert(cert) => cert,
@@ -326,6 +357,12 @@ async fn handle_store(state: ServerState, body: Value) -> Result<Response, DaApi
         min_espresso_block_still_in_queue,
         &downstream_cert,
     )?;
+
+    info!(
+        provider = %state.da_config.name,
+        cert_bytes = downstream_cert.len(),
+        "built espresso certificate for store response"
+    );
 
     let resp = DAStoreResponse::try_from(final_cert)?;
 
@@ -387,14 +424,30 @@ async fn handle_recover_inner(
     // verification); case #2 has no CAS cert and we forward the raw msg.
     // A CAS-claiming message that fails validation must surface the error
     // rather than silently falling back to legacy forwarding.
-    let da_certificate = match sequencer_msg.get(SEQUENCER_HEADER_LEN).copied() {
-        Some(ESPRESSO_HEADER_BYTE) => try_extract_da_sequencer_msg_from_espresso_da_cert(
-            &sequencer_msg,
-            state.key_manager.signer().address(),
-            state.key_manager.parent_chain_id(),
-            state.key_manager.tee_verifier_address(),
-        )?,
-        _ => sequencer_msg,
+    let has_espresso_cert =
+        sequencer_msg.get(SEQUENCER_HEADER_LEN).copied() == Some(ESPRESSO_HEADER_BYTE);
+    let da_certificate = match has_espresso_cert {
+        true => {
+            info!(
+                batch_num = %batch_num,
+                method = downstream_method,
+                "extracting DA certificate from espresso wrapper"
+            );
+            try_extract_da_sequencer_msg_from_espresso_da_cert(
+                &sequencer_msg,
+                state.key_manager.signer().address(),
+                state.key_manager.parent_chain_id(),
+                state.key_manager.tee_verifier_address(),
+            )?
+        }
+        false => {
+            info!(
+                batch_num = %batch_num,
+                method = downstream_method,
+                "no espresso cert; forwarding raw sequencer message"
+            );
+            sequencer_msg
+        }
     };
 
     let inner_header = da_certificate.get(SEQUENCER_HEADER_LEN).copied();
@@ -419,8 +472,25 @@ async fn handle_recover_inner(
     }
 
     let endpoint = match state.da_config.anytrust_fallback_url.as_deref() {
-        Some(url) if !url.is_empty() && inner_header.is_some_and(is_anytrust_header) => url,
-        _ => state.current_endpoint(),
+        Some(url) if !url.is_empty() && inner_header.is_some_and(is_anytrust_header) => {
+            info!(
+                batch_num = %batch_num,
+                method = downstream_method,
+                endpoint = url,
+                "routing recover to anytrust fallback"
+            );
+            url
+        }
+        _ => {
+            let ep = state.current_endpoint();
+            info!(
+                batch_num = %batch_num,
+                method = downstream_method,
+                endpoint = ep,
+                "routing recover to primary endpoint"
+            );
+            ep
+        }
     };
 
     let forwarded_body = serde_json::json!({
