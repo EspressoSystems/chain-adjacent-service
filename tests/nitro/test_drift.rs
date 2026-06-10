@@ -177,7 +177,7 @@ async fn start_espresso_proxy(drift_polls: usize) -> EspressoProxy {
 }
 
 #[tokio::test]
-async fn test_e2e_message_drift() {
+async fn test_e2e_lagging_query_node() {
     let proxy = start_espresso_proxy(12).await;
 
     let config = NitroNodeConfig {
