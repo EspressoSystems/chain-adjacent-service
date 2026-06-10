@@ -4,22 +4,37 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
 use espresso_types::{NamespaceId, Transaction};
 use light_client::LightClient;
 use light_client::client::QueryServiceClient;
 use light_client::state::Genesis;
 use light_client::storage::{LightClientSqliteOptions, SqliteStorage};
 use reqwest::Url;
+use thiserror::Error;
 
 use crate::espresso_client::types::NamespaceTransactionsInRange;
+#[cfg(test)]
+use serde_json::Value;
+
+/// Errors from the trustless read path.
+#[derive(Debug, Error)]
+pub enum LightClientError {
+    /// Opening the verified-state storage failed.
+    #[error("failed to open light client storage: {0}")]
+    Storage(anyhow::Error),
+
+    /// A requested block height did not fit in `usize` on this platform.
+    #[error("block height {0} exceeds usize")]
+    HeightOverflow(u64),
+
+    /// Fetching or verifying data against HotShot consensus failed — e.g. an unreachable or
+    /// dishonest query node, or a proof that did not verify against the stake table.
+    #[error("verified fetch failed: {0}")]
+    Verification(anyhow::Error),
+}
 
 /// A read-only, trustless view of Espresso data: every block it returns is verified against
 /// HotShot consensus (rooted in the configured [`Genesis`]), so the query node is untrusted.
-///
-/// The inner [`LightClient`] holds the verified-state cache and isn't `Clone`, so it sits
-/// behind an [`Arc`] — clones are cheap and share one cache (the streamer clones a handle
-/// into its polling task).
 ///
 /// To fail over across multiple query nodes, generalize over `S: Client` and build a
 /// `FallbackClient<QueryServiceClient>` in [`new`](Self::new); the read methods are unaffected.
@@ -32,14 +47,18 @@ impl LightClientReader {
     /// `genesis` is the root of trust and must match the network `query_url` serves.
     /// `db_path` persists the verified-state cache across restarts; `None` keeps it in memory
     /// (rebuilt via catch-up each start).
-    pub async fn new(genesis: Genesis, query_url: Url, db_path: Option<PathBuf>) -> Result<Self> {
+    pub async fn new(
+        genesis: Genesis,
+        query_url: Url,
+        db_path: Option<PathBuf>,
+    ) -> Result<Self, LightClientError> {
         let storage = LightClientSqliteOptions {
             lc_path: db_path,
             ..Default::default()
         }
         .connect()
         .await
-        .context("failed to open light client storage")?;
+        .map_err(LightClientError::Storage)?;
 
         let server = QueryServiceClient::new(query_url);
         let inner = LightClient::from_genesis(storage, server, genesis);
@@ -51,8 +70,11 @@ impl LightClientReader {
 
     /// Latest verified HotShot block height. May underestimate (the light client never
     /// reports a height it hasn't verified); the streamer tolerates this by polling again.
-    pub async fn block_height(&self) -> Result<u64> {
-        self.inner.block_height().await
+    pub async fn block_height(&self) -> Result<u64, LightClientError> {
+        self.inner
+            .block_height()
+            .await
+            .map_err(LightClientError::Verification)
     }
 
     /// Verified namespace transactions for the half-open range `[start, end)` — one entry
@@ -65,13 +87,15 @@ impl LightClientReader {
         namespace: NamespaceId,
         start: u64,
         end: u64,
-    ) -> Result<Vec<NamespaceTransactionsInRange>> {
-        let start_usize = usize::try_from(start).context("start height exceeds usize limit")?;
-        let end_usize = usize::try_from(end).context("end height exceeds usize limit")?;
+    ) -> Result<Vec<NamespaceTransactionsInRange>, LightClientError> {
+        let start_usize =
+            usize::try_from(start).map_err(|_| LightClientError::HeightOverflow(start))?;
+        let end_usize = usize::try_from(end).map_err(|_| LightClientError::HeightOverflow(end))?;
         let verified: Vec<Vec<Transaction>> = self
             .inner
             .fetch_namespaces_in_range(start_usize, end_usize, namespace)
-            .await?;
+            .await
+            .map_err(LightClientError::Verification)?;
 
         Ok(verified
             .into_iter()
@@ -104,10 +128,10 @@ impl LightClientReader {
 /// committing validator-key blobs. Returns JSON so tests can mutate it (e.g. the negative
 /// test swapping in a wrong stake table) before deserializing.
 #[cfg(test)]
-pub(crate) async fn genesis_json_from_node(query_url: &Url) -> serde_json::Value {
-    let cfg_url = query_url.join("config/hotshot").expect("join config url");
-    let cfg: serde_json::Value = reqwest::Client::new()
-        .get(cfg_url)
+pub(crate) async fn genesis_json_from_node(query_url: &Url) -> Value {
+    let config_url = query_url.join("config/hotshot").expect("join config url");
+    let response: Value = reqwest::Client::new()
+        .get(config_url)
         .timeout(std::time::Duration::from_secs(10))
         .send()
         .await
@@ -116,16 +140,18 @@ pub(crate) async fn genesis_json_from_node(query_url: &Url) -> serde_json::Value
         .await
         .expect("parse /config/hotshot");
 
-    let c = &cfg["config"];
-    let epoch_height = c["epoch_height"].as_u64().expect("config.epoch_height");
-    let epoch_start_block = c["epoch_start_block"]
+    let config = &response["config"];
+    let epoch_height = config["epoch_height"]
+        .as_u64()
+        .expect("config.epoch_height");
+    let epoch_start_block = config["epoch_start_block"]
         .as_u64()
         .expect("config.epoch_start_block");
-    let stake_table: Vec<serde_json::Value> = c["known_nodes_with_stake"]
+    let stake_table: Vec<Value> = config["known_nodes_with_stake"]
         .as_array()
         .expect("config.known_nodes_with_stake")
         .iter()
-        .map(|n| n["stake_table_entry"].clone())
+        .map(|node| node["stake_table_entry"].clone())
         .collect();
 
     serde_json::json!({
@@ -141,10 +167,11 @@ pub(crate) async fn genesis_from_node(query_url: &Url) -> Genesis {
         .expect("genesis from node config")
 }
 
-/// Live end-to-end smoke tests (network / Docker), so all are `#[ignore]`d. Run one with:
+/// End-to-end verification against live Espresso nodes (network / Docker), so all are
+/// `#[ignore]`d. Run one with:
 ///   cargo test -p chain-adjacent-service <name> -- --ignored --nocapture
 #[cfg(test)]
-mod live_smoke {
+mod live_verification {
     use super::*;
 
     const MAINNET_URL: &str = "https://query.main.net.espresso.network/";
