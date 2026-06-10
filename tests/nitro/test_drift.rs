@@ -3,11 +3,9 @@ use axum::Router;
 use axum::extract::State;
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
-use serde_json::Value;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use tokio::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use tokio::task::JoinHandle;
 
 use chain_adjacent_service::espresso_e2e::espresso_dev_node::EspressoDevNode;
@@ -35,15 +33,14 @@ impl Drop for EspressoProxy {
 struct ProxyState {
     upstream: String,
     client: reqwest::Client,
-    held: Mutex<Option<(u64, Value)>>,
-    passthrough_blocks_with_txs: AtomicUsize,
-    injected: AtomicBool,
-    drift_blocks: usize,
+    freeze_height: AtomicU64,
+    freeze_polls_remaining: AtomicUsize,
+    drifted: AtomicBool,
+    drift_polls: usize,
 }
 
-/// Reverse-proxies every request to the upstream Espresso node, then runs
-/// the response through `maybe_drift_response` so namespace block ranges can
-/// be rewritten before being returned to the caller.
+/// Reverse-proxies every request to the upstream Espresso node, delaying the
+/// reported block height via `maybe_delay_block_height` to simulate a lagging node.
 async fn proxy_handler(
     State(state): State<Arc<ProxyState>>,
     req: axum::extract::Request,
@@ -83,111 +80,82 @@ async fn proxy_handler(
     };
 
     let status = upstream_resp.status();
+    let resp_headers = upstream_resp.headers().clone();
     let resp_bytes = upstream_resp.bytes().await.unwrap_or_default().to_vec();
-    let resp_bytes = maybe_drift_response(&state, &method, uri.path(), status, resp_bytes).await;
+    let resp_bytes = maybe_delay_block_height(&state, &method, uri.path(), status, resp_bytes);
 
-    Response::builder()
-        .status(status)
-        .header(header::CONTENT_TYPE, "application/json")
+    // Relay the node's status and headers unchanged (Content-Type, redirect Location):
+    // rewriting them breaks the client. Skip framing headers; the body is re-sent here.
+    let mut builder = Response::builder().status(status);
+    for (k, v) in resp_headers.iter() {
+        if k != header::CONTENT_LENGTH && k != header::TRANSFER_ENCODING {
+            builder = builder.header(k, v);
+        }
+    }
+    builder
         .body(axum::body::Body::from(resp_bytes))
         .unwrap_or_else(|_| {
             (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "build").into_response()
         })
 }
 
-/// On the first successful namespace block-range response, captures the first
-/// transaction and removes it; lets `drift_blocks` worth of populated blocks
-/// pass through unmodified; then re-inserts the held transaction into the next
-/// block with transactions. Runs once per proxy lifetime.
-async fn maybe_drift_response(
+/// Simulates a lagging query node: once the node first reports a tip of at least
+/// `MIN_FREEZE_HEIGHT`, pin the reported `node/block-height` at that value for `drift_polls`
+/// polls, then release the true tip so the service has to catch up. The light client only
+/// consumes contiguous, consensus-verified ranges, so delaying availability is the only drift
+/// it can experience — reordering or altering data would just fail verification.
+fn maybe_delay_block_height(
     state: &Arc<ProxyState>,
     method: &axum::http::Method,
     path: &str,
     status: axum::http::StatusCode,
     resp_bytes: Vec<u8>,
 ) -> Vec<u8> {
-    let is_ns_range = method == axum::http::Method::GET
-        && path.starts_with("/availability/block/")
-        && path.contains("/namespace/");
-    if !is_ns_range || !status.is_success() {
+    let is_block_height =
+        method == axum::http::Method::GET && path.ends_with("node/block-height");
+    // The height comes back in the light client's binary form: a 4-byte header followed by the
+    // height as a little-endian u64 (12 bytes total). Only rewrite that exact shape.
+    if !is_block_height || !status.is_success() || resp_bytes.len() != 12 {
         return resp_bytes;
     }
-    if state.injected.load(Ordering::SeqCst) {
+    let true_height = u64::from_le_bytes(resp_bytes[4..12].try_into().expect("8 bytes"));
+
+    // Start the window once there is some history to deliver before the stall.
+    const MIN_FREEZE_HEIGHT: u64 = 4;
+    if state.freeze_height.load(Ordering::SeqCst) == 0 && true_height >= MIN_FREEZE_HEIGHT {
+        state.freeze_height.store(true_height, Ordering::SeqCst);
+        state
+            .freeze_polls_remaining
+            .store(state.drift_polls, Ordering::SeqCst);
+        println!("[proxy] pinning block height at {true_height} for {} polls", state.drift_polls);
+    }
+
+    let frozen = state.freeze_height.load(Ordering::SeqCst);
+    if frozen == 0 || state.freeze_polls_remaining.load(Ordering::SeqCst) == 0 {
         return resp_bytes;
     }
-    let Some((start, _end)) = parse_block_range(path) else {
-        return resp_bytes;
-    };
-    let Ok(mut entries) = serde_json::from_slice::<Vec<Value>>(&resp_bytes) else {
-        return resp_bytes;
-    };
 
-    let mut held_guard = state.held.lock().await;
-    let mut mutated = false;
-
-    for (i, entry) in entries.iter_mut().enumerate() {
-        let seq_num = start + i as u64;
-        let Some(txs) = entry.get_mut("transactions").and_then(|v| v.as_array_mut()) else {
-            continue;
-        };
-        if txs.is_empty() {
-            continue;
-        }
-
-        if held_guard.is_none() {
-            // Intercept the first transaction
-            let captured = txs.remove(0);
-            println!("[proxy] capturing first ns tx from block {seq_num}");
-            *held_guard = Some((seq_num, captured));
-            mutated = true;
-            continue;
-        }
-
-        let passthrough = state.passthrough_blocks_with_txs.load(Ordering::SeqCst);
-        if passthrough < state.drift_blocks {
-            state
-                .passthrough_blocks_with_txs
-                .fetch_add(1, Ordering::SeqCst);
-            continue;
-        }
-
-        let (origin_block, captured) = held_guard
-            .take()
-            .expect("held tx must be present after capture branch and beyond drift window");
-        txs.insert(0, captured);
-        state.injected.store(true, Ordering::SeqCst);
-        println!("[proxy] re-inserted held tx (origin block {origin_block}) into block {seq_num}");
-        mutated = true;
-    }
-
-    if mutated {
-        serde_json::to_vec(&entries).unwrap_or(resp_bytes)
-    } else {
-        resp_bytes
-    }
-}
-
-/// Parses `/availability/block/{start}/{end}/...` and returns `(start, end)`.
-fn parse_block_range(path: &str) -> Option<(u64, u64)> {
-    let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
-    if parts.len() >= 5 && parts[0] == "availability" && parts[1] == "block" {
-        let start = parts[2].parse().ok()?;
-        let end = parts[3].parse().ok()?;
-        return Some((start, end));
-    }
-    None
+    state.freeze_polls_remaining.fetch_sub(1, Ordering::SeqCst);
+    state.drifted.store(true, Ordering::SeqCst);
+    let mut pinned = resp_bytes;
+    pinned[4..12].copy_from_slice(&frozen.to_le_bytes());
+    pinned
 }
 
 /// Binds the drifting reverse proxy on `ESPRESSO_PROXY_PORT` and returns a
 /// handle whose `Drop` aborts the server task.
-async fn start_espresso_proxy(drift_blocks: usize) -> EspressoProxy {
+async fn start_espresso_proxy(drift_polls: usize) -> EspressoProxy {
     let state = Arc::new(ProxyState {
         upstream: ESPRESSO_UPSTREAM.to_string(),
-        client: reqwest::Client::new(),
-        held: Mutex::new(None),
-        passthrough_blocks_with_txs: AtomicUsize::new(0),
-        injected: AtomicBool::new(false),
-        drift_blocks,
+        // Pass the node's version redirect (307 /node/.. -> /v1/node/..) through untouched;
+        client: reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("failed to build proxy client"),
+        freeze_height: AtomicU64::new(0),
+        freeze_polls_remaining: AtomicUsize::new(0),
+        drifted: AtomicBool::new(false),
+        drift_polls,
     });
     let app: Router = Router::new()
         .fallback(proxy_handler)
@@ -251,13 +219,9 @@ async fn test_e2e_message_drift() {
 
     wait_for_batches_on_l1(&l1, from_block, 10, sequencer_inbox).await;
 
-    let passthrough = proxy
-        .state
-        .passthrough_blocks_with_txs
-        .load(Ordering::SeqCst);
-    let injected = proxy.state.injected.load(Ordering::SeqCst);
-    println!("proxy stats: ns_tx_blocks_passed={passthrough}, injected={injected}");
-    assert!(injected, "held tx was never re-inserted into a later block");
+    let drifted = proxy.state.drifted.load(Ordering::SeqCst);
+    println!("proxy stats: drifted={drifted}");
+    assert!(drifted, "block height was never delayed (drift window never engaged)");
 
     drop(cas);
     drop(nitro_node);
