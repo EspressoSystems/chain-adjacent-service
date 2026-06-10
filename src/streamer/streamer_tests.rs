@@ -333,7 +333,7 @@ async fn test_poll_hotshot_blocks_and_process() {
 async fn test_reverse_order_fills_stubs_then_finalization_promotes() {
     let node = EspressoDevNode::start().await;
 
-    for seq in (1u64..=10).rev() {
+    for seq in (1..=10).rev() {
         let tx = make_mock_espresso_transaction(seq);
         node.client
             .submit_transaction(tx)
