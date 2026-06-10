@@ -28,7 +28,6 @@ services:
 
   espresso-dev-node:
     image: ${ESPRESSO_DEV_NODE_IMAGE}
-    pull_policy: missing
     platform: linux/amd64
     ports:
       - "${ESPRESSO_SEQUENCER_API_PORT}:${ESPRESSO_SEQUENCER_API_PORT}"
