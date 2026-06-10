@@ -156,10 +156,7 @@ where
                     let finalized = loop {
                         match client.fetch_transaction_by_hash(tx_hash).await {
                             Ok(data) => {
-                                tracing::info!(
-                                    "finalized transaction with hash: {}",
-                                    hex::encode(data.hash)
-                                );
+                                tracing::info!("finalized transaction with hash: {}", data.hash);
                                 break true;
                             }
                             Err(err) => {
