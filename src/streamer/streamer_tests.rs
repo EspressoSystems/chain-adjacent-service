@@ -33,6 +33,8 @@ fn make_streamer_with_cap(
             starting_hotshot_height: 1,
             retry_broadcast_delay_ms: 1000,
             max_full_queue_entries,
+            hotshot_stall_warn_ms: 30_000,
+            progress_log_interval_ms: 15_000,
         },
         RollupConfig {
             namespace_id: 1918988905u64,
@@ -235,6 +237,8 @@ async fn test_poll_hotshot_blocks_and_process() {
             starting_pos: 1,
             retry_broadcast_delay_ms: 1000,
             max_full_queue_entries: 1000,
+            hotshot_stall_warn_ms: 30_000,
+            progress_log_interval_ms: 15_000,
         },
         RollupConfig {
             namespace_id: 1918988905u64,
@@ -339,6 +343,8 @@ async fn test_reverse_order_fills_stubs_then_finalization_promotes() {
             starting_pos: 4,
             retry_broadcast_delay_ms: 1000,
             max_full_queue_entries: 3,
+            hotshot_stall_warn_ms: 30_000,
+            progress_log_interval_ms: 15_000,
         },
         RollupConfig {
             namespace_id: 1918988905u64,

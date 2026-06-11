@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crate::VerificationReceiver;
 use crate::config::{AdvancedConfig, RollupConfig, StreamerConfig};
-use crate::espresso_client::client::EspressoClient;
+use crate::espresso_client::client::{EspressoClient, NotFound};
 use crate::espresso_client::types::NamespaceTransactionsInRange;
 use crate::rollups::rollup::{BatchCursorFetcher, Rollup, RollupQueueEntry};
 use crate::utils::exponential_backoff;
@@ -428,6 +428,11 @@ pub async fn poll_hotshot_blocks(
 ) -> Result<()> {
     let mut from_block = next_hotshot_block_num;
     let mut backoff = Duration::from_millis(config.initial_backoff_ms);
+    let not_found_warn_after = Duration::from_millis(config.hotshot_stall_warn_ms);
+    let mut not_found_since: Option<std::time::Instant> = None;
+    let mut not_found_warned = false;
+    let progress_log_interval = Duration::from_millis(config.progress_log_interval_ms);
+    let mut last_progress_log: Option<std::time::Instant> = None;
 
     loop {
         let latest_block_height = match client.fetch_latest_hotshot_block_height().await {
@@ -455,8 +460,37 @@ pub async fn poll_hotshot_blocks(
             .fetch_namespace_transactions_in_range(namespace_id, from_block, to_block)
             .await
         {
-            Ok(txns) => txns,
+            Ok(txns) => {
+                if not_found_warned {
+                    tracing::info!(from_block, to_block, "espresso availability recovered");
+                }
+                not_found_since = None;
+                not_found_warned = false;
+                txns
+            }
             Err(err) => {
+                if err.downcast_ref::<NotFound>().is_some() {
+                    let first = *not_found_since.get_or_insert_with(std::time::Instant::now);
+                    let stuck_for = first.elapsed();
+                    if stuck_for >= not_found_warn_after {
+                        tracing::error!(
+                            from_block,
+                            to_block,
+                            latest_block_height,
+                            stuck_for_secs = stuck_for.as_secs(),
+                            "espresso availability has been returning 404 for an extended period; hotshot may be stalled"
+                        );
+                        not_found_warned = true;
+                    } else {
+                        tracing::debug!(
+                            from_block,
+                            to_block,
+                            "espresso availability not yet caught up to reported block height; retrying"
+                        );
+                    }
+                    tokio::time::sleep(Duration::from_millis(config.initial_backoff_ms)).await;
+                    continue;
+                }
                 tracing::error!(
                     "error while fetching namespace transactions in range [{from_block}, {to_block}]: {err}"
                 );
@@ -470,13 +504,24 @@ pub async fn poll_hotshot_blocks(
             .iter()
             .map(|t| t.transactions.len())
             .sum();
-        tracing::info!(
+        tracing::debug!(
             from_block,
             to_block,
             ranges = hotshot_transactions.len(),
             tx_count,
             "fetched espresso block range"
         );
+        let should_log_progress = last_progress_log
+            .map(|t| t.elapsed() >= progress_log_interval)
+            .unwrap_or(true);
+        if should_log_progress {
+            tracing::info!(
+                hotshot_block = to_block.saturating_sub(1),
+                latest_block_height,
+                "streaming espresso blocks"
+            );
+            last_progress_log = Some(std::time::Instant::now());
+        }
         backoff = Duration::from_millis(config.initial_backoff_ms);
 
         sender
