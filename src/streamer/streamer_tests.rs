@@ -3,7 +3,10 @@ use tokio::sync::mpsc;
 
 use crate::{
     config::{AdvancedConfig, RollupConfig, RollupType::Nitro, StreamerConfig},
-    espresso_client::light_client::LightClientReader,
+    espresso_client::{
+        light_client::{EspressoReader, LightClientError, LightClientReader},
+        types::NamespaceTransactionsInRange,
+    },
     espresso_e2e::{
         espresso_dev_node::EspressoDevNode,
         mock_rollup::{MockEntry, MockRollup, make_entry, make_mock_espresso_transaction},
@@ -13,6 +16,8 @@ use crate::{
         BroadcastRetry, Streamer, find_contiguous_entries_after, poll_hotshot_blocks,
     },
 };
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 async fn make_streamer(starting_pos: u64) -> Streamer<MockRollup> {
@@ -56,13 +61,15 @@ async fn dev_node_reader(base_url: url::Url) -> LightClientReader {
         .expect("build dev node reader")
 }
 
-fn queue_positions(streamer: &Streamer<MockRollup>) -> Vec<u64> {
+fn queue_positions<C: EspressoReader>(streamer: &Streamer<MockRollup, C>) -> Vec<u64> {
     streamer.queue.iter().map(|e| e.sequence_number()).collect()
 }
 
 fn entry_positions<T: RollupQueueEntry>(entries: Vec<T>) -> Vec<u64> {
     entries.into_iter().map(|e| e.sequence_number()).collect()
 }
+
+// --- queue logic (no node; in-memory mock reader) ---
 
 #[test]
 fn test_find_contiguous_entries_after() {
@@ -121,11 +128,11 @@ async fn test_filter_messages() {
     assert_eq!(queue_positions(&streamer), vec![5]);
 }
 
-fn stub_positions(streamer: &Streamer<MockRollup>) -> Vec<u64> {
+fn stub_positions<C: EspressoReader>(streamer: &Streamer<MockRollup, C>) -> Vec<u64> {
     streamer.stubs.keys().copied().collect()
 }
 
-fn stub_entries(streamer: &Streamer<MockRollup>) -> Vec<(u64, u64)> {
+fn stub_entries<C: EspressoReader>(streamer: &Streamer<MockRollup, C>) -> Vec<(u64, u64)> {
     streamer.stubs.iter().map(|(s, h)| (*s, *h)).collect()
 }
 
@@ -189,8 +196,10 @@ async fn test_filter_messages_leaves_stubs_alone() {
     assert_eq!(stub_entries(&streamer), vec![(3, 12), (4, 13)]);
 }
 
+// Unit-level out-of-order delivery: later seqs arrive first, overflow to stubs, and finalization
+// clears them. Integration counterpart: test_reverse_order_fills_stubs_then_finalization_promotes.
 #[tokio::test]
-async fn test_drifting_seq_overflows_to_stubs_and_finalization_clears() {
+async fn test_out_of_order_seq_overflows_to_stubs_and_finalization_clears() {
     let mut s = make_streamer_with_cap(1, 3).await;
 
     s.filter_messages(vec![
@@ -233,6 +242,8 @@ async fn test_handle_finalization_noop_when_not_advancing() {
     assert_eq!(s.finalized_idx, 2);
     assert_eq!(s.last_broadcast_position, 2);
 }
+
+// --- against a real verifying dev node ---
 
 #[tokio::test]
 async fn test_poll_hotshot_blocks_and_process() {
@@ -329,6 +340,8 @@ async fn test_poll_hotshot_blocks_and_process() {
     node.stop();
 }
 
+// Integration out-of-order delivery against the real verifying reader. Unit counterpart:
+// test_out_of_order_seq_overflows_to_stubs_and_finalization_clears.
 #[tokio::test]
 async fn test_reverse_order_fills_stubs_then_finalization_promotes() {
     let node = EspressoDevNode::start().await;
@@ -405,4 +418,116 @@ async fn test_reverse_order_fills_stubs_then_finalization_promotes() {
     assert!(streamer.stubs.is_empty());
 
     node.stop();
+}
+
+// --- delayed / out-of-order delivery via an in-memory mock reader ---
+
+/// In-memory `EspressoReader` for driving the streamer with an exact delivery order. seq `k` is at
+/// height `k`, except seq 4 is dropped and reappears at height 11, revealed over two polls.
+#[derive(Clone)]
+struct MockEspressoReader {
+    calls: Arc<AtomicUsize>,
+}
+
+impl MockEspressoReader {
+    fn new() -> Self {
+        Self {
+            calls: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// Rollup seq present at `height`, or `None` for an empty block.
+    fn seq_at_height(height: u64) -> Option<u64> {
+        match height {
+            4 => None,     // seq 4 dropped here
+            11 => Some(4), // ...and resubmitted, reappearing out of order
+            h @ 1..=10 => Some(h),
+            _ => None,
+        }
+    }
+}
+
+impl EspressoReader for MockEspressoReader {
+    async fn block_height(&self) -> Result<u64, LightClientError> {
+        // First poll exposes the chain up to the gap (height 6); later polls expose the
+        // resubmitted seq 4 at height 11.
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(if n == 0 { 6 } else { 11 })
+    }
+
+    async fn namespace_transactions_in_range(
+        &self,
+        _namespace: NamespaceId,
+        start: u64,
+        end: u64,
+    ) -> Result<Vec<NamespaceTransactionsInRange>, LightClientError> {
+        let blocks = (start..end)
+            .map(|height| NamespaceTransactionsInRange {
+                transactions: Self::seq_at_height(height)
+                    .map(|seq| vec![make_mock_espresso_transaction(seq)])
+                    .unwrap_or_default(),
+                proof: None,
+            })
+            .collect();
+        Ok(blocks)
+    }
+}
+
+// A resubmitted message is finalized in Espresso out of sequence order. The streamer holds the
+// gap until it reappears, then broadcasts in sequence order.
+#[tokio::test]
+async fn test_dropped_message_recovers_when_resubmitted_out_of_order() {
+    let mut streamer = Streamer::<MockRollup, MockEspressoReader>::new(
+        MockEspressoReader::new(),
+        StreamerConfig {
+            initial_backoff_ms: 20,
+            max_backoff_ms: 50,
+            starting_hotshot_height: 1,
+            starting_pos: 0,
+            retry_broadcast_delay_ms: 1000,
+            max_full_queue_entries: 1000,
+        },
+        RollupConfig {
+            namespace_id: 1918988905u64,
+            stack: (),
+            ty: Nitro,
+        },
+        AdvancedConfig::default(),
+        None,
+    );
+
+    let (tx, mut rx) = mpsc::channel(100);
+    let poller_config = streamer.config.clone();
+    let poller_client = streamer.client.clone();
+    let poller_ns = NamespaceId::from(streamer.rollup_config.namespace_id);
+    let poller = tokio::spawn(async move {
+        let _ = poll_hotshot_blocks(&poller_config, &poller_client, 1, poller_ns, tx).await;
+    });
+
+    let (feed_sender, mut feed_rx) = mpsc::channel(100);
+    let (retry_tx, _retry_rx) = mpsc::channel::<()>(1);
+    let mut retry = BroadcastRetry::new(retry_tx);
+    // Drive until the gap is filled and everything through seq 10 has broadcast.
+    while streamer.last_broadcast_position < 10 {
+        match tokio::time::timeout(Duration::from_secs(10), rx.recv()).await {
+            Ok(Some((transactions, height))) => {
+                streamer
+                    .handle_hotshot_transactions(transactions, height, feed_sender.clone(), &mut retry)
+                    .await;
+            }
+            _ => break,
+        }
+    }
+    poller.abort();
+
+    let mut broadcast = Vec::new();
+    while let Ok(msg) = feed_rx.try_recv() {
+        broadcast.push(msg.sequence_number());
+    }
+    assert_eq!(
+        broadcast,
+        (1..=10).collect::<Vec<_>>(),
+        "after seq 4 reappears, all messages broadcast in order"
+    );
+    assert_eq!(streamer.last_broadcast_position, 10);
 }

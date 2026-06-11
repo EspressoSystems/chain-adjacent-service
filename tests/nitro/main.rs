@@ -1,5 +1,5 @@
 mod nitro_node;
-mod test_drift;
+mod test_lagging_node;
 mod test_e2e;
 mod test_referenceda;
 

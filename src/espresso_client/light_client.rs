@@ -1,6 +1,7 @@
 //! Trustless consumption of Espresso data via the `light-client` crate. The write side
 //! (submission, self-confirmation) stays on the plain query-service client.
 
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -31,6 +32,19 @@ pub enum LightClientError {
     /// dishonest query node, or a proof that did not verify against the stake table.
     #[error("verified fetch failed: {0}")]
     Verification(anyhow::Error),
+}
+
+/// The streamer's read interface over Espresso. The production impl ([`LightClientReader`])
+/// verifies every block against HotShot consensus.
+pub trait EspressoReader: Clone + Send + Sync + 'static {
+    fn block_height(&self) -> impl Future<Output = Result<u64, LightClientError>> + Send;
+
+    fn namespace_transactions_in_range(
+        &self,
+        namespace: NamespaceId,
+        start: u64,
+        end: u64,
+    ) -> impl Future<Output = Result<Vec<NamespaceTransactionsInRange>, LightClientError>> + Send;
 }
 
 /// A read-only, trustless view of Espresso data: every block it returns is verified against
@@ -67,10 +81,12 @@ impl LightClientReader {
             inner: Arc::new(inner),
         })
     }
+}
 
+impl EspressoReader for LightClientReader {
     /// Latest verified HotShot block height. May underestimate (the light client never
     /// reports a height it hasn't verified); the streamer tolerates this by polling again.
-    pub async fn block_height(&self) -> Result<u64, LightClientError> {
+    async fn block_height(&self) -> Result<u64, LightClientError> {
         self.inner
             .block_height()
             .await
@@ -82,7 +98,7 @@ impl LightClientReader {
     ///
     /// `proof` is always `None`: inclusion was already verified inside the light client, and
     /// nothing downstream reads that field.
-    pub async fn namespace_transactions_in_range(
+    async fn namespace_transactions_in_range(
         &self,
         namespace: NamespaceId,
         start: u64,
