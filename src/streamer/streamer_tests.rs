@@ -40,6 +40,8 @@ async fn make_streamer_with_cap(
             starting_hotshot_height: 1,
             retry_broadcast_delay_ms: 1000,
             max_full_queue_entries,
+            hotshot_stall_warn_ms: 30_000,
+            progress_log_interval_ms: 15_000,
         },
         RollupConfig {
             namespace_id: 1918988905u64,
@@ -259,6 +261,8 @@ async fn test_poll_hotshot_blocks_and_process() {
             starting_pos: 1,
             retry_broadcast_delay_ms: 1000,
             max_full_queue_entries: 1000,
+            hotshot_stall_warn_ms: 30_000,
+            progress_log_interval_ms: 15_000,
         },
         RollupConfig {
             namespace_id: 1918988905u64,
@@ -366,6 +370,8 @@ async fn test_reverse_order_fills_stubs_then_finalization_promotes() {
             starting_pos: 4,
             retry_broadcast_delay_ms: 1000,
             max_full_queue_entries: 3,
+            hotshot_stall_warn_ms: 30_000,
+            progress_log_interval_ms: 15_000,
         },
         RollupConfig {
             namespace_id: 1918988905u64,
@@ -486,6 +492,8 @@ async fn test_dropped_message_recovers_when_resubmitted_out_of_order() {
             starting_pos: 0,
             retry_broadcast_delay_ms: 1000,
             max_full_queue_entries: 1000,
+            hotshot_stall_warn_ms: 30_000,
+            progress_log_interval_ms: 15_000,
         },
         RollupConfig {
             namespace_id: 1918988905u64,
@@ -512,7 +520,12 @@ async fn test_dropped_message_recovers_when_resubmitted_out_of_order() {
         match tokio::time::timeout(Duration::from_secs(10), rx.recv()).await {
             Ok(Some((transactions, height))) => {
                 streamer
-                    .handle_hotshot_transactions(transactions, height, feed_sender.clone(), &mut retry)
+                    .handle_hotshot_transactions(
+                        transactions,
+                        height,
+                        feed_sender.clone(),
+                        &mut retry,
+                    )
                     .await;
             }
             _ => break,

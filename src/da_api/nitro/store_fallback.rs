@@ -2,7 +2,7 @@ use alloy::primitives::{Bytes, U64};
 use axum::response::{IntoResponse, Response};
 use reqwest::StatusCode;
 use serde_json::Value;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::da_api::{
     error::DaApiError,
@@ -86,6 +86,11 @@ async fn store_via(
 
     let raw_cert: DAStoreResponse = serde_json::from_value(downstream_json["result"].clone())
         .map_err(|err| DaApiError::ParsingError(err.to_string()))?;
+    info!(
+        endpoint,
+        cert_bytes = raw_cert.serialized_da_certificate.len(),
+        "downstream store returned certificate"
+    );
     Ok(StoreOutcome::Cert(raw_cert.serialized_da_certificate))
 }
 
@@ -97,11 +102,28 @@ pub async fn resolve_downstream_cert(
 ) -> Result<DownstreamCertOutcome, DaApiError> {
     let endpoint = state.current_endpoint();
     if endpoint.is_empty() {
+        info!(
+            provider = %state.da_config.name,
+            "no downstream endpoint configured; using raw data as certificate"
+        );
         return Ok(DownstreamCertOutcome::Cert(data));
     }
 
+    info!(
+        provider = %state.da_config.name,
+        endpoint,
+        data_bytes = data.len(),
+        "resolving downstream certificate"
+    );
+
     match store_via(state, endpoint, &data, timeout, body_id).await? {
-        StoreOutcome::Cert(cert) => Ok(DownstreamCertOutcome::Cert(cert)),
+        StoreOutcome::Cert(cert) => {
+            info!(
+                provider = %state.da_config.name,
+                "resolved certificate via primary endpoint"
+            );
+            Ok(DownstreamCertOutcome::Cert(cert))
+        }
         StoreOutcome::Forward(resp) => Ok(DownstreamCertOutcome::Forward(resp)),
         StoreOutcome::Fallback(reason) => {
             let anytrust = state
@@ -144,6 +166,11 @@ pub async fn resolve_downstream_cert(
             if (ESPRESSO_CERT_SIZE as u64 + data.len() as u64) > state.calldata_max_size {
                 return Err(DaApiError::DynamicBatchingResize);
             }
+            info!(
+                provider = %state.da_config.name,
+                data_bytes = data.len(),
+                "resolved certificate via calldata fallback"
+            );
             Ok(DownstreamCertOutcome::Cert(data))
         }
     }

@@ -1,6 +1,10 @@
 # syntax=docker/dockerfile:1
 FROM rust:1.93.1-bookworm AS builder
 
+# Cargo feature selecting the Nitro protocol version. Override via
+# `--build-arg CARGO_FEATURES=nitro-v3_10` to build the v3.10 variant.
+ARG CARGO_FEATURES=nitro-v3_9_9
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
         pkg-config \
         libssl-dev \
@@ -15,12 +19,12 @@ COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && \
     echo "pub fn _dummy() {}" > src/lib.rs && \
     echo "fn main() {}" > src/main.rs && \
-    cargo build --release && \
+    cargo build --release --no-default-features --features "$CARGO_FEATURES" && \
     cargo clean --release -p chain-adjacent-service && \
     rm -rf src
 
 COPY src/ src/
-RUN cargo build --release --bin chain-adjacent-service
+RUN cargo build --release --no-default-features --features "$CARGO_FEATURES" --bin chain-adjacent-service
 
 FROM debian:bookworm-slim
 

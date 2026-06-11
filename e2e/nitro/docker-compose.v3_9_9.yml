@@ -1,0 +1,148 @@
+# Override for running the e2e stack against Nitro v3.9.9.
+#
+# Usage:
+#   docker compose --env-file .env.v3_9_9 \
+#     -f docker-compose.yml -f docker-compose.v3_9_9.yml ...
+#
+# Images come from NITRO_IMAGE in the env file. CLI flag namespaces and
+# DAS entrypoints differ from v3.10; service `command:` is replaced (not
+# merged) by compose, so each overridden command is repeated in full.
+
+services:
+  rollup-creator:
+    image: ghcr.io/espressosystems/rollup-creator:integrate-cas-v2.1.3
+
+  sequencer:
+    platform: linux/amd64
+    command:
+      - --conf.file=/nitro-config/sequencer_config.json
+      - --node.batch-poster.enable=false
+      - --node.batch-poster.parent-chain-wallet.private-key=${BATCH_POSTER_PRIVATE_KEY}
+      - --node.staker.enable=false
+      - --execution.sequencer.enable=true
+      - --node.feed.output.signed=true
+      - --http.api=net,web3,eth,txpool,debug
+      - --node.seq-coordinator.my-url=http://sequencer:8547
+      - --node.data-availability.enable=true
+      - --node.data-availability.rest-aggregator.enable=true
+      - --node.data-availability.rest-aggregator.urls=http://das-mirror:9877
+
+  poster:
+    platform: linux/amd64
+    command:
+      - --conf.file=/nitro-config/poster_config.json
+      - --node.batch-poster.parent-chain-wallet.private-key=${BATCH_POSTER_PRIVATE_KEY}
+      - --node.da-provider.enable=true
+      - --node.da-provider.with-writer=true
+      - --node.da-provider.rpc.url=${CAS_CALLDATA_RPC_URL}
+      - --node.feed.input.url=${CAS_FEED_URL}
+      - --node.dangerous.no-sequencer-coordinator=true
+
+  validation-node:
+    platform: linux/amd64
+
+  validator:
+    platform: linux/amd64
+    command:
+      - --conf.file=/nitro-config/validator_config.json
+      - --node.staker.parent-chain-wallet.private-key=${VALIDATOR_PRIVATE_KEY}
+      - --node.data-availability.enable=true
+      - --node.data-availability.rest-aggregator.enable=true
+      - --node.data-availability.rest-aggregator.urls=http://das-mirror:9877
+
+  das-committee-a:
+    platform: linux/amd64
+    entrypoint:
+      ["sh", "-c", "mkdir -p /tmp/das-store && exec /usr/local/bin/daserver \"$@\"", "--"]
+    command:
+      - --data-availability.parent-chain-node-url=http://l1-anvil:8545
+      - --data-availability.sequencer-inbox-address=${SEQUENCER_INBOX_ADDRESS}
+      - --data-availability.key.key-dir=/das-keys
+      - --data-availability.local-file-storage.enable
+      - --data-availability.local-file-storage.data-dir=/tmp/das-store
+      - --data-availability.disable-signature-checking
+      - --enable-rpc
+      - --rpc-addr=0.0.0.0
+      - --rpc-port=9876
+      - --enable-rest
+      - --rest-addr=0.0.0.0
+      - --rest-port=9877
+      - --log-level=debug
+
+  das-committee-b:
+    platform: linux/amd64
+    entrypoint:
+      ["sh", "-c", "mkdir -p /tmp/das-store && exec /usr/local/bin/daserver \"$@\"", "--"]
+    command:
+      - --data-availability.parent-chain-node-url=http://l1-anvil:8545
+      - --data-availability.sequencer-inbox-address=${SEQUENCER_INBOX_ADDRESS}
+      - --data-availability.key.key-dir=/das-keys
+      - --data-availability.local-file-storage.enable
+      - --data-availability.local-file-storage.data-dir=/tmp/das-store
+      - --data-availability.disable-signature-checking
+      - --enable-rpc
+      - --rpc-addr=0.0.0.0
+      - --rpc-port=9876
+      - --enable-rest
+      - --rest-addr=0.0.0.0
+      - --rest-port=9877
+      - --log-level=debug
+
+  das-mirror:
+    platform: linux/amd64
+    entrypoint:
+      ["sh", "-c", "mkdir -p /tmp/das-store && exec /usr/local/bin/daserver \"$@\"", "--"]
+    command:
+      - --data-availability.parent-chain-node-url=http://l1-anvil:8545
+      - --data-availability.sequencer-inbox-address=${SEQUENCER_INBOX_ADDRESS}
+      - --data-availability.local-file-storage.enable
+      - --data-availability.local-file-storage.data-dir=/tmp/das-store
+      - --enable-rest
+      - --rest-addr=0.0.0.0
+      - --rest-port=9877
+      - --data-availability.rest-aggregator.enable
+      - --data-availability.rest-aggregator.urls=http://das-committee-a:9877,http://das-committee-b:9877
+      - --log-level=debug
+
+  daprovider-anytrust:
+    platform: linux/amd64
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        BLS_A=$$(cat /das-keys/a/das_bls.pub | tr -d '\n')
+        BLS_B=$$(cat /das-keys/b/das_bls.pub | tr -d '\n')
+        cat > /tmp/daprovider.json << DEOF
+        {
+          "mode": "anytrust",
+          "anytrust": {
+            "enable": true,
+            "request-timeout": "30s",
+            "rpc-aggregator": {
+              "enable": true,
+              "assumed-honest": 1,
+              "backends": [
+                {"url": "http://das-committee-a:9876", "pubkey": "$$BLS_A"},
+                {"url": "http://das-committee-b:9876", "pubkey": "$$BLS_B"}
+              ]
+            },
+            "rest-aggregator": {
+              "enable": true,
+              "urls": ["http://das-mirror:9877"]
+            }
+          },
+          "with-data-signer": true,
+          "data-signer-wallet": {
+            "private-key": "${DATA_SIGNER_PRIVATE_KEY}"
+          },
+          "provider-server": {
+            "addr": "0.0.0.0",
+            "port": 9881,
+            "enable-da-writer": true
+          },
+          "log-level": "DEBUG"
+        }
+        DEOF
+        exec /usr/local/bin/daprovider --conf.file=/tmp/daprovider.json \
+          --anytrust.parent-chain-node-url=ws://l1-anvil:8545 \
+          --anytrust.sequencer-inbox-address=${SEQUENCER_INBOX_ADDRESS}

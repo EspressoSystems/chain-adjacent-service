@@ -59,8 +59,12 @@ const L1_WS_URL: &str = "ws://localhost:8545";
 const L1_HTTP_URL: &str = "http://localhost:8545";
 const SEQUENCER_HTTP_URL: &str = "http://localhost:8547";
 const VALIDATOR_HTTP_URL: &str = "http://localhost:8949";
-const GENERATED_CONFIG_DIR: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/e2e/nitro/generated-config");
+fn generated_config_dir() -> std::path::PathBuf {
+    let sub = std::env::var("CONFIG_DIR").unwrap_or_else(|_| "generated-config".to_string());
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("e2e/nitro")
+        .join(sub)
+}
 const TRUSTED_SEQUENCER_ADDRESS: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
 
 #[derive(Clone, Copy)]
@@ -294,7 +298,7 @@ async fn evm_revert(snapshot_id: &str) -> bool {
 }
 
 pub(crate) fn read_tee_verifier_address() -> Address {
-    let path = Path::new(GENERATED_CONFIG_DIR).join("tee_verifier_address.txt");
+    let path = generated_config_dir().join("tee_verifier_address.txt");
     let content = std::fs::read_to_string(&path).unwrap_or_else(|_| {
         panic!(
             "missing {} — run docker compose with deploy profile first",
@@ -460,12 +464,23 @@ pub(crate) async fn write_cas_config(
     path
 }
 
+// BoLD rollup `AssertionCreated` event topic (default, used by v3.10 contracts):
 // https://github.com/EspressoSystems/nitro-contracts/blob/ec47f8578cc0837347af9de5bf6c34ed3e037d93/src/rollup/IRollupCore.sol#L26
-const ASSERTION_CREATED_TOPIC: alloy::primitives::B256 =
-    alloy::primitives::b256!("901c3aee23cf4478825462caaab375c606ab83516060388344f0650340753630");
+// Pre-BoLD `NodeCreated` event topic (used by v3.9.9 / legacy contracts).
+// Selected at runtime via NITRO_E2E_VERSION=v3_9_9.
+fn assertion_created_topic() -> alloy::primitives::B256 {
+    match std::env::var("NITRO_E2E_VERSION").as_deref() {
+        Ok("v3_9_9") => alloy::primitives::b256!(
+            "4f4caa9e67fb994e349dd35d1ad0ce23053d4323f83ce11dc817b5435031d096"
+        ),
+        _ => alloy::primitives::b256!(
+            "901c3aee23cf4478825462caaab375c606ab83516060388344f0650340753630"
+        ),
+    }
+}
 
 fn read_rollup_address() -> Address {
-    let path = Path::new(GENERATED_CONFIG_DIR).join("deployment.json");
+    let path = generated_config_dir().join("deployment.json");
     let raw = std::fs::read_to_string(&path)
         .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
     let deployment: serde_json::Value = serde_json::from_str(&raw)
@@ -482,7 +497,7 @@ fn read_rollup_address() -> Address {
 async fn wait_for_assertion_created(provider: &RootProvider, rollup: Address, from_block: u64) {
     let filter = Filter::new()
         .address(rollup)
-        .event_signature(ASSERTION_CREATED_TOPIC)
+        .event_signature(assertion_created_topic())
         .from_block(from_block);
 
     let deadline = Instant::now() + Duration::from_secs(5 * 60);
@@ -512,7 +527,7 @@ async fn wait_for_assertion_created(provider: &RootProvider, rollup: Address, fr
 }
 
 pub(crate) fn read_sequencer_inbox_address() -> Address {
-    let path = Path::new(GENERATED_CONFIG_DIR).join("deployment.json");
+    let path = generated_config_dir().join("deployment.json");
     let raw = std::fs::read_to_string(&path)
         .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
     let deployment: serde_json::Value = serde_json::from_str(&raw)
@@ -579,7 +594,9 @@ pub(crate) async fn wait_for_batches_on_l1(
         .event_signature(SequencerBatchDelivered::SIGNATURE_HASH)
         .from_block(from_block);
 
-    let deadline = Instant::now() + Duration::from_secs(5 * 60);
+    // Scale timeout with batch count — CI runners can be slow (~100s/batch observed).
+    let per_batch_secs: u64 = 120;
+    let deadline = Instant::now() + Duration::from_secs(min as u64 * per_batch_secs);
     loop {
         if Instant::now() >= deadline {
             let count = provider
@@ -673,7 +690,7 @@ async fn run_e2e(route: CasRoute) {
     let anytrust = matches!(route, CasRoute::Anytrust);
 
     if anytrust {
-        nitro_node.start_das_committee();
+        nitro_node.start_das_committee(&sequencer_inbox.to_string());
         println!("DAS committee + mirror started");
         nitro_node.start_anytrust_daprovider(&sequencer_inbox.to_string());
         println!("daprovider-anytrust sidecar started");
@@ -717,7 +734,11 @@ async fn run_e2e(route: CasRoute) {
         .await
         .expect("failed to read L1 head block number");
 
-    nitro_node.start_poster(CAS_FEED_URL, route.rpc_url_for_poster());
+    nitro_node.start_poster(
+        CAS_FEED_URL,
+        route.rpc_url_for_poster(),
+        &sequencer_inbox.to_string(),
+    );
     println!("Poster started");
 
     wait_for_batches_on_l1(&l1, from_block, 2, sequencer_inbox).await;
@@ -854,7 +875,11 @@ async fn test_e2e_l1_reorg() {
         .expect("failed to read L1 head block number");
 
     // Now after taking the snapshot we start the batch poster
-    nitro_node.start_poster(CAS_FEED_URL, CasRoute::Calldata.rpc_url_for_poster());
+    nitro_node.start_poster(
+        CAS_FEED_URL,
+        CasRoute::Calldata.rpc_url_for_poster(),
+        &sequencer_inbox.to_string(),
+    );
     println!("Poster started");
 
     // We wait for at least 1 batch to be posted on L1
@@ -959,7 +984,11 @@ async fn test_e2e_restart() {
         .await
         .expect("failed to read L1 head block number");
 
-    nitro_node.start_poster(CAS_FEED_URL, route.rpc_url_for_poster());
+    nitro_node.start_poster(
+        CAS_FEED_URL,
+        route.rpc_url_for_poster(),
+        &sequencer_inbox.to_string(),
+    );
     println!("Poster started");
 
     println!("Waiting for 2 batches...");
@@ -968,8 +997,8 @@ async fn test_e2e_restart() {
 
     println!("Stopping CAS (simulating CAS downtime)...");
     drop(cas);
-    println!("CAS stopped; sleeping 30 s to verify no new batches are submitted");
-    sleep(Duration::from_secs(30)).await;
+    println!("CAS stopped; sleeping 10 s to verify no new batches are submitted");
+    sleep(Duration::from_secs(10)).await;
     let count_after_cas_down = count_batches_on_l1(&l1, from_block, sequencer_inbox).await;
     assert!(
         count_after_cas_down < 4,
@@ -998,8 +1027,8 @@ async fn test_e2e_restart() {
 
     println!("Stopping poster (simulating nitro-node downtime)...");
     nitro_node.stop_poster();
-    println!("Poster stopped; sleeping 30 s to verify no new batches are submitted");
-    sleep(Duration::from_secs(30)).await;
+    println!("Poster stopped; sleeping 10 s to verify no new batches are submitted");
+    sleep(Duration::from_secs(10)).await;
     let count_after_poster_down = count_batches_on_l1(&l1, from_block, sequencer_inbox).await;
     assert!(
         count_after_poster_down < 6,
@@ -1008,7 +1037,11 @@ async fn test_e2e_restart() {
     println!("Confirmed: only {count_after_poster_down} batches during poster downtime (< 6)");
 
     println!("Restarting poster...");
-    nitro_node.start_poster(CAS_FEED_URL, route.rpc_url_for_poster());
+    nitro_node.start_poster(
+        CAS_FEED_URL,
+        route.rpc_url_for_poster(),
+        &sequencer_inbox.to_string(),
+    );
     println!("Poster restarted; waiting for batch count to reach 6...");
     wait_for_batches_on_l1(&l1, from_block, 6, sequencer_inbox).await;
     println!("6 batches confirmed on L1 — restart test passed");
@@ -1153,7 +1186,11 @@ async fn test_e2e_anytrust_fallback_to_calldata() {
         .await
         .expect("failed to read L1 head block number");
 
-    nitro_node.start_poster(CAS_FEED_URL, CasRoute::Anytrust.rpc_url_for_poster());
+    nitro_node.start_poster(
+        CAS_FEED_URL,
+        CasRoute::Anytrust.rpc_url_for_poster(),
+        &sequencer_inbox.to_string(),
+    );
     println!("Poster started (anytrust route, mock DA always falls back)");
 
     wait_for_batches_on_l1(&l1, from_block, 2, sequencer_inbox).await;
@@ -1212,7 +1249,11 @@ async fn test_e2e_espresso_downtime() {
         .await
         .expect("failed to read L1 head block number");
 
-    nitro_node.start_poster(CAS_FEED_URL, route.rpc_url_for_poster());
+    nitro_node.start_poster(
+        CAS_FEED_URL,
+        route.rpc_url_for_poster(),
+        &sequencer_inbox.to_string(),
+    );
     println!("Poster started; waiting for 1 batch...");
     wait_for_batches_on_l1(&l1, from_block, 1, sequencer_inbox).await;
     println!("1 batch confirmed on L1");
@@ -1362,7 +1403,7 @@ async fn test_e2e_external_da_fallback_to_anytrust() {
     println!("Nitro stack started");
 
     let sequencer_inbox = read_sequencer_inbox_address();
-    nitro_node.start_das_committee();
+    nitro_node.start_das_committee(&sequencer_inbox.to_string());
     nitro_node.start_anytrust_daprovider(&sequencer_inbox.to_string());
     println!("anytrust sidecar started on {ANYTRUST_DAPROVIDER_URL}");
 
@@ -1397,7 +1438,11 @@ async fn test_e2e_external_da_fallback_to_anytrust() {
         .await
         .expect("failed to read L1 head block number");
 
-    nitro_node.start_poster(CAS_FEED_URL, route.rpc_url_for_poster());
+    nitro_node.start_poster(
+        CAS_FEED_URL,
+        route.rpc_url_for_poster(),
+        &sequencer_inbox.to_string(),
+    );
     println!("Poster started (external-da route, mock primary falls back to anytrust)");
 
     wait_for_batches_on_l1(&l1, from_block, 2, sequencer_inbox).await;
@@ -1543,7 +1588,11 @@ async fn test_e2e_legacy_feed_format() {
         .await
         .expect("failed to read L1 head block number");
 
-    nitro_node.start_poster(CAS_FEED_URL, CasRoute::Calldata.rpc_url_for_poster());
+    nitro_node.start_poster(
+        CAS_FEED_URL,
+        CasRoute::Calldata.rpc_url_for_poster(),
+        &sequencer_inbox.to_string(),
+    );
     println!("Poster started");
 
     wait_for_batches_on_l1(&l1, from_block, 2, sequencer_inbox).await;

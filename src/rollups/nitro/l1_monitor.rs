@@ -347,6 +347,7 @@ impl L1Monitor<BatchCursor, nitro::Error> for NitroL1Monitor {
         let poll_interval = Duration::from_millis(self.l1_finalized_poll_interval_ms);
         let mut interval = tokio::time::interval(poll_interval);
         let mut last_finalized_block: u64 = 0;
+        let mut last_logged_msg_count: Option<u64> = None;
 
         // Periodically poll the finalized block and update the finalized message count
         loop {
@@ -377,11 +378,17 @@ impl L1Monitor<BatchCursor, nitro::Error> for NitroL1Monitor {
                 .await
             {
                 Ok(count) => {
-                    tracing::info!(
-                        finalized_block,
-                        finalized_msg_count = count,
-                        "updated finalized message count"
-                    );
+                    // Only log when the finalized message count actually advances;
+                    // the finalized block moves forward far more often than the
+                    // message count, so logging every block would just repeat lines.
+                    if last_logged_msg_count != Some(count) {
+                        tracing::info!(
+                            finalized_block,
+                            finalized_msg_count = count,
+                            "updated finalized message count"
+                        );
+                        last_logged_msg_count = Some(count);
+                    }
                     // In nitro, message 0 can not be reorged
                     let _ = l1_finalized_msg_idx_sender.send(count.saturating_sub(1));
                     last_finalized_block = finalized_block;

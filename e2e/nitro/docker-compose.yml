@@ -16,7 +16,7 @@ services:
         "1",
       ]
     volumes:
-      - "./generated-config:/state:ro"
+      - "./${CONFIG_DIR:-generated-config}:/state:ro"
     ports:
       - "8545:8545"
     healthcheck:
@@ -68,7 +68,7 @@ services:
     platform: linux/amd64
     command: ["create-rollup-testnode"]
     volumes:
-      - "./generated-config:/config"
+      - "./${CONFIG_DIR:-generated-config}:/config"
       - "./nitro-config:/nitro-config"
     environment:
       DEPLOYER_PRIVKEY: ${DEPLOYER_PRIVATE_KEY}
@@ -101,7 +101,7 @@ services:
     volumes:
       - "nitro-sequencer:/home/user/.arbitrum/local/nitro"
       - "l1keystore:/home/user/l1keystore"
-      - "./generated-config:/config"
+      - "./${CONFIG_DIR:-generated-config}:/config"
       - "./nitro-config:/nitro-config"
     command:
       - --conf.file=/nitro-config/sequencer_config.json
@@ -112,6 +112,9 @@ services:
       - --node.feed.output.signed=true
       - --http.api=net,web3,eth,txpool,debug
       - --node.seq-coordinator.my-url=http://sequencer:8547
+      - --node.da.anytrust.enable=true
+      - --node.da.anytrust.rest-aggregator.enable=true
+      - --node.da.anytrust.rest-aggregator.urls=http://das-mirror:9877
     depends_on:
       l1-anvil:
         condition: service_healthy
@@ -139,7 +142,7 @@ services:
     volumes:
       - "nitro-poster:/home/user/.arbitrum/local/nitro"
       - "l1keystore:/home/user/l1keystore"
-      - "./generated-config:/config"
+      - "./${CONFIG_DIR:-generated-config}:/config"
       - "./nitro-config:/nitro-config"
     command:
       - --conf.file=/nitro-config/poster_config.json
@@ -149,6 +152,11 @@ services:
       - --node.da.external-provider.rpc.url=${CAS_CALLDATA_RPC_URL}
       - --node.feed.input.url=${CAS_FEED_URL}
       - --node.dangerous.no-sequencer-coordinator=true
+      - --node.da.anytrust.enable=true
+      - --node.da.anytrust.rpc-aggregator.enable=true
+      - --node.da.anytrust.rpc-aggregator.assumed-honest=1
+      - --node.da.anytrust.rest-aggregator.enable=true
+      - --node.da.anytrust.rest-aggregator.urls=http://das-mirror:9877
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -258,11 +266,14 @@ services:
       - "8949:8547"
     volumes:
       - "nitro-validator:/home/user/.arbitrum/local/nitro"
-      - "./generated-config:/config"
+      - "./${CONFIG_DIR:-generated-config}:/config"
       - "./nitro-config:/nitro-config"
     command:
       - --conf.file=/nitro-config/validator_config.json
       - --node.staker.parent-chain-wallet.private-key=${VALIDATOR_PRIVATE_KEY}
+      - --node.da.anytrust.enable=true
+      - --node.da.anytrust.rest-aggregator.enable=true
+      - --node.da.anytrust.rest-aggregator.urls=http://das-mirror:9877
     depends_on:
       sequencer:
         condition: service_healthy
