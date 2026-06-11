@@ -62,6 +62,20 @@ build:
 docker-build tag="chain-adjacent-service:latest":
     docker build -t {{tag}} .
 
+# ─── Formatting & linting ─────────────────────────────────────────────────────
+
+# Check formatting across the entire workspace.
+fmt:
+    cargo fmt --all --check
+
+# Run clippy for Nitro v3.9.9.
+clippy-v3_9_9:
+    cargo clippy --all-targets --no-default-features --features nitro-v3_9_9 -- -D warnings
+
+# Run clippy for Nitro v3.10.
+clippy-v3_10:
+    cargo clippy --all-targets --no-default-features --features nitro-v3_10 -- -D warnings
+
 # ─── Running tests ────────────────────────────────────────────────────────────
 
 # Shared v3.9.9 env. Used by every recipe that needs to talk to the v3.9.9 stack.

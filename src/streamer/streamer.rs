@@ -167,6 +167,11 @@ impl<R: Rollup> Streamer<R> {
                         None => R::BatchCursor::default(),
                     };
                     let verification_result = R::verify_batch_messages(&entries, &self.queue, &context);
+                    tracing::info!(
+                        success = verification_result.success,
+                        entries = entries.len(),
+                        "batch verification completed"
+                    );
                     if sender.send(verification_result).is_err() {
                         tracing::warn!("verification reply channel closed before result could be delivered");
                     }
@@ -214,7 +219,11 @@ impl<R: Rollup> Streamer<R> {
         if new_finalized_idx <= self.finalized_idx {
             return;
         }
-        tracing::debug!("new finalized message index: {new_finalized_idx}");
+        tracing::info!(
+            prev_finalized = self.finalized_idx,
+            new_finalized = new_finalized_idx,
+            "finalized message index advanced"
+        );
 
         self.finalized_idx = new_finalized_idx;
         let split_at = self
@@ -325,6 +334,7 @@ impl<R: Rollup> Streamer<R> {
         }
 
         let to_promote = room.min(self.stubs.len());
+
         let stubs_to_promote: Vec<(u64, u64)> = self
             .stubs
             .iter()

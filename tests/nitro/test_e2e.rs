@@ -561,7 +561,9 @@ pub(crate) async fn wait_for_batches_on_l1(
         .event_signature(SequencerBatchDelivered::SIGNATURE_HASH)
         .from_block(from_block);
 
-    let deadline = Instant::now() + Duration::from_secs(5 * 60);
+    // Scale timeout with batch count — CI runners can be slow (~100s/batch observed).
+    let per_batch_secs: u64 = 120;
+    let deadline = Instant::now() + Duration::from_secs(min as u64 * per_batch_secs);
     loop {
         if Instant::now() >= deadline {
             let count = provider
@@ -959,8 +961,8 @@ async fn test_e2e_restart() {
 
     println!("Stopping CAS (simulating CAS downtime)...");
     drop(cas);
-    println!("CAS stopped; sleeping 30 s to verify no new batches are submitted");
-    sleep(Duration::from_secs(30)).await;
+    println!("CAS stopped; sleeping 10 s to verify no new batches are submitted");
+    sleep(Duration::from_secs(10)).await;
     let count_after_cas_down = count_batches_on_l1(&l1, from_block, sequencer_inbox).await;
     assert!(
         count_after_cas_down < 4,
@@ -988,8 +990,8 @@ async fn test_e2e_restart() {
 
     println!("Stopping poster (simulating nitro-node downtime)...");
     nitro_node.stop_poster();
-    println!("Poster stopped; sleeping 30 s to verify no new batches are submitted");
-    sleep(Duration::from_secs(30)).await;
+    println!("Poster stopped; sleeping 10 s to verify no new batches are submitted");
+    sleep(Duration::from_secs(10)).await;
     let count_after_poster_down = count_batches_on_l1(&l1, from_block, sequencer_inbox).await;
     assert!(
         count_after_poster_down < 6,

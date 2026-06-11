@@ -14,7 +14,7 @@ env:
 jobs:
   e2e-v3_9_9:
     name: E2E Tests (Nitro v3.9.9)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-8core
     timeout-minutes: 20
 
     steps:
@@ -51,7 +51,7 @@ jobs:
 
   e2e-v3_10:
     name: E2E Tests (Nitro v3.10)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-8core
     timeout-minutes: 20
 
     steps:

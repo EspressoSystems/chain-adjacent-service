@@ -43,6 +43,7 @@ async fn main() -> Result<()> {
 
     match config.rollup.ty {
         RollupType::Nitro => {
+            info!(rollup_type = "nitro", "initializing rollup stack");
             let mut config: ServiceConfig<<Nitro as Rollup>::StackConfig> =
                 serde_json::from_str(&config_contents)?;
 
@@ -118,9 +119,15 @@ async fn run<R: Rollup>(
     info!("L1 monitor created");
 
     let (batch_cursor, hotshot_height) = if !config.is_fresh_deployment {
+        info!("resuming from L1 checkpoint");
         let checkpoint = l1_monitor.fetch_latest_checkpoint_on_startup().await?;
+        info!(
+            hotshot_height = checkpoint.hotshot_height,
+            "loaded checkpoint from L1"
+        );
         (checkpoint.batch_cursor, Some(checkpoint.hotshot_height))
     } else {
+        info!("fresh deployment; fetching initial batch cursor");
         let batch_cursor = l1_monitor
             .fetch_latest_batch_cursor_on_fresh_deployment()
             .await?;
@@ -200,15 +207,29 @@ async fn run<R: Rollup>(
 
     let l1_monitor_task = l1_monitor.start(l1_finalized_msg_idx_sender);
 
-    tokio::try_join!(
-        async { submitter_task.await.map_err(anyhow::Error::from) },
-        async { feed_task.await.map_err(anyhow::Error::from) },
-        streamer_task,
-        async { da_task.await.map_err(anyhow::Error::from) },
-        async {
-            l1_monitor_task.await;
-            Ok::<(), anyhow::Error>(())
-        },
-    )?;
+    info!("all tasks spawned; entering main event loop");
+
+    tokio::select! {
+        res = submitter_task => {
+            info!("submitter task exited");
+            res.map_err(anyhow::Error::from)?;
+        }
+        res = feed_task => {
+            info!("feed relay task exited");
+            res.map_err(anyhow::Error::from)?;
+        }
+        res = streamer_task => {
+            info!("streamer task exited");
+            res?;
+        }
+        res = da_task => {
+            info!("DA API task exited");
+            res.map_err(anyhow::Error::from)?;
+        }
+        _ = l1_monitor_task => {
+            info!("L1 monitor task exited");
+        }
+    }
+    info!("all tasks completed; shutting down");
     Ok(())
 }
