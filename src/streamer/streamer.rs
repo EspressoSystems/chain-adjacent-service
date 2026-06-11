@@ -431,6 +431,8 @@ pub async fn poll_hotshot_blocks(
     let not_found_warn_after = Duration::from_millis(config.hotshot_stall_warn_ms);
     let mut not_found_since: Option<std::time::Instant> = None;
     let mut not_found_warned = false;
+    let progress_log_interval = Duration::from_millis(config.progress_log_interval_ms);
+    let mut last_progress_log: Option<std::time::Instant> = None;
 
     loop {
         let latest_block_height = match client.fetch_latest_hotshot_block_height().await {
@@ -502,13 +504,24 @@ pub async fn poll_hotshot_blocks(
             .iter()
             .map(|t| t.transactions.len())
             .sum();
-        tracing::info!(
+        tracing::debug!(
             from_block,
             to_block,
             ranges = hotshot_transactions.len(),
             tx_count,
             "fetched espresso block range"
         );
+        let should_log_progress = last_progress_log
+            .map(|t| t.elapsed() >= progress_log_interval)
+            .unwrap_or(true);
+        if should_log_progress {
+            tracing::info!(
+                hotshot_block = to_block.saturating_sub(1),
+                latest_block_height,
+                "streaming espresso blocks"
+            );
+            last_progress_log = Some(std::time::Instant::now());
+        }
         backoff = Duration::from_millis(config.initial_backoff_ms);
 
         sender
