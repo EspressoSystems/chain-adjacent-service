@@ -179,7 +179,7 @@ pub(crate) async fn genesis_from_node(query_url: &Url) -> Genesis {
 /// Verifies the reader against a dockerized dev node (started in-test via `EspressoDevNode`,
 /// so it runs in CI). Genesis-regime only. Decaf on the devnet covers dynamic catch-up.
 #[cfg(test)]
-mod dev_node {
+mod light_client_tests {
     use std::time::Duration;
 
     use tokio::time::{Instant, sleep};
