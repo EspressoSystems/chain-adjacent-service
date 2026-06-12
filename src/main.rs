@@ -137,7 +137,7 @@ async fn run<R: Rollup>(
 
     let config = R::resolve_config_with_checkpoint(config, batch_cursor.clone(), hotshot_height);
 
-    let client = EspressoClient::from_config(config.espresso_client.clone());
+    let client = EspressoClient::from_config(config.espresso_client.client.clone());
     let (submitter_sender, submitter_receiver) =
         mpsc::channel::<R::FeedMessage>(config.advanced.submitter_input_channel_capacity);
 
@@ -184,9 +184,9 @@ async fn run<R: Rollup>(
     // Inbound consumption is verified by the light client (rooted in genesis), so the query
     // node is untrusted. It reuses the same Espresso node URL as submission.
     let light_client_reader = LightClientReader::new(
-        config.light_client.genesis,
-        config.espresso_client.base_url,
-        config.light_client.db_path,
+        config.espresso_client.light_client.genesis,
+        config.espresso_client.client.base_url,
+        config.espresso_client.light_client.db_path,
     )
     .await?;
     let (verification_sender, verification_receiver) =

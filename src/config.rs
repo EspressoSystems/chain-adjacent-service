@@ -10,10 +10,18 @@ use crate::{
     key_manager::key_manager::TeeType as KmTeeType, submitter::submitter::SubmitterConfig,
 };
 
+/// Espresso configuration: the query-node connection ([`EspressoClientConfig`], flattened) plus
+/// the light client's root of trust and cache. One node serves both submit and verified reads.
+#[derive(Debug, Clone, Deserialize)]
+pub struct EspressoConfig {
+    #[serde(flatten)]
+    pub client: EspressoClientConfig,
+    pub light_client: LightClientConfig,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServiceConfig<C> {
-    pub espresso_client: EspressoClientConfig,
-    pub light_client: LightClientConfig,
+    pub espresso_client: EspressoConfig,
     #[serde(default)]
     pub streamer: StreamerConfig,
     pub rollup: RollupConfig<C>,

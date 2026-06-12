@@ -103,7 +103,7 @@ pub fn apply_overrides_nitro(
     cfg: &mut ServiceConfig<NitroConfig>,
     overrides: &SecretOverrides,
 ) -> Result<()> {
-    cfg.espresso_client.base_url = url::Url::parse(&overrides.espresso_base_url)
+    cfg.espresso_client.client.base_url = url::Url::parse(&overrides.espresso_base_url)
         .context("overrides.espresso_base_url is not a valid URL")?;
     tracing::info!(
         field = "espresso_client.base_url",
@@ -180,7 +180,7 @@ pub fn resolve_operator_private_key(overrides: Option<&SecretOverrides>) -> Resu
 }
 
 pub fn assert_no_placeholders_nitro(cfg: &ServiceConfig<NitroConfig>) -> Result<()> {
-    if cfg.espresso_client.base_url.as_str() == PLACEHOLDER_URL {
+    if cfg.espresso_client.client.base_url.as_str() == PLACEHOLDER_URL {
         bail!("espresso_client.base_url was not overridden — still placeholder sentinel");
     }
     if cfg.rollup.stack.feed.web_socket_url == PLACEHOLDER_STR {
@@ -212,13 +212,13 @@ mod tests {
     fn placeholder_config_json() -> &'static str {
         r#"{
             "espresso_client": {
-                "base_url": "http://placeholder.invalid/"
-            },
-            "light_client": {
-                "genesis": {
-                    "epoch_height": 100,
-                    "first_epoch_with_dynamic_stake_table": 1,
-                    "stake_table": []
+                "base_url": "http://placeholder.invalid/",
+                "light_client": {
+                    "genesis": {
+                        "epoch_height": 100,
+                        "first_epoch_with_dynamic_stake_table": 1,
+                        "stake_table": []
+                    }
                 }
             },
             "rollup": {
@@ -401,7 +401,7 @@ mod tests {
         apply_overrides_nitro(&mut cfg, &overrides).unwrap();
 
         assert_eq!(
-            cfg.espresso_client.base_url.as_str(),
+            cfg.espresso_client.client.base_url.as_str(),
             "https://query.example.com/"
         );
         assert_eq!(
@@ -451,7 +451,7 @@ mod tests {
         let mut cfg: ServiceConfig<NitroConfig> =
             serde_json::from_str(placeholder_config_json()).unwrap();
         // Apply only feed/ws/anytrust overrides; leave l1_http_url at PLACEHOLDER.
-        cfg.espresso_client.base_url = url::Url::parse("https://query.example.com/").unwrap();
+        cfg.espresso_client.client.base_url = url::Url::parse("https://query.example.com/").unwrap();
         cfg.rollup.stack.feed.web_socket_url = "wss://feed.example.com/feed".to_string();
         cfg.rollup.stack.l1_ws_url = "wss://l1.example.com".to_string();
         for provider in cfg.da_server.da_providers.iter_mut() {

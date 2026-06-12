@@ -385,16 +385,18 @@ fn test_resolve_config_with_latest_batch_info() {
             stack: initial_nitro_config.clone(),
         },
         streamer: initial_streamer_config.clone(),
-        espresso_client: EspressoClientConfig {
-            base_url: Url::parse("http://localhost:8000").unwrap(),
-            client_timeout_secs: 30,
-        },
-        light_client: crate::config::LightClientConfig {
-            genesis: serde_json::from_str(
-                r#"{"epoch_height":100,"first_epoch_with_dynamic_stake_table":1,"stake_table":[]}"#,
-            )
-            .unwrap(),
-            db_path: None,
+        espresso_client: crate::config::EspressoConfig {
+            client: EspressoClientConfig {
+                base_url: Url::parse("http://localhost:8000").unwrap(),
+                client_timeout_secs: 30,
+            },
+            light_client: crate::config::LightClientConfig {
+                genesis: serde_json::from_str(
+                    r#"{"epoch_height":100,"first_epoch_with_dynamic_stake_table":1,"stake_table":[]}"#,
+                )
+                .unwrap(),
+                db_path: None,
+            },
         },
         submitter: SubmitterConfig::default(),
         da_server: DaApiConfig::default(),

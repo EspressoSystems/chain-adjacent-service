@@ -401,7 +401,8 @@ pub(crate) async fn write_cas_config(
     if let Some(timeout) = client_timeout_secs {
         espresso_client["client_timeout_secs"] = json!(timeout);
     }
-    let light_client = json!({ "genesis": devnode_light_client_genesis(base_url).await });
+    espresso_client["light_client"] =
+        json!({ "genesis": devnode_light_client_genesis(base_url).await });
 
     let mut streamer = json!({
         "starting_hotshot_height": starting_hotshot_height,
@@ -412,7 +413,6 @@ pub(crate) async fn write_cas_config(
 
     let config = json!({
         "espresso_client": espresso_client,
-        "light_client": light_client,
         "streamer": streamer,
         "rollup": {
             "type": "nitro",
