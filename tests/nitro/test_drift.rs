@@ -6,6 +6,7 @@ use axum::response::{IntoResponse, Response};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::time::Duration;
 use tokio::task::JoinHandle;
 
 use chain_adjacent_service::espresso_e2e::espresso_dev_node::EspressoDevNode;
@@ -33,14 +34,21 @@ impl Drop for EspressoProxy {
 struct ProxyState {
     upstream: String,
     client: reqwest::Client,
+    /// `Some` → hold the first submission for this long (out-of-order test).
+    submit_delay: Option<Duration>,
+    held_first_submit: AtomicBool,
+    /// `> 0` → pin the reported block height for this many polls (lagging-node test).
+    drift_polls: usize,
     freeze_height: AtomicU64,
     freeze_polls_remaining: AtomicUsize,
+    /// Set once the proxy actually perturbs traffic, so tests can assert the scenario engaged.
     drifted: AtomicBool,
-    drift_polls: usize,
 }
 
-/// Reverse-proxies every request to the upstream Espresso node, delaying the
-/// reported block height via `maybe_delay_block_height` to simulate a lagging node.
+/// Reverse-proxies every request to the upstream Espresso node. Depending on its mode it either
+/// delays the first submission (forcing a real out-of-order finalization) or pins the reported
+/// block height (simulating a lagging node). Reads are otherwise passed through untouched, so the
+/// light client always verifies real, consensus-finalized data.
 async fn proxy_handler(
     State(state): State<Arc<ProxyState>>,
     req: axum::extract::Request,
@@ -57,6 +65,17 @@ async fn proxy_handler(
     let body_bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
         .await
         .unwrap_or_default();
+
+    // Out-of-order injection: hold the first submission so its (earlier-sequence) tx is finalized
+    // after later ones. Nothing is rewritten, so the data the light client later reads is genuine.
+    if let Some(delay) = state.submit_delay {
+        let is_submit = method == axum::http::Method::POST && uri.path().ends_with("/submit");
+        if is_submit && !state.held_first_submit.swap(true, Ordering::SeqCst) {
+            println!("[proxy] holding first submission for {delay:?}");
+            state.drifted.store(true, Ordering::SeqCst);
+            tokio::time::sleep(delay).await;
+        }
+    }
 
     let mut upstream_req = state.client.request(method.clone(), &url);
     for (k, v) in headers.iter() {
@@ -81,8 +100,10 @@ async fn proxy_handler(
 
     let status = upstream_resp.status();
     let resp_headers = upstream_resp.headers().clone();
-    let resp_bytes = upstream_resp.bytes().await.unwrap_or_default().to_vec();
-    let resp_bytes = maybe_delay_block_height(&state, &method, uri.path(), status, resp_bytes);
+    let mut resp_bytes = upstream_resp.bytes().await.unwrap_or_default().to_vec();
+    if state.drift_polls > 0 {
+        resp_bytes = maybe_pin_block_height(&state, &method, uri.path(), status, resp_bytes);
+    }
 
     // Relay the node's status and headers unchanged (Content-Type, redirect Location):
     // rewriting them breaks the client. Skip framing headers; the body is re-sent here.
@@ -101,10 +122,8 @@ async fn proxy_handler(
 
 /// Simulates a lagging query node: once the node first reports a tip of at least
 /// `MIN_FREEZE_HEIGHT`, pin the reported `node/block-height` at that value for `drift_polls`
-/// polls, then release the true tip so the service has to catch up. The light client only
-/// consumes contiguous, consensus-verified ranges, so delaying availability is the only drift
-/// it can experience — reordering or altering data would just fail verification.
-fn maybe_delay_block_height(
+/// polls, then release the true tip so the service has to catch up.
+fn maybe_pin_block_height(
     state: &Arc<ProxyState>,
     method: &axum::http::Method,
     path: &str,
@@ -144,20 +163,22 @@ fn maybe_delay_block_height(
     pinned
 }
 
-/// Binds the drifting reverse proxy on `ESPRESSO_PROXY_PORT` and returns a
-/// handle whose `Drop` aborts the server task.
-async fn start_espresso_proxy(drift_polls: usize) -> EspressoProxy {
+/// Binds the reverse proxy on `ESPRESSO_PROXY_PORT` and returns a handle whose `Drop` aborts the
+/// server task. `submit_delay`/`drift_polls` select the perturbation (see [`ProxyState`]).
+async fn start_espresso_proxy(submit_delay: Option<Duration>, drift_polls: usize) -> EspressoProxy {
     let state = Arc::new(ProxyState {
         upstream: ESPRESSO_UPSTREAM.to_string(),
-        // Pass the node's version redirect (307 /node/.. -> /v1/node/..) through untouched;
+        // Pass the node's version redirect (307 /node/.. -> /v1/node/..) through untouched.
         client: reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("failed to build proxy client"),
+        submit_delay,
+        held_first_submit: AtomicBool::new(false),
+        drift_polls,
         freeze_height: AtomicU64::new(0),
         freeze_polls_remaining: AtomicUsize::new(0),
         drifted: AtomicBool::new(false),
-        drift_polls,
     });
     let app: Router = Router::new()
         .fallback(proxy_handler)
@@ -176,10 +197,9 @@ async fn start_espresso_proxy(drift_polls: usize) -> EspressoProxy {
     EspressoProxy { handle, state }
 }
 
-#[tokio::test]
-async fn test_e2e_lagging_query_node() {
-    let proxy = start_espresso_proxy(12).await;
-
+/// Drives CAS through the proxy and waits for `expected_batches` to land on L1, asserting the
+/// proxy's perturbation actually engaged. Returns once both hold.
+async fn run_cas_through_proxy(proxy: &EspressoProxy, expected_batches: usize) {
     let config = NitroNodeConfig {
         no_l2_traffic: false,
     };
@@ -223,16 +243,31 @@ async fn test_e2e_lagging_query_node() {
         &sequencer_inbox.to_string(),
     );
 
-    wait_for_batches_on_l1(&l1, from_block, 5, sequencer_inbox).await;
+    wait_for_batches_on_l1(&l1, from_block, expected_batches, sequencer_inbox).await;
 
     let drifted = proxy.state.drifted.load(Ordering::SeqCst);
     println!("proxy stats: drifted={drifted}");
-    assert!(
-        drifted,
-        "block height was never delayed (drift window never engaged)"
-    );
+    assert!(drifted, "proxy never perturbed traffic; scenario did not engage");
 
     drop(cas);
     drop(nitro_node);
+}
+
+// An earlier rollup message is finalized in Espresso *after* later ones (the proxy holds its
+// submission). CAS must reorder and still post correct batches to L1 — the original drift test,
+// now run against the verifying light client (the out-of-order is real, not a rewritten response).
+#[tokio::test]
+async fn test_e2e_message_drift() {
+    let proxy = start_espresso_proxy(Some(Duration::from_secs(6)), 0).await;
+    run_cas_through_proxy(&proxy, 5).await;
+    drop(proxy);
+}
+
+// The query node lags (its reported block height is pinned for a while). CAS must catch up once
+// the true tip is released and still post batches to L1.
+#[tokio::test]
+async fn test_e2e_lagging_query_node() {
+    let proxy = start_espresso_proxy(None, 12).await;
+    run_cas_through_proxy(&proxy, 5).await;
     drop(proxy);
 }
