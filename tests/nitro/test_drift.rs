@@ -247,7 +247,10 @@ async fn run_cas_through_proxy(proxy: &EspressoProxy, expected_batches: usize) {
 
     let drifted = proxy.state.drifted.load(Ordering::SeqCst);
     println!("proxy stats: drifted={drifted}");
-    assert!(drifted, "proxy never perturbed traffic; scenario did not engage");
+    assert!(
+        drifted,
+        "proxy never perturbed traffic; scenario did not engage"
+    );
 
     drop(cas);
     drop(nitro_node);

@@ -451,7 +451,8 @@ mod tests {
         let mut cfg: ServiceConfig<NitroConfig> =
             serde_json::from_str(placeholder_config_json()).unwrap();
         // Apply only feed/ws/anytrust overrides; leave l1_http_url at PLACEHOLDER.
-        cfg.espresso_client.client.base_url = url::Url::parse("https://query.example.com/").unwrap();
+        cfg.espresso_client.client.base_url =
+            url::Url::parse("https://query.example.com/").unwrap();
         cfg.rollup.stack.feed.web_socket_url = "wss://feed.example.com/feed".to_string();
         cfg.rollup.stack.l1_ws_url = "wss://l1.example.com".to_string();
         for provider in cfg.da_server.da_providers.iter_mut() {
