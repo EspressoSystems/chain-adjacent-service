@@ -14,12 +14,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /build
 
 # Dep-cache layer: dummy crate compiles all dependencies so source-only
-# changes skip the expensive dep-resolution step.
+# changes skip the expensive dep-resolution step. Feature is hardcoded to
+# nitro-v3_9_9 because both nitro features are empty markers with identical
+# dependency trees, letting both matrix variants share this cached layer.
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && \
     echo "pub fn _dummy() {}" > src/lib.rs && \
     echo "fn main() {}" > src/main.rs && \
-    cargo build --release --no-default-features --features "$CARGO_FEATURES" && \
+    cargo build --release --no-default-features --features "nitro-v3_9_9" && \
     cargo clean --release -p chain-adjacent-service && \
     rm -rf src
 

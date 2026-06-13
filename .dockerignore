@@ -1,0 +1,14 @@
+.git
+target/
+tests/
+e2e/
+nitro-testnode/
+logs/
+.claude/
+*.log
+*.md
+devnet.json
+flake.nix
+flake.lock
+justfile
+flow.png
