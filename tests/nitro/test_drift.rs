@@ -9,13 +9,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+use tokio::time::{Duration, Instant, sleep};
 
 use chain_adjacent_service::espresso_e2e::espresso_dev_node::EspressoDevNode;
 
 use crate::nitro_node::nitro_node::{NitroNode, NitroNodeConfig};
 use crate::test_e2e::{
-    CAS_FEED_URL, CasRoute, connect_l1_ws_with_retries, read_sequencer_inbox_address,
-    read_tee_verifier_address, spawn_cas_with_retries, wait_for_batches_on_l1, write_cas_config,
+    CAS_FEED_URL, CasRoute, connect_l1_ws_with_retries, count_batches_on_l1,
+    read_sequencer_inbox_address, read_tee_verifier_address, spawn_cas_with_retries,
+    wait_for_batches_on_l1, write_cas_config,
 };
 
 const ESPRESSO_PROXY_PORT: u16 = 41100;
@@ -206,6 +208,28 @@ async fn start_espresso_proxy(drift_blocks: usize) -> EspressoProxy {
     EspressoProxy { handle, state }
 }
 
+async fn wait_for_proxy_reinsertion(proxy: &EspressoProxy) {
+    let deadline = Instant::now() + Duration::from_secs(5 * 60);
+
+    loop {
+        if proxy.state.injected.load(Ordering::SeqCst) {
+            return;
+        }
+
+        if Instant::now() >= deadline {
+            let passthrough = proxy
+                .state
+                .passthrough_blocks_with_txs
+                .load(Ordering::SeqCst);
+            panic!(
+                "timed out waiting for proxy reinsertion after {passthrough} passthrough blocks"
+            );
+        }
+
+        sleep(Duration::from_secs(1)).await;
+    }
+}
+
 #[tokio::test]
 async fn test_e2e_message_drift() {
     let proxy = start_espresso_proxy(12).await;
@@ -252,7 +276,16 @@ async fn test_e2e_message_drift() {
         &sequencer_inbox.to_string(),
     );
 
-    wait_for_batches_on_l1(&l1, from_block, 5, sequencer_inbox).await;
+    wait_for_proxy_reinsertion(&proxy).await;
+
+    let batches_before_recovery = count_batches_on_l1(&l1, from_block, sequencer_inbox).await;
+    wait_for_batches_on_l1(
+        &l1,
+        from_block,
+        batches_before_recovery + 1,
+        sequencer_inbox,
+    )
+    .await;
 
     let passthrough = proxy
         .state
