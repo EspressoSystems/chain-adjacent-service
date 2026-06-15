@@ -432,7 +432,6 @@ async fn test_reverse_order_fills_stubs_then_finalization_promotes() {
 
 /// In-memory `EspressoReader` for driving the streamer with an exact delivery order. seq `k` is at
 /// height `k`, except seq 4 is dropped and reappears at height 11, revealed over two polls.
-#[derive(Clone)]
 struct MockEspressoReader {
     calls: Arc<AtomicUsize>,
 }

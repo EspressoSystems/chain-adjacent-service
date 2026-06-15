@@ -54,7 +54,6 @@ pub trait EspressoReader: Send + Sync {
 ///
 /// To fail over across multiple query nodes, generalize over `S: Client` and build a
 /// `FallbackClient<QueryServiceClient>` in [`new`](Self::new); the read methods are unaffected.
-#[derive(Clone)]
 pub struct LightClientReader {
     inner: Arc<LightClient<SqliteStorage, QueryServiceClient>>,
 }
@@ -129,7 +128,6 @@ impl EspressoReader for LightClientReader {
 /// Non-verifying reader over the plain query client, for e2e tests that exercise streamer
 /// behavior (e.g. out-of-order handling) rather than verification. Never used by release builds.
 #[cfg(feature = "e2e")]
-#[derive(Clone)]
 pub struct UnverifiedReader {
     client: crate::espresso_client::client::EspressoClient,
 }
