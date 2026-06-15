@@ -620,7 +620,7 @@ pub(crate) async fn wait_for_batches_on_l1(
         .from_block(from_block);
 
     // Scale timeout with batch count — CI runners can be slow (~100s/batch observed).
-    let per_batch_secs: u64 = 120;
+    let per_batch_secs: u64 = 300;
     let deadline = Instant::now() + Duration::from_secs(min as u64 * per_batch_secs);
     loop {
         if Instant::now() >= deadline {

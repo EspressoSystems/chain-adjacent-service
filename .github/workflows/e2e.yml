@@ -13,9 +13,17 @@ env:
 
 jobs:
   e2e-v3_9_9:
-    name: E2E Tests (Nitro v3.9.9)
+    name: E2E v3.9.9 (${{ matrix.group }})
     runs-on: ubuntu-24.04-8core
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: general
+            skip: "--skip test_e2e_anytrust --skip test_e2e_external_da"
+          - group: anytrust
+            skip: "--skip test_e2e_calldata --skip test_e2e_restart --skip test_e2e_l1_reorg --skip test_e2e_espresso --skip test_e2e_malicious --skip test_e2e_legacy --skip test_e2e_message_drift"
 
     steps:
       - uses: actions/checkout@v4
@@ -44,15 +52,29 @@ jobs:
           docker pull ghcr.io/foundry-rs/foundry:v1.5.1 &
           wait
 
-      - uses: extractions/setup-just@v3
-
-      - name: Run E2E tests
-        run: just test-e2e-v3_9_9
+      - name: Run E2E tests (${{ matrix.group }})
+        env:
+          COMPOSE_FILE: docker-compose.yml:docker-compose.v3_9_9.yml
+          NITRO_IMAGE: ghcr.io/espressosystems/nitro-espresso-integration/nitro-node:support-espresso-v3.9.9
+          CONFIG_DIR: generated-config-v3_9_9
+          NITRO_E2E_VERSION: v3_9_9
+        run: |
+          RUST_BACKTRACE=1 cargo test --test nitro \
+            --no-default-features --features e2e,nitro-v3_9_9 \
+            -- --test-threads=1 ${{ matrix.skip }}
 
   e2e-v3_10:
-    name: E2E Tests (Nitro v3.10)
+    name: E2E v3.10 (${{ matrix.group }})
     runs-on: ubuntu-24.04-8core
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: general
+            skip: "--skip test_e2e_anytrust --skip test_e2e_external_da"
+          - group: anytrust
+            skip: "--skip test_e2e_calldata --skip test_e2e_restart --skip test_e2e_l1_reorg --skip test_e2e_espresso --skip test_e2e_malicious --skip test_e2e_legacy --skip test_e2e_message_drift"
 
     steps:
       - uses: actions/checkout@v4
@@ -80,7 +102,8 @@ jobs:
           docker pull ghcr.io/foundry-rs/foundry:v1.5.1 &
           wait
 
-      - uses: extractions/setup-just@v3
-
-      - name: Run E2E tests
-        run: just test-e2e
+      - name: Run E2E tests (${{ matrix.group }})
+        run: |
+          RUST_BACKTRACE=1 cargo test --test nitro \
+            --no-default-features --features e2e,nitro-v3_10 \
+            -- --test-threads=1 ${{ matrix.skip }}
