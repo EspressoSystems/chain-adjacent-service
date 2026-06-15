@@ -10,7 +10,7 @@ use std::sync::Arc;
 use crate::VerificationReceiver;
 use crate::config::{AdvancedConfig, RollupConfig, StreamerConfig};
 use crate::espresso_client::client::NotFound;
-use crate::espresso_client::light_client::{EspressoReader, LightClientError, LightClientReader};
+use crate::espresso_client::light_client::{EspressoReader, LightClientError};
 use crate::espresso_client::types::NamespaceTransactionsInRange;
 use crate::rollups::rollup::{BatchCursorFetcher, Rollup, RollupQueueEntry};
 use crate::utils::exponential_backoff;
@@ -20,8 +20,8 @@ const HOTSHOT_RANGE_LIMIT: u64 = 100;
 /// Streamer is responsible for streaming transactions from Espresso
 /// and managing the filtered queue of RollupQueueEntry which is a
 /// generic type over the rollup's messages which are sent in a batch
-pub struct Streamer<R: Rollup, C: EspressoReader = LightClientReader> {
-    client: C,
+pub struct Streamer<R: Rollup> {
+    client: Arc<dyn EspressoReader>,
     /// Full entries, sorted by sequence_number ascending. Capped at
     /// `config.max_full_queue_entries`. Overflow spills into `stubs`.
     queue: Vec<R::Entry>,
@@ -64,9 +64,9 @@ impl BroadcastRetry {
     }
 }
 
-impl<R: Rollup, C: EspressoReader> Streamer<R, C> {
+impl<R: Rollup> Streamer<R> {
     pub fn new(
-        client: C,
+        client: Arc<dyn EspressoReader>,
         config: StreamerConfig,
         rollup_config: RollupConfig<R::StackConfig>,
         advanced_config: AdvancedConfig,
@@ -113,7 +113,7 @@ impl<R: Rollup, C: EspressoReader> Streamer<R, C> {
         let mut poller_handle = tokio::spawn(async move {
             poll_hotshot_blocks(
                 &config,
-                &client,
+                client,
                 config.starting_hotshot_height,
                 namespace_id,
                 sender,
@@ -430,9 +430,9 @@ fn find_contiguous_entries_after<T: RollupQueueEntry>(queue: &[T], last_pos: u64
 /// Polls for hotshot blocks from the Espresso client and adds them to the queue.
 ///
 /// It uses exponential backoff to handle errors and retries.
-pub async fn poll_hotshot_blocks<C: EspressoReader>(
+pub async fn poll_hotshot_blocks(
     config: &StreamerConfig,
-    client: &C,
+    client: Arc<dyn EspressoReader>,
     next_hotshot_block_num: u64,
     namespace_id: NamespaceId,
     sender: mpsc::Sender<(Vec<NamespaceTransactionsInRange>, u64)>,

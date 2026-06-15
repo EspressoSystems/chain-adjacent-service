@@ -1,7 +1,6 @@
 //! Trustless consumption of Espresso data via the `light-client` crate. The write side
 //! (submission, self-confirmation) stays on the plain query-service client.
 
-use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -10,6 +9,7 @@ use light_client::LightClient;
 use light_client::client::QueryServiceClient;
 use light_client::state::Genesis;
 use light_client::storage::{LightClientSqliteOptions, SqliteStorage};
+use async_trait::async_trait;
 use reqwest::Url;
 use thiserror::Error;
 
@@ -35,16 +35,18 @@ pub enum LightClientError {
 }
 
 /// The streamer's read interface over Espresso. The production impl ([`LightClientReader`])
-/// verifies every block against HotShot consensus.
-pub trait EspressoReader: Clone + Send + Sync + 'static {
-    fn block_height(&self) -> impl Future<Output = Result<u64, LightClientError>> + Send;
+/// verifies every block against HotShot consensus. Tests can substitute a non-verifying impl
+/// (e.g. [`UnverifiedReader`]) to drive the streamer without proof checks.
+#[async_trait]
+pub trait EspressoReader: Send + Sync {
+    async fn block_height(&self) -> Result<u64, LightClientError>;
 
-    fn namespace_transactions_in_range(
+    async fn namespace_transactions_in_range(
         &self,
         namespace: NamespaceId,
         start: u64,
         end: u64,
-    ) -> impl Future<Output = Result<Vec<NamespaceTransactionsInRange>, LightClientError>> + Send;
+    ) -> Result<Vec<NamespaceTransactionsInRange>, LightClientError>;
 }
 
 /// A read-only, trustless view of Espresso data: every block it returns is verified against
@@ -83,6 +85,7 @@ impl LightClientReader {
     }
 }
 
+#[async_trait]
 impl EspressoReader for LightClientReader {
     /// Latest verified HotShot block height. May underestimate (the light client never
     /// reports a height it hasn't verified); the streamer tolerates this by polling again.
@@ -120,6 +123,46 @@ impl EspressoReader for LightClientReader {
                 proof: None,
             })
             .collect())
+    }
+}
+
+/// Non-verifying reader over the plain query client, for e2e tests that exercise streamer
+/// behavior (e.g. out-of-order handling) rather than verification. Never used by release builds.
+#[cfg(feature = "e2e")]
+#[derive(Clone)]
+pub struct UnverifiedReader {
+    client: crate::espresso_client::client::EspressoClient,
+}
+
+#[cfg(feature = "e2e")]
+impl UnverifiedReader {
+    pub fn new(config: crate::espresso_client::client::Config) -> Self {
+        Self {
+            client: crate::espresso_client::client::EspressoClient::from_config(config),
+        }
+    }
+}
+
+#[cfg(feature = "e2e")]
+#[async_trait]
+impl EspressoReader for UnverifiedReader {
+    async fn block_height(&self) -> Result<u64, LightClientError> {
+        self.client
+            .fetch_latest_hotshot_block_height()
+            .await
+            .map_err(LightClientError::Verification)
+    }
+
+    async fn namespace_transactions_in_range(
+        &self,
+        namespace: NamespaceId,
+        start: u64,
+        end: u64,
+    ) -> Result<Vec<NamespaceTransactionsInRange>, LightClientError> {
+        self.client
+            .fetch_namespace_transactions_in_range(namespace, start, end)
+            .await
+            .map_err(LightClientError::Verification)
     }
 }
 

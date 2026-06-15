@@ -164,6 +164,31 @@ pub(crate) async fn spawn_cas_with_retries(config_path: &Path, probe_url: &str) 
     spawn_cas_with_retries_inner(|| spawn_cas(config_path), probe_url).await
 }
 
+/// Like [`spawn_cas_with_retries`], but sets `CAS_E2E_UNVERIFIED_READER` so the binary uses the
+/// non-verifying reader (drift e2e only — lets the proxy fake out-of-order without verification).
+pub(crate) async fn spawn_cas_with_retries_unverified(
+    config_path: &Path,
+    probe_url: &str,
+) -> CasProcess {
+    spawn_cas_with_retries_inner(
+        || {
+            let child = Command::new(CAS_BIN)
+                .arg("--config")
+                .arg(config_path)
+                .env("OPERATOR_PRIVATE_KEY", TEST_OPERATOR_PRIVATE_KEY)
+                .env("RUST_LOG", "warn")
+                .env("CAS_E2E_UNVERIFIED_READER", "1")
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .expect("failed to spawn CAS binary");
+            CasProcess(child)
+        },
+        probe_url,
+    )
+    .await
+}
+
 pub(crate) async fn spawn_cas_with_retries_to_file(
     config_path: &Path,
     probe_url: &str,
@@ -541,7 +566,7 @@ pub(crate) fn read_sequencer_inbox_address() -> Address {
         .unwrap_or_else(|err| panic!("invalid sequencer-inbox address {value}: {err}"))
 }
 
-async fn count_batches_on_l1(
+pub(crate) async fn count_batches_on_l1(
     provider: &RootProvider,
     from_block: u64,
     sequencer_inbox: Address,

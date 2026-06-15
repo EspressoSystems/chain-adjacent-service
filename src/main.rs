@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use chain_adjacent_service::config::{RollupType, TeeType};
 use chain_adjacent_service::da_api;
 use chain_adjacent_service::espresso_client::client::EspressoClient;
-use chain_adjacent_service::espresso_client::light_client::LightClientReader;
+use chain_adjacent_service::espresso_client::light_client::{EspressoReader, LightClientReader};
 use chain_adjacent_service::key_manager::attestation_client::HttpAttestationVerifierClient;
 use chain_adjacent_service::key_manager::key_manager::KeyManager;
 use chain_adjacent_service::key_manager::tee_verifier::TEEVerifier;
@@ -182,17 +182,42 @@ async fn run<R: Rollup>(
     );
 
     // Inbound consumption is verified by the light client (rooted in genesis), so the query
-    // node is untrusted. It reuses the same Espresso node URL as submission.
-    let light_client_reader = LightClientReader::new(
-        config.espresso_client.light_client.genesis,
-        config.espresso_client.client.base_url,
-        config.espresso_client.light_client.db_path,
-    )
-    .await?;
+    // node is untrusted. It reuses the same Espresso node URL as submission. Under the `e2e`
+    // feature only, CAS_E2E_UNVERIFIED_READER selects the non-verifying reader so the drift e2e
+    // (which tampers the query-path response) can reach the streamer without failing verification.
+    #[cfg(feature = "e2e")]
+    let reader: Arc<dyn EspressoReader> = if std::env::var("CAS_E2E_UNVERIFIED_READER").is_ok() {
+        tracing::warn!(
+            "CAS_E2E_UNVERIFIED_READER set — using non-verifying reader (e2e builds only)"
+        );
+        Arc::new(
+            chain_adjacent_service::espresso_client::light_client::UnverifiedReader::new(
+                config.espresso_client.client.clone(),
+            ),
+        )
+    } else {
+        Arc::new(
+            LightClientReader::new(
+                config.espresso_client.light_client.genesis.clone(),
+                config.espresso_client.client.base_url.clone(),
+                config.espresso_client.light_client.db_path.clone(),
+            )
+            .await?,
+        )
+    };
+    #[cfg(not(feature = "e2e"))]
+    let reader: Arc<dyn EspressoReader> = Arc::new(
+        LightClientReader::new(
+            config.espresso_client.light_client.genesis,
+            config.espresso_client.client.base_url,
+            config.espresso_client.light_client.db_path,
+        )
+        .await?,
+    );
     let (verification_sender, verification_receiver) =
         mpsc::channel(config.advanced.verification_channel_capacity);
     let mut streamer: Streamer<R> = Streamer::new(
-        light_client_reader,
+        reader,
         config.streamer,
         config.rollup,
         config.advanced,

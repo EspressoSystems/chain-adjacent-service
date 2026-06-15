@@ -16,6 +16,7 @@ use crate::{
         BroadcastRetry, Streamer, find_contiguous_entries_after, poll_hotshot_blocks,
     },
 };
+use async_trait::async_trait;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -29,8 +30,9 @@ async fn make_streamer_with_cap(
     max_full_queue_entries: usize,
 ) -> Streamer<MockRollup> {
     // Queue-logic tests never poll, so an in-memory reader with an empty genesis is fine.
-    let client =
-        LightClientReader::new_for_test(url::Url::parse("http://127.0.0.1").unwrap()).await;
+    let client = Arc::new(
+        LightClientReader::new_for_test(url::Url::parse("http://127.0.0.1").unwrap()).await,
+    );
     Streamer::new(
         client,
         StreamerConfig {
@@ -63,7 +65,7 @@ async fn dev_node_reader(base_url: url::Url) -> LightClientReader {
         .expect("build dev node reader")
 }
 
-fn queue_positions<C: EspressoReader>(streamer: &Streamer<MockRollup, C>) -> Vec<u64> {
+fn queue_positions(streamer: &Streamer<MockRollup>) -> Vec<u64> {
     streamer.queue.iter().map(|e| e.sequence_number()).collect()
 }
 
@@ -130,11 +132,11 @@ async fn test_filter_messages() {
     assert_eq!(queue_positions(&streamer), vec![5]);
 }
 
-fn stub_positions<C: EspressoReader>(streamer: &Streamer<MockRollup, C>) -> Vec<u64> {
+fn stub_positions(streamer: &Streamer<MockRollup>) -> Vec<u64> {
     streamer.stubs.keys().copied().collect()
 }
 
-fn stub_entries<C: EspressoReader>(streamer: &Streamer<MockRollup, C>) -> Vec<(u64, u64)> {
+fn stub_entries(streamer: &Streamer<MockRollup>) -> Vec<(u64, u64)> {
     streamer.stubs.iter().map(|(s, h)| (*s, *h)).collect()
 }
 
@@ -251,7 +253,7 @@ async fn test_handle_finalization_noop_when_not_advancing() {
 async fn test_poll_hotshot_blocks_and_process() {
     let node = EspressoDevNode::start().await;
 
-    let reader = dev_node_reader(node.client.config.base_url.clone()).await;
+    let reader = Arc::new(dev_node_reader(node.client.config.base_url.clone()).await);
     let mut streamer = Streamer::new(
         reader,
         StreamerConfig {
@@ -293,7 +295,7 @@ async fn test_poll_hotshot_blocks_and_process() {
             Duration::from_secs(30),
             poll_hotshot_blocks(
                 &streamer.config,
-                &streamer.client,
+                streamer.client.clone(),
                 start_poll_block,
                 NamespaceId::from(streamer.rollup_config.namespace_id),
                 tx,
@@ -360,7 +362,7 @@ async fn test_reverse_order_fills_stubs_then_finalization_promotes() {
 
     // Cap the queue at 3 and start at seq=4 so seqs 1..=3 are ignored.
     // last_broadcast_position stays at 0 since no contiguous run from 1 exists.
-    let reader = dev_node_reader(node.client.config.base_url.clone()).await;
+    let reader = Arc::new(dev_node_reader(node.client.config.base_url.clone()).await);
     let mut streamer = Streamer::<MockRollup>::new(
         reader,
         StreamerConfig {
@@ -387,7 +389,7 @@ async fn test_reverse_order_fills_stubs_then_finalization_promotes() {
     let poller_client = streamer.client.clone();
     let poller_ns = NamespaceId::from(streamer.rollup_config.namespace_id);
     let poller = tokio::spawn(async move {
-        let _ = poll_hotshot_blocks(&poller_config, &poller_client, 0, poller_ns, tx).await;
+        let _ = poll_hotshot_blocks(&poller_config, poller_client, 0, poller_ns, tx).await;
     });
 
     let (feed_sender, _feed_rx) = mpsc::channel(100);
@@ -453,6 +455,7 @@ impl MockEspressoReader {
     }
 }
 
+#[async_trait]
 impl EspressoReader for MockEspressoReader {
     async fn block_height(&self) -> Result<u64, LightClientError> {
         // First poll exposes the chain up to the gap (height 6); later polls expose the
@@ -483,8 +486,8 @@ impl EspressoReader for MockEspressoReader {
 // gap until it reappears, then broadcasts in sequence order.
 #[tokio::test]
 async fn test_dropped_message_recovers_when_resubmitted_out_of_order() {
-    let mut streamer = Streamer::<MockRollup, MockEspressoReader>::new(
-        MockEspressoReader::new(),
+    let mut streamer = Streamer::<MockRollup>::new(
+        Arc::new(MockEspressoReader::new()),
         StreamerConfig {
             initial_backoff_ms: 20,
             max_backoff_ms: 50,
@@ -509,7 +512,7 @@ async fn test_dropped_message_recovers_when_resubmitted_out_of_order() {
     let poller_client = streamer.client.clone();
     let poller_ns = NamespaceId::from(streamer.rollup_config.namespace_id);
     let poller = tokio::spawn(async move {
-        let _ = poll_hotshot_blocks(&poller_config, &poller_client, 1, poller_ns, tx).await;
+        let _ = poll_hotshot_blocks(&poller_config, poller_client, 1, poller_ns, tx).await;
     });
 
     let (feed_sender, mut feed_rx) = mpsc::channel(100);
