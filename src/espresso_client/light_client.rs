@@ -4,12 +4,12 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use espresso_types::{NamespaceId, Transaction};
 use light_client::LightClient;
 use light_client::client::QueryServiceClient;
 use light_client::state::Genesis;
 use light_client::storage::{LightClientSqliteOptions, SqliteStorage};
-use async_trait::async_trait;
 use reqwest::Url;
 use thiserror::Error;
 
