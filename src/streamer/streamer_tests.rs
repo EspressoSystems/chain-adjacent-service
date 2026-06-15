@@ -4,7 +4,7 @@ use tokio::sync::mpsc;
 use crate::{
     config::{AdvancedConfig, RollupConfig, RollupType::Nitro, StreamerConfig},
     espresso_client::{
-        light_client::{EspressoReader, LightClientError, LightClientReader},
+        light_client::{EspressoReader, LightClientError, LightClientEspressoReader},
         types::NamespaceTransactionsInRange,
     },
     espresso_e2e::{
@@ -31,7 +31,7 @@ async fn make_streamer_with_cap(
 ) -> Streamer<MockRollup> {
     // Queue-logic tests never poll, so an in-memory reader with an empty genesis is fine.
     let client = Arc::new(
-        LightClientReader::new_for_test(url::Url::parse("http://127.0.0.1").unwrap()).await,
+        LightClientEspressoReader::new_for_test(url::Url::parse("http://127.0.0.1").unwrap()).await,
     );
     Streamer::new(
         client,
@@ -58,9 +58,9 @@ async fn make_streamer_with_cap(
 /// Reader backed by the dockerized dev node, deriving its genesis from the node's
 /// `/config/hotshot` so the light client actually verifies. Requires a dev-node image that
 /// serves `/light-client` (EspressoSystems/espresso-network#4453).
-async fn dev_node_reader(base_url: url::Url) -> LightClientReader {
+async fn dev_node_reader(base_url: url::Url) -> LightClientEspressoReader {
     let genesis = crate::espresso_client::light_client::genesis_from_node(&base_url).await;
-    LightClientReader::new(genesis, base_url, None)
+    LightClientEspressoReader::new(genesis, base_url, None)
         .await
         .expect("build dev node reader")
 }

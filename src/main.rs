@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use chain_adjacent_service::config::{RollupType, TeeType};
 use chain_adjacent_service::da_api;
 use chain_adjacent_service::espresso_client::client::EspressoClient;
-use chain_adjacent_service::espresso_client::light_client::{EspressoReader, LightClientReader};
+use chain_adjacent_service::espresso_client::light_client::{EspressoReader, LightClientEspressoReader};
 use chain_adjacent_service::key_manager::attestation_client::HttpAttestationVerifierClient;
 use chain_adjacent_service::key_manager::key_manager::KeyManager;
 use chain_adjacent_service::key_manager::tee_verifier::TEEVerifier;
@@ -191,13 +191,13 @@ async fn run<R: Rollup>(
             "CAS_E2E_UNVERIFIED_READER set — using non-verifying reader (e2e builds only)"
         );
         Arc::new(
-            chain_adjacent_service::espresso_client::light_client::UnverifiedReader::new(
+            chain_adjacent_service::espresso_client::light_client::UnverifiedEspressoReader::new(
                 config.espresso_client.client.clone(),
             ),
         )
     } else {
         Arc::new(
-            LightClientReader::new(
+            LightClientEspressoReader::new(
                 config.espresso_client.light_client.genesis.clone(),
                 config.espresso_client.client.base_url.clone(),
                 config.espresso_client.light_client.db_path.clone(),
@@ -207,7 +207,7 @@ async fn run<R: Rollup>(
     };
     #[cfg(not(feature = "e2e"))]
     let reader: Arc<dyn EspressoReader> = Arc::new(
-        LightClientReader::new(
+        LightClientEspressoReader::new(
             config.espresso_client.light_client.genesis,
             config.espresso_client.client.base_url,
             config.espresso_client.light_client.db_path,

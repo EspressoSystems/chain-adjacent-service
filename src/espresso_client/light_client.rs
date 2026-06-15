@@ -34,9 +34,9 @@ pub enum LightClientError {
     Verification(anyhow::Error),
 }
 
-/// The streamer's read interface over Espresso. The production impl ([`LightClientReader`])
+/// The streamer's read interface over Espresso. The production impl ([`LightClientEspressoReader`])
 /// verifies every block against HotShot consensus. Tests can substitute a non-verifying impl
-/// (e.g. [`UnverifiedReader`]) to drive the streamer without proof checks.
+/// (e.g. [`UnverifiedEspressoReader`]) to drive the streamer without proof checks.
 #[async_trait]
 pub trait EspressoReader: Send + Sync {
     async fn block_height(&self) -> Result<u64, LightClientError>;
@@ -54,11 +54,11 @@ pub trait EspressoReader: Send + Sync {
 ///
 /// To fail over across multiple query nodes, generalize over `S: Client` and build a
 /// `FallbackClient<QueryServiceClient>` in [`new`](Self::new); the read methods are unaffected.
-pub struct LightClientReader {
+pub struct LightClientEspressoReader {
     inner: Arc<LightClient<SqliteStorage, QueryServiceClient>>,
 }
 
-impl LightClientReader {
+impl LightClientEspressoReader {
     /// `genesis` is the root of trust and must match the network `query_url` serves.
     /// `db_path` persists the verified-state cache across restarts; `None` keeps it in memory
     /// (rebuilt via catch-up each start).
@@ -85,7 +85,7 @@ impl LightClientReader {
 }
 
 #[async_trait]
-impl EspressoReader for LightClientReader {
+impl EspressoReader for LightClientEspressoReader {
     /// Latest verified HotShot block height. May underestimate (the light client never
     /// reports a height it hasn't verified); the streamer tolerates this by polling again.
     async fn block_height(&self) -> Result<u64, LightClientError> {
@@ -128,12 +128,12 @@ impl EspressoReader for LightClientReader {
 /// Non-verifying reader over the plain query client, for e2e tests that exercise streamer
 /// behavior (e.g. out-of-order handling) rather than verification. Never used by release builds.
 #[cfg(feature = "e2e")]
-pub struct UnverifiedReader {
+pub struct UnverifiedEspressoReader {
     client: crate::espresso_client::client::EspressoClient,
 }
 
 #[cfg(feature = "e2e")]
-impl UnverifiedReader {
+impl UnverifiedEspressoReader {
     pub fn new(config: crate::espresso_client::client::Config) -> Self {
         Self {
             client: crate::espresso_client::client::EspressoClient::from_config(config),
@@ -143,7 +143,7 @@ impl UnverifiedReader {
 
 #[cfg(feature = "e2e")]
 #[async_trait]
-impl EspressoReader for UnverifiedReader {
+impl EspressoReader for UnverifiedEspressoReader {
     async fn block_height(&self) -> Result<u64, LightClientError> {
         self.client
             .fetch_latest_hotshot_block_height()
@@ -165,7 +165,7 @@ impl EspressoReader for UnverifiedReader {
 }
 
 #[cfg(test)]
-impl LightClientReader {
+impl LightClientEspressoReader {
     /// In-memory reader with an empty genesis, for tests that exercise streamer queue logic
     /// without fetching data. Verification against it is meaningless — don't read real blocks.
     pub async fn new_for_test(query_url: Url) -> Self {
@@ -230,7 +230,7 @@ mod light_client_tests {
 
     /// Verified tx payloads for `namespace` over `[0, height)`.
     async fn payloads(
-        reader: &LightClientReader,
+        reader: &LightClientEspressoReader,
         namespace: NamespaceId,
         height: u64,
     ) -> Vec<Vec<u8>> {
@@ -253,7 +253,7 @@ mod light_client_tests {
     async fn verifies_namespace_content_isolation_and_absence() {
         let node = EspressoDevNode::start().await;
         let url = node.client.config.base_url.clone();
-        let reader = LightClientReader::new(genesis_from_node(&url).await, url, None)
+        let reader = LightClientEspressoReader::new(genesis_from_node(&url).await, url, None)
             .await
             .expect("build reader");
 
