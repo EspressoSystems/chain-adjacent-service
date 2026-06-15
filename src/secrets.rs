@@ -2,6 +2,7 @@ use std::env;
 
 use anyhow::{Context, Result, bail};
 use aws_config::{BehaviorVersion, Region};
+use light_client::state::Genesis;
 use serde::Deserialize;
 
 use crate::config::{ServiceConfig, TeeType};
@@ -28,6 +29,8 @@ pub struct SecretOverrides {
     pub is_fresh_deployment: bool,
     #[serde(default)]
     pub operator_private_key: Option<String>,
+    #[serde(default)]
+    pub light_client_genesis: Option<Genesis>,   
 }
 
 /// Fetches the secret overrides from AWS Secrets Manager.
@@ -156,6 +159,14 @@ pub fn apply_overrides_nitro(
         value = overrides.is_fresh_deployment,
         "applied secret override"
     );
+
+    if let Some(genesis) = overrides.light_client_genesis.clone() {
+        cfg.espresso_client.light_client.genesis = genesis;
+        tracing::info!(
+            field = "espresso_client.light_client.genesis",
+            "applied secret override"
+        );
+    }
 
     Ok(())
 }
@@ -385,6 +396,7 @@ mod tests {
             starting_hotshot_height: 0,
             is_fresh_deployment: true,
             operator_private_key: Some("0xfromsecret".to_string()),
+            light_client_genesis: None,
         };
         let key = resolve_operator_private_key(Some(&overrides)).unwrap();
         assert_eq!(key, "0xfromsecret");
