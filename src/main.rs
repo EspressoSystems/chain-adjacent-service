@@ -9,7 +9,7 @@ use chain_adjacent_service::config::{RollupType, TeeType};
 use chain_adjacent_service::da_api;
 use chain_adjacent_service::espresso_client::client::EspressoClient;
 use chain_adjacent_service::espresso_client::light_client::{
-    EspressoReader, LightClientEspressoReader
+    EspressoReader, LightClientEspressoReader,
 };
 use chain_adjacent_service::key_manager::attestation_client::HttpAttestationVerifierClient;
 use chain_adjacent_service::key_manager::key_manager::KeyManager;
