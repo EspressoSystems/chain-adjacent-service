@@ -165,10 +165,13 @@ pub fn apply_overrides_nitro(
 /// Fetches the light client genesis from a dedicated secret (`AWS_GENESIS_SECRET_ID`).
 /// Returns `Ok(None)` when the env var is unset — local/e2e runs skip this and rely on
 /// the genesis baked into the config file. Required in production (Nitro TEE).
-pub async fn fetch_genesis(region: &str) -> Result<Option<Genesis>> {
+pub async fn fetch_genesis(region: &str, tee_type: TeeType) -> Result<Option<Genesis>> {
     let secret_id = match env::var(ENV_AWS_GENESIS_SECRET_ID).ok() {
         Some(id) => id,
         None => {
+            if tee_type == TeeType::Nitro {
+                bail!("{ENV_AWS_GENESIS_SECRET_ID} not set but Tee type is Nitro");
+            }
             tracing::info!(
                 "{ENV_AWS_GENESIS_SECRET_ID} not set; skipping genesis secret fetch"
             );
@@ -249,6 +252,9 @@ pub fn assert_no_placeholders_nitro(cfg: &ServiceConfig<NitroConfig>) -> Result<
                 provider.name
             );
         }
+    }
+    if cfg.espresso_client.light_client.genesis.stake_table.is_empty() {
+        bail!("espresso_client.light_client.genesis.stake_table is empty — genesis was not overridden from secret");
     }
     Ok(())
 }
