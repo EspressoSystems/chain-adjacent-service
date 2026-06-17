@@ -16,6 +16,7 @@ pub const PLACEHOLDER_URL: &str = "http://placeholder.invalid/";
 
 pub const ENV_AWS_REGION: &str = "AWS_REGION";
 pub const ENV_AWS_SECRET_ID: &str = "AWS_SECRET_ID";
+pub const ENV_AWS_GENESIS_SECRET_ID: &str = "AWS_GENESIS_SECRET_ID";
 pub const ENV_OPERATOR_PRIVATE_KEY: &str = "OPERATOR_PRIVATE_KEY";
 
 #[derive(Debug, Clone, Deserialize)]
@@ -29,8 +30,6 @@ pub struct SecretOverrides {
     pub is_fresh_deployment: bool,
     #[serde(default)]
     pub operator_private_key: Option<String>,
-    #[serde(default)]
-    pub light_client_genesis: Option<Genesis>,   
 }
 
 /// Fetches the secret overrides from AWS Secrets Manager.
@@ -160,15 +159,53 @@ pub fn apply_overrides_nitro(
         "applied secret override"
     );
 
-    if let Some(genesis) = overrides.light_client_genesis.clone() {
-        cfg.espresso_client.light_client.genesis = genesis;
-        tracing::info!(
-            field = "espresso_client.light_client.genesis",
-            "applied secret override"
-        );
-    }
-
     Ok(())
+}
+
+/// Fetches the light client genesis from a dedicated secret (`AWS_GENESIS_SECRET_ID`).
+/// Returns `Ok(None)` when the env var is unset — local/e2e runs skip this and rely on
+/// the genesis baked into the config file. Required in production (Nitro TEE).
+pub async fn fetch_genesis(region: &str) -> Result<Option<Genesis>> {
+    let secret_id = match env::var(ENV_AWS_GENESIS_SECRET_ID).ok() {
+        Some(id) => id,
+        None => {
+            tracing::info!(
+                "{ENV_AWS_GENESIS_SECRET_ID} not set; skipping genesis secret fetch"
+            );
+            return Ok(None);
+        }
+    };
+
+    let aws_cfg = aws_config::defaults(BehaviorVersion::latest())
+        .region(Region::new(region.to_string()))
+        .load()
+        .await;
+    let client = aws_sdk_secretsmanager::Client::new(&aws_cfg);
+
+    let resp = client
+        .get_secret_value()
+        .secret_id(&secret_id)
+        .send()
+        .await
+        .with_context(|| format!("fetching genesis secret {secret_id}"))?;
+
+    let secret_str = resp
+        .secret_string()
+        .context("genesis secret has no SecretString payload")?;
+
+    #[derive(Deserialize)]
+    struct GenesisSecret {
+        light_client_genesis: Genesis,
+    }
+    let parsed: GenesisSecret = serde_json::from_str(secret_str)
+        .context("parsing genesis secret JSON")?;
+
+    tracing::info!(
+        field = "espresso_client.light_client.genesis",
+        secret_id,
+        "fetched genesis from secret"
+    );
+    Ok(Some(parsed.light_client_genesis))
 }
 
 /// Resolves the operator private key from AWS secret overrides, falling back
@@ -396,7 +433,6 @@ mod tests {
             starting_hotshot_height: 0,
             is_fresh_deployment: true,
             operator_private_key: Some("0xfromsecret".to_string()),
-            light_client_genesis: None,
         };
         let key = resolve_operator_private_key(Some(&overrides)).unwrap();
         assert_eq!(key, "0xfromsecret");
