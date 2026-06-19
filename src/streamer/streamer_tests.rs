@@ -60,7 +60,7 @@ async fn make_streamer_with_cap(
 /// serves `/light-client` (EspressoSystems/espresso-network#4453).
 async fn dev_node_reader(base_url: url::Url) -> LightClientEspressoReader {
     let genesis = crate::espresso_client::light_client::genesis_from_node(&base_url).await;
-    LightClientEspressoReader::new(genesis, base_url, None)
+    LightClientEspressoReader::new(genesis, base_url, None, false)
         .await
         .expect("build dev node reader")
 }

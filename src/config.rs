@@ -53,6 +53,11 @@ pub struct LightClientConfig {
     /// via catch-up each start; persist across enclave restarts to avoid that cost.
     #[serde(default)]
     pub db_path: Option<PathBuf>,
+
+    /// Enable Decaf-specific trust bypass for pre-DRB epoch root headers that lack
+    /// `next_stake_table_hash`. Must be `true` when connecting to the Decaf testnet.
+    #[serde(default)]
+    pub decaf: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

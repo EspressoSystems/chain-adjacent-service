@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use espresso_types::{NamespaceId, Transaction};
 use light_client::LightClient;
 use light_client::client::QueryServiceClient;
-use light_client::state::Genesis;
+use light_client::state::{Genesis, LightClientOptions};
 use light_client::storage::{LightClientSqliteOptions, SqliteStorage};
 use reqwest::Url;
 use thiserror::Error;
@@ -66,6 +66,7 @@ impl LightClientEspressoReader {
         genesis: Genesis,
         query_url: Url,
         db_path: Option<PathBuf>,
+        decaf: bool,
     ) -> Result<Self, LightClientError> {
         let storage = LightClientSqliteOptions {
             lc_path: db_path,
@@ -76,7 +77,12 @@ impl LightClientEspressoReader {
         .map_err(LightClientError::Storage)?;
 
         let server = QueryServiceClient::new(query_url);
-        let inner = LightClient::from_genesis(storage, server, genesis);
+        let inner = LightClient::from_genesis_with_options(
+            storage,
+            server,
+            genesis,
+            LightClientOptions { decaf, ..Default::default() },
+        );
 
         Ok(Self {
             inner: Arc::new(inner),
@@ -173,7 +179,7 @@ impl LightClientEspressoReader {
             r#"{"epoch_height":100,"first_epoch_with_dynamic_stake_table":1,"stake_table":[]}"#,
         )
         .expect("valid test genesis");
-        Self::new(genesis, query_url, None)
+        Self::new(genesis, query_url, None, false)
             .await
             .expect("failed to build in-memory test light client")
     }
@@ -253,7 +259,7 @@ mod light_client_tests {
     async fn verifies_namespace_content_isolation_and_absence() {
         let node = EspressoDevNode::start().await;
         let url = node.client.config.base_url.clone();
-        let reader = LightClientEspressoReader::new(genesis_from_node(&url).await, url, None)
+        let reader = LightClientEspressoReader::new(genesis_from_node(&url).await, url, None, false)
             .await
             .expect("build reader");
 
@@ -289,5 +295,102 @@ mod light_client_tests {
         assert_eq!(payloads(&reader, ns_b, height).await, vec![tx_b]);
         let unused = payloads(&reader, ns_unused, height).await;
         assert!(unused.is_empty(), "unused namespace must verify as empty");
+    }
+
+    // `decaf: true` must deserialize correctly from config JSON so devnet deployments
+    // can set it without code changes.
+    #[test]
+    fn decaf_flag_round_trips_through_config() {
+        use crate::config::ServiceConfig;
+        use crate::rollups::nitro::config::NitroConfig;
+
+        let json = r#"{
+            "espresso_client": {
+                "base_url": "http://placeholder.invalid/",
+                "light_client": {
+                    "decaf": true,
+                    "genesis": { "epoch_height": 3000, "first_epoch_with_dynamic_stake_table": 1056, "stake_table": [] }
+                }
+            },
+            "rollup": {
+                "type": "nitro", "namespace_id": 1,
+                "stack": { "chain_id": 412346, "feed": { "web_socket_url": "PLACEHOLDER", "current_message_count": 0 }, "l1_ws_url": "PLACEHOLDER", "l1_http_url": "PLACEHOLDER", "sequencer_inbox_address": "0x0000000000000000000000000000000000000000" }
+            },
+            "key_manager": { "tee_verifier_address": "0x0000000000000000000000000000000000000000", "attestation_verifier_url": "http://localhost:8080/", "tee_type": "test" }
+        }"#;
+        let config: ServiceConfig<NitroConfig> =
+            serde_json::from_str(json).expect("config must deserialize");
+        assert!(config.espresso_client.light_client.decaf);
+    }
+
+    // Verifies that `decaf: true` is accepted and the reader constructs successfully.
+    // The full behavioral test (catching up past epoch roots without next_stake_table_hash)
+    // requires a real decaf node and is covered by the devnet deployment.
+    #[tokio::test]
+    async fn decaf_flag_accepted() {
+        let node = EspressoDevNode::start().await;
+        let url = node.client.config.base_url.clone();
+        // dev node doesn't trigger the decaf path but the flag must be accepted without error
+        LightClientEspressoReader::new(genesis_from_node(&url).await, url, None, true)
+            .await
+            .expect("reader with decaf=true must construct successfully");
+        node.stop();
+    }
+
+    // Reproduces the exact devnet failure: decaf epoch root headers prior to the DRB upgrade
+    // lack `next_stake_table_hash`, causing the light client to stall at block 3164996
+    // (epoch 1056 = first_epoch_with_dynamic_stake_table on decaf) without `decaf: true`.
+    //
+    // Run manually:
+    //   cargo test --lib light_client_tests::decaf_catches_up_past_missing_stake_table_hash -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore = "requires network access to cache.decaf.testnet.espresso.network"]
+    async fn decaf_catches_up_past_missing_stake_table_hash() {
+        let decaf_url = url::Url::parse("https://cache.decaf.testnet.espresso.network/")
+            .expect("valid decaf URL");
+
+        // Genesis fetched from decaf — same values as in the light-client-genesis secret.
+        let genesis = genesis_from_node(&decaf_url).await;
+        assert_eq!(genesis.epoch_height, 3000, "unexpected decaf epoch_height");
+        assert_eq!(*genesis.first_epoch_with_dynamic_stake_table, 1056, "unexpected first dynamic epoch");
+        assert!(!genesis.stake_table.is_empty(), "stake table must not be empty");
+        // first_epoch_with_dynamic_stake_table = 1056 on decaf
+
+        // With decaf: false — stake table catch-up must fail at epoch 1056 because those epoch
+        // root headers lack next_stake_table_hash (pre-DRB upgrade on decaf). Force catch-up by
+        // requesting the stake table quorum for epoch 1057 (just past the boundary).
+        let reader_no_decaf =
+            LightClientEspressoReader::new(genesis.clone(), decaf_url.clone(), None, false)
+                .await
+                .expect("build reader");
+        // The stall happens when catching up through epoch 1056 to reach epoch 1057.
+        // epoch 1056 is first_epoch_with_dynamic_stake_table; its root header (at block
+        // 3000 * 1054 = 3162000) lacks next_stake_table_hash on decaf pre-DRB.
+        // quorum_for_epoch(1057) triggers catch-up through epoch 1056.
+        let err = reader_no_decaf
+            .inner
+            .quorum_for_epoch(hotshot_types::data::EpochNumber::new(1057))
+            .await;
+        assert!(
+            err.is_err(),
+            "expected catch-up failure at epoch 1057 with decaf=false; got Ok"
+        );
+        let err_msg = format!("{:#}", err.as_ref().unwrap_err());
+        assert!(
+            err_msg.contains("does not have next stake table hash")
+            || err_msg.contains("stake table hash"),
+            "expected stake table hash error, got: {err_msg}"
+        );
+
+        // With decaf: true — same catch-up must succeed.
+        let reader_decaf =
+            LightClientEspressoReader::new(genesis, decaf_url, None, true)
+                .await
+                .expect("build reader");
+        reader_decaf
+            .inner
+            .quorum_for_epoch(hotshot_types::data::EpochNumber::new(1057))
+            .await
+            .expect("catch-up to epoch 1057 must succeed with decaf=true");
     }
 }

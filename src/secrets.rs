@@ -253,7 +253,9 @@ pub fn assert_no_placeholders_nitro(cfg: &ServiceConfig<NitroConfig>) -> Result<
             );
         }
     }
-    if cfg.espresso_client.light_client.genesis.stake_table.is_empty() {
+    if cfg.key_manager.tee_type == TeeType::Nitro
+        && cfg.espresso_client.light_client.genesis.stake_table.is_empty()
+    {
         bail!("espresso_client.light_client.genesis.stake_table is empty — genesis was not overridden from secret");
     }
     Ok(())
@@ -569,4 +571,5 @@ mod tests {
             overrides.starting_hotshot_height, overrides.is_fresh_deployment
         );
     }
+
 }

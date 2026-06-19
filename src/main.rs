@@ -208,6 +208,7 @@ async fn run<R: Rollup>(
                 config.espresso_client.light_client.genesis.clone(),
                 config.espresso_client.client.base_url.clone(),
                 config.espresso_client.light_client.db_path.clone(),
+                config.espresso_client.light_client.decaf,
             )
             .await?,
         )
@@ -218,6 +219,7 @@ async fn run<R: Rollup>(
             config.espresso_client.light_client.genesis,
             config.espresso_client.client.base_url,
             config.espresso_client.light_client.db_path,
+            config.espresso_client.light_client.decaf,
         )
         .await?,
     );

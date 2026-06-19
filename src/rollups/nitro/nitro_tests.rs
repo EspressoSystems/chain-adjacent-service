@@ -396,6 +396,7 @@ fn test_resolve_config_with_latest_batch_info() {
                 )
                 .unwrap(),
                 db_path: None,
+                decaf: false,
             },
         },
         submitter: SubmitterConfig::default(),
