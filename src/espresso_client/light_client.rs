@@ -81,7 +81,10 @@ impl LightClientEspressoReader {
             storage,
             server,
             genesis,
-            LightClientOptions { decaf, ..Default::default() },
+            LightClientOptions {
+                decaf,
+                ..Default::default()
+            },
         );
 
         Ok(Self {
@@ -259,9 +262,10 @@ mod light_client_tests {
     async fn verifies_namespace_content_isolation_and_absence() {
         let node = EspressoDevNode::start().await;
         let url = node.client.config.base_url.clone();
-        let reader = LightClientEspressoReader::new(genesis_from_node(&url).await, url, None, false)
-            .await
-            .expect("build reader");
+        let reader =
+            LightClientEspressoReader::new(genesis_from_node(&url).await, url, None, false)
+                .await
+                .expect("build reader");
 
         let ns_a = NamespaceId::from(1u64);
         let ns_b = NamespaceId::from(2u64);
@@ -352,8 +356,14 @@ mod light_client_tests {
         // Genesis fetched from decaf — same values as in the light-client-genesis secret.
         let genesis = genesis_from_node(&decaf_url).await;
         assert_eq!(genesis.epoch_height, 3000, "unexpected decaf epoch_height");
-        assert_eq!(*genesis.first_epoch_with_dynamic_stake_table, 1056, "unexpected first dynamic epoch");
-        assert!(!genesis.stake_table.is_empty(), "stake table must not be empty");
+        assert_eq!(
+            *genesis.first_epoch_with_dynamic_stake_table, 1056,
+            "unexpected first dynamic epoch"
+        );
+        assert!(
+            !genesis.stake_table.is_empty(),
+            "stake table must not be empty"
+        );
         // first_epoch_with_dynamic_stake_table = 1056 on decaf
 
         // With decaf: false — stake table catch-up must fail at epoch 1056 because those epoch
@@ -378,15 +388,14 @@ mod light_client_tests {
         let err_msg = format!("{:#}", err.as_ref().unwrap_err());
         assert!(
             err_msg.contains("does not have next stake table hash")
-            || err_msg.contains("stake table hash"),
+                || err_msg.contains("stake table hash"),
             "expected stake table hash error, got: {err_msg}"
         );
 
         // With decaf: true — same catch-up must succeed.
-        let reader_decaf =
-            LightClientEspressoReader::new(genesis, decaf_url, None, true)
-                .await
-                .expect("build reader");
+        let reader_decaf = LightClientEspressoReader::new(genesis, decaf_url, None, true)
+            .await
+            .expect("build reader");
         reader_decaf
             .inner
             .quorum_for_epoch(hotshot_types::data::EpochNumber::new(1057))

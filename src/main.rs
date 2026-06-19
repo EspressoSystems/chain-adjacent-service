@@ -55,7 +55,8 @@ async fn main() -> Result<()> {
             if let Some(overrides) = overrides.as_ref() {
                 apply_overrides_nitro(&mut config, overrides)?;
             }
-            let region = env::var(chain_adjacent_service::secrets::ENV_AWS_REGION).unwrap_or_default();
+            let region =
+                env::var(chain_adjacent_service::secrets::ENV_AWS_REGION).unwrap_or_default();
             if let Some(genesis) = fetch_genesis(&region, config.key_manager.tee_type).await? {
                 config.espresso_client.light_client.genesis = genesis;
             }

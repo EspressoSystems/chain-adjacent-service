@@ -172,9 +172,7 @@ pub async fn fetch_genesis(region: &str, tee_type: TeeType) -> Result<Option<Gen
             if tee_type == TeeType::Nitro {
                 bail!("{ENV_AWS_GENESIS_SECRET_ID} not set but Tee type is Nitro");
             }
-            tracing::info!(
-                "{ENV_AWS_GENESIS_SECRET_ID} not set; skipping genesis secret fetch"
-            );
+            tracing::info!("{ENV_AWS_GENESIS_SECRET_ID} not set; skipping genesis secret fetch");
             return Ok(None);
         }
     };
@@ -200,8 +198,8 @@ pub async fn fetch_genesis(region: &str, tee_type: TeeType) -> Result<Option<Gen
     struct GenesisSecret {
         light_client_genesis: Genesis,
     }
-    let parsed: GenesisSecret = serde_json::from_str(secret_str)
-        .context("parsing genesis secret JSON")?;
+    let parsed: GenesisSecret =
+        serde_json::from_str(secret_str).context("parsing genesis secret JSON")?;
 
     tracing::info!(
         field = "espresso_client.light_client.genesis",
@@ -254,9 +252,16 @@ pub fn assert_no_placeholders_nitro(cfg: &ServiceConfig<NitroConfig>) -> Result<
         }
     }
     if cfg.key_manager.tee_type == TeeType::Nitro
-        && cfg.espresso_client.light_client.genesis.stake_table.is_empty()
+        && cfg
+            .espresso_client
+            .light_client
+            .genesis
+            .stake_table
+            .is_empty()
     {
-        bail!("espresso_client.light_client.genesis.stake_table is empty — genesis was not overridden from secret");
+        bail!(
+            "espresso_client.light_client.genesis.stake_table is empty — genesis was not overridden from secret"
+        );
     }
     Ok(())
 }
@@ -571,5 +576,4 @@ mod tests {
             overrides.starting_hotshot_height, overrides.is_fresh_deployment
         );
     }
-
 }
