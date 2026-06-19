@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use anyhow::Error;
 use async_trait::async_trait;
 use espresso_types::{NamespaceId, Transaction};
 use light_client::LightClient;
@@ -22,7 +23,7 @@ use serde_json::Value;
 pub enum LightClientError {
     /// Opening the verified-state storage failed.
     #[error("failed to open light client storage: {0}")]
-    Storage(anyhow::Error),
+    Storage(Error),
 
     /// A requested block height did not fit in `usize` on this platform.
     #[error("block height {0} exceeds usize")]
@@ -31,7 +32,7 @@ pub enum LightClientError {
     /// Fetching or verifying data against HotShot consensus failed — e.g. an unreachable or
     /// dishonest query node, or a proof that did not verify against the stake table.
     #[error("verified fetch failed: {0}")]
-    Verification(anyhow::Error),
+    Verification(Error),
 }
 
 /// The streamer's read interface over Espresso. The production impl ([`LightClientEspressoReader`])

@@ -189,41 +189,7 @@ async fn run<R: Rollup>(
         l1_finalized_msg_idx_receiver.clone(),
     );
 
-    // Inbound consumption is verified by the light client (rooted in genesis), so the query
-    // node is untrusted. It reuses the same Espresso node URL as submission. Under the `e2e`
-    // feature only, CAS_E2E_UNVERIFIED_READER selects the non-verifying reader so the drift e2e
-    // (which tampers the query-path response) can reach the streamer without failing verification.
-    #[cfg(feature = "e2e")]
-    let reader: Arc<dyn EspressoReader> = if std::env::var("CAS_E2E_UNVERIFIED_READER").is_ok() {
-        tracing::warn!(
-            "CAS_E2E_UNVERIFIED_READER set — using non-verifying reader (e2e builds only)"
-        );
-        Arc::new(
-            chain_adjacent_service::espresso_client::light_client::UnverifiedEspressoReader::new(
-                config.espresso_client.client.clone(),
-            ),
-        )
-    } else {
-        Arc::new(
-            LightClientEspressoReader::new(
-                config.espresso_client.light_client.genesis.clone(),
-                config.espresso_client.client.base_url.clone(),
-                config.espresso_client.light_client.db_path.clone(),
-                config.espresso_client.light_client.decaf,
-            )
-            .await?,
-        )
-    };
-    #[cfg(not(feature = "e2e"))]
-    let reader: Arc<dyn EspressoReader> = Arc::new(
-        LightClientEspressoReader::new(
-            config.espresso_client.light_client.genesis,
-            config.espresso_client.client.base_url,
-            config.espresso_client.light_client.db_path,
-            config.espresso_client.light_client.decaf,
-        )
-        .await?,
-    );
+    let reader = build_reader(&config.espresso_client).await?;
     let (verification_sender, verification_receiver) =
         mpsc::channel(config.advanced.verification_channel_capacity);
     let mut streamer: Streamer<R> = Streamer::new(
@@ -275,4 +241,33 @@ async fn run<R: Rollup>(
     }
     info!("all tasks completed; shutting down");
     Ok(())
+}
+
+/// Constructs the Espresso reader for the streamer. In production this is the verifying
+/// `LightClientEspressoReader`. Under the `e2e` feature the `CAS_E2E_UNVERIFIED_READER`
+/// env var selects a non-verifying reader so the drift e2e test can tamper query responses.
+async fn build_reader(
+    espresso: &chain_adjacent_service::config::EspressoConfig,
+) -> anyhow::Result<Arc<dyn EspressoReader>> {
+    #[cfg(feature = "e2e")]
+    if std::env::var("CAS_E2E_UNVERIFIED_READER").is_ok() {
+        tracing::warn!(
+            "CAS_E2E_UNVERIFIED_READER set — using non-verifying reader (e2e builds only)"
+        );
+        return Ok(Arc::new(
+            chain_adjacent_service::espresso_client::light_client::UnverifiedEspressoReader::new(
+                espresso.client.clone(),
+            ),
+        ));
+    }
+
+    Ok(Arc::new(
+        LightClientEspressoReader::new(
+            espresso.light_client.genesis.clone(),
+            espresso.client.base_url.clone(),
+            espresso.light_client.db_path.clone(),
+            espresso.light_client.decaf,
+        )
+        .await?,
+    ))
 }
