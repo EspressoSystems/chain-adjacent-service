@@ -267,6 +267,7 @@ async fn build_reader(
             espresso.client.base_url.clone(),
             espresso.light_client.db_path.clone(),
             espresso.light_client.decaf,
+            espresso.light_client.num_stake_tables_in_memory,
         )
         .await?,
     ))

@@ -397,6 +397,7 @@ fn test_resolve_config_with_latest_batch_info() {
                 .unwrap(),
                 db_path: None,
                 decaf: false,
+                num_stake_tables_in_memory: 100,
             },
         },
         submitter: SubmitterConfig::default(),

@@ -58,6 +58,14 @@ pub struct LightClientConfig {
     /// `next_stake_table_hash`. Must be `true` when connecting to the Decaf testnet.
     #[serde(default)]
     pub decaf: bool,
+
+    /// Maximum number of stake tables to keep in memory during catch-up.
+    #[serde(default = "default_num_stake_tables_in_memory")]
+    pub num_stake_tables_in_memory: usize,
+}
+
+fn default_num_stake_tables_in_memory() -> usize {
+    100 // matches the light-client crate default
 }
 
 #[derive(Debug, Clone, Deserialize)]

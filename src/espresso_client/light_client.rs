@@ -68,9 +68,11 @@ impl LightClientEspressoReader {
         query_url: Url,
         db_path: Option<PathBuf>,
         decaf: bool,
+        num_stake_tables_in_memory: usize,
     ) -> Result<Self, LightClientError> {
         let storage = LightClientSqliteOptions {
             lc_path: db_path,
+            num_stake_tables: num_stake_tables_in_memory as u32,
             ..Default::default()
         }
         .connect()
@@ -84,8 +86,7 @@ impl LightClientEspressoReader {
             genesis,
             LightClientOptions {
                 decaf,
-                // Must be larger than the number of epochs to catch up from genesis to current.
-                num_stake_tables_in_memory: 4096,
+                num_stake_tables_in_memory,
             },
         );
 
@@ -184,7 +185,7 @@ impl LightClientEspressoReader {
             r#"{"epoch_height":100,"first_epoch_with_dynamic_stake_table":1,"stake_table":[]}"#,
         )
         .expect("valid test genesis");
-        Self::new(genesis, query_url, None, false)
+        Self::new(genesis, query_url, None, false, 100)
             .await
             .expect("failed to build in-memory test light client")
     }
@@ -265,7 +266,7 @@ mod light_client_tests {
         let node = EspressoDevNode::start().await;
         let url = node.client.config.base_url.clone();
         let reader =
-            LightClientEspressoReader::new(genesis_from_node(&url).await, url, None, false)
+            LightClientEspressoReader::new(genesis_from_node(&url).await, url, None, false, 100)
                 .await
                 .expect("build reader");
 
@@ -337,7 +338,7 @@ mod light_client_tests {
         let node = EspressoDevNode::start().await;
         let url = node.client.config.base_url.clone();
         // dev node doesn't trigger the decaf path but the flag must be accepted without error
-        LightClientEspressoReader::new(genesis_from_node(&url).await, url, None, true)
+        LightClientEspressoReader::new(genesis_from_node(&url).await, url, None, true, 100)
             .await
             .expect("reader with decaf=true must construct successfully");
         node.stop();
@@ -372,7 +373,7 @@ mod light_client_tests {
         // root headers lack next_stake_table_hash (pre-DRB upgrade on decaf). Force catch-up by
         // requesting the stake table quorum for epoch 1057 (just past the boundary).
         let reader_no_decaf =
-            LightClientEspressoReader::new(genesis.clone(), decaf_url.clone(), None, false)
+            LightClientEspressoReader::new(genesis.clone(), decaf_url.clone(), None, false, 100)
                 .await
                 .expect("build reader");
         // The stall happens when catching up through epoch 1056 to reach epoch 1057.
@@ -395,7 +396,7 @@ mod light_client_tests {
         );
 
         // With decaf: true — same catch-up must succeed.
-        let reader_decaf = LightClientEspressoReader::new(genesis, decaf_url, None, true)
+        let reader_decaf = LightClientEspressoReader::new(genesis, decaf_url, None, true, 4096)
             .await
             .expect("build reader");
         reader_decaf
