@@ -84,7 +84,8 @@ impl LightClientEspressoReader {
             genesis,
             LightClientOptions {
                 decaf,
-                ..Default::default()
+                // Must be larger than the number of epochs to catch up from genesis to current.
+                num_stake_tables_in_memory: 4096,
             },
         );
 
