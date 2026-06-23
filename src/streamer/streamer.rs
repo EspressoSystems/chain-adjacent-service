@@ -480,7 +480,7 @@ pub async fn poll_hotshot_blocks(
                 txns
             }
             Err(err) => {
-                if matches!(&err, LightClientError::Verification(e) if e.downcast_ref::<NotFound>().is_some())
+                if matches!(&err, LightClientError::Verification(e) if e.downcast_ref::<NotFound>().is_some() || e.to_string().contains("404"))
                 {
                     let first = *not_found_since.get_or_insert_with(std::time::Instant::now);
                     let stuck_for = first.elapsed();
