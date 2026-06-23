@@ -191,7 +191,7 @@ async fn test_anytrust_header_bytes_returned_locally() {
         .await
         .expect("RPC call failed");
 
-    assert_eq!(response["headerBytes"], "0x70");
+    assert_eq!(response["headerBytes"], "0x708088");
     assert_eq!(
         mock_da_provider.received_requests().await.unwrap().len(),
         0,

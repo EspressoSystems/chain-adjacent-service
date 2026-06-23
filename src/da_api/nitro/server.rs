@@ -31,7 +31,9 @@ use crate::{
 pub(super) const HEADER_CONTENT_TYPE: &str = "application/json";
 
 const ESPRESSO_HEADER_BYTE: u8 = 0x70;
-const ANYTRUST_HEADER_BYTES: [u8; 2] = [0x80, 0x88];
+const ANYTRUST_DAS_HEADER_BYTE: u8 = 0x80;
+const ANYTRUST_DAS_TREE_HEADER_BYTE: u8 = 0x88;
+const ANYTRUST_HEADER_BYTES: [u8; 2] = [ANYTRUST_DAS_HEADER_BYTE, ANYTRUST_DAS_TREE_HEADER_BYTE];
 const CALLDATA_HEADER_BYTE: u8 = 0x00;
 
 fn is_anytrust_header(byte: u8) -> bool {
@@ -153,11 +155,17 @@ async fn handle_rpc(State(state): State<ServerState>, body: Bytes) -> Result<Res
         RECOVER_PAYLOAD_AND_PREIMAGES => {
             handle_recover_inner(state, parsed, RECOVER_PAYLOAD_AND_PREIMAGES).await
         }
-        GET_SUPPORTED_HEADER_BYTES
-            if state.da_config.name == "calldata" || state.da_config.is_anytrust =>
-        {
+        GET_SUPPORTED_HEADER_BYTES if state.da_config.name == "calldata" => {
             respond_header_bytes(&parsed["id"], &[ESPRESSO_HEADER_BYTE])
         }
+        GET_SUPPORTED_HEADER_BYTES if state.da_config.is_anytrust => respond_header_bytes(
+            &parsed["id"],
+            &[
+                ESPRESSO_HEADER_BYTE,
+                ANYTRUST_DAS_HEADER_BYTE,
+                ANYTRUST_DAS_TREE_HEADER_BYTE,
+            ],
+        ),
         GET_SUPPORTED_HEADER_BYTES => handle_supported_header_bytes_forwarded(state, parsed).await,
         GET_MAX_MESSAGE_SIZE => match state.max_message_size {
             Some(max_size) => {
