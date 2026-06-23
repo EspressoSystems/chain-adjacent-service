@@ -158,6 +158,9 @@ async fn handle_rpc(State(state): State<ServerState>, body: Bytes) -> Result<Res
         GET_SUPPORTED_HEADER_BYTES if state.da_config.name == "calldata" => {
             respond_header_bytes(&parsed["id"], &[ESPRESSO_HEADER_BYTE])
         }
+        // v3.9.9: we need to send back Anytrust headers as well for inbox
+        // to be able to read it
+        #[cfg(feature = "nitro-v3_9_9")]
         GET_SUPPORTED_HEADER_BYTES if state.da_config.is_anytrust => respond_header_bytes(
             &parsed["id"],
             &[
@@ -166,6 +169,10 @@ async fn handle_rpc(State(state): State<ServerState>, body: Bytes) -> Result<Res
                 ANYTRUST_DAS_TREE_HEADER_BYTE,
             ],
         ),
+        #[cfg(not(feature = "nitro-v3_9_9"))]
+        GET_SUPPORTED_HEADER_BYTES if state.da_config.is_anytrust => {
+            respond_header_bytes(&parsed["id"], &[ESPRESSO_HEADER_BYTE])
+        }
         GET_SUPPORTED_HEADER_BYTES => handle_supported_header_bytes_forwarded(state, parsed).await,
         GET_MAX_MESSAGE_SIZE => match state.max_message_size {
             Some(max_size) => {
