@@ -3,12 +3,12 @@ use std::future::Future;
 use alloy::primitives::Bytes;
 use anyhow::Result;
 use async_trait::async_trait;
+use espresso_types::Transaction;
 use tokio::sync::{mpsc, watch};
 
 use crate::{
     VerificationResult,
     config::{RollupType, ServiceConfig},
-    espresso_client::types::NamespaceTransactionsInRange,
 };
 
 #[async_trait]
@@ -69,9 +69,12 @@ pub trait Rollup {
         l1_finalized_msg_idx_receiver: watch::Receiver<u64>,
     ) -> impl Future<Output = Result<(), Self::Error>>;
 
+    /// Parse one rollup entry per Espresso block in the range. `blocks` has one inner `Vec`
+    /// of transactions per HotShot height (empty for empty blocks), positionally aligned to
+    /// `starting_hotshot_height`.
     fn parse_hotshot_transactions(
         config: &Self::StackConfig,
-        entries: Vec<NamespaceTransactionsInRange>,
+        blocks: Vec<Vec<Transaction>>,
         starting_hotshot_height: u64,
     ) -> Vec<Self::Entry>;
 

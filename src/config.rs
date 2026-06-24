@@ -41,13 +41,20 @@ pub struct ServiceConfig<C> {
     pub is_fresh_deployment: bool,
 }
 
-/// The query-node URL is reused from [`EspressoClientConfig::base_url`] (one node serves
-/// submit and read endpoints), so only the root of trust and cache location live here.
+/// The primary query-node URL is reused from [`EspressoClientConfig::base_url`] (one node
+/// serves submit and read endpoints). Additional read-only fallback nodes can be listed in
+/// `fallback_query_urls`; only the root of trust, fallbacks, and cache location live here.
 #[derive(Debug, Clone, Deserialize)]
 pub struct LightClientConfig {
     /// Root of trust; must match the network the query node serves. Sourced from the
     /// network's `genesis.toml`, delivered via the enclave secrets path.
     pub genesis: Genesis,
+
+    /// Additional query-node URLs for the light-client read path, tried (in order, after the
+    /// primary `base_url`) when a node is down or lagging. Empty = primary only. The submit
+    /// path is unaffected; these are read-only and trust-minimized (every block is verified).
+    #[serde(default)]
+    pub fallback_query_urls: Vec<Url>,
 
     /// Verified-state cache (leaves + stake tables) location. `None` = in-memory, rebuilt
     /// via catch-up each start; persist across enclave restarts to avoid that cost.

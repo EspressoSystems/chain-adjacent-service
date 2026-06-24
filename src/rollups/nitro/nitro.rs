@@ -1,7 +1,6 @@
 use crate::VerificationResult;
 use crate::config::RollupType;
 use crate::config::ServiceConfig;
-use crate::espresso_client::types::NamespaceTransactionsInRange;
 use crate::rollups::nitro::batch_parsing;
 use crate::rollups::nitro::config::NitroConfig;
 use crate::rollups::nitro::feed::message::BroadcastFeedMessage;
@@ -24,6 +23,7 @@ use alloy::primitives::Bytes;
 use alloy::primitives::FixedBytes;
 use alloy::primitives::{Address, Keccak256};
 use anyhow::Result;
+use espresso_types::Transaction;
 use std::collections::VecDeque;
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -63,14 +63,14 @@ impl Rollup for Nitro {
 
     fn parse_hotshot_transactions(
         config: &Self::StackConfig,
-        namespace_transactions: Vec<NamespaceTransactionsInRange>,
+        blocks: Vec<Vec<Transaction>>,
         starting_hotshot_height: u64,
     ) -> Vec<Self::Entry> {
         let mut entries = Vec::new();
         let mut hotshot_height = starting_hotshot_height;
 
-        for namespace_tx in namespace_transactions {
-            for tx in namespace_tx.transactions {
+        for block_txs in blocks {
+            for tx in block_txs {
                 // Try V1 format first
                 if let Ok(broadcast_messages) = Self::parse_nitro_hotshot_payload(
                     config,

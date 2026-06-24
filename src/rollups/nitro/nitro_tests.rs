@@ -263,20 +263,14 @@ fn test_parse_message_with_legacy_message() {
         .expect("failed to decode base64 tx");
     let sequencer_address = Address::from_str("0x91B62241cCec21Cebb3AbD24599855c009864e1E")
         .expect("failed to parse sequencer address");
-    let namespace_transactions_in_range = NamespaceTransactionsInRange {
-        transactions: vec![Transaction::new(namespace_id, tx_bytes)],
-        proof: None,
-    };
+    let block_txs = vec![Transaction::new(namespace_id, tx_bytes)];
     let config = NitroConfig {
         legacy_signer_addresses: vec![sequencer_address],
         chain_id: 1,
         ..Default::default()
     };
-    let parsed_messages: Vec<NitroRollupQueueEntry> = <Nitro as Rollup>::parse_hotshot_transactions(
-        &config,
-        vec![namespace_transactions_in_range],
-        1u64,
-    );
+    let parsed_messages: Vec<NitroRollupQueueEntry> =
+        <Nitro as Rollup>::parse_hotshot_transactions(&config, vec![block_txs], 1u64);
 
     assert!(
         parsed_messages.len() == 1,
@@ -395,6 +389,7 @@ fn test_resolve_config_with_latest_batch_info() {
                     r#"{"epoch_height":100,"first_epoch_with_dynamic_stake_table":1,"stake_table":[]}"#,
                 )
                 .unwrap(),
+                fallback_query_urls: vec![],
                 db_path: None,
                 decaf: false,
                 num_stake_tables_in_memory: 100,

@@ -261,10 +261,14 @@ async fn build_reader(
         ));
     }
 
+    // Primary node first, then any configured fallbacks — the FallbackClient tries them in order.
+    let mut query_urls = vec![espresso.client.base_url.clone()];
+    query_urls.extend(espresso.light_client.fallback_query_urls.iter().cloned());
+
     Ok(Arc::new(
         LightClientEspressoReader::new(
             espresso.light_client.genesis.clone(),
-            espresso.client.base_url.clone(),
+            query_urls,
             espresso.light_client.db_path.clone(),
             espresso.light_client.decaf,
             espresso.light_client.num_stake_tables_in_memory,

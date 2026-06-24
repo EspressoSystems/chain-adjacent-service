@@ -8,13 +8,12 @@ use anyhow::Error;
 use async_trait::async_trait;
 use espresso_types::{NamespaceId, Transaction};
 use light_client::LightClient;
-use light_client::client::QueryServiceClient;
+use light_client::client::{FallbackClient, QueryServiceClient};
 use light_client::state::{Genesis, LightClientOptions};
 use light_client::storage::{LightClientSqliteOptions, SqliteStorage};
 use reqwest::Url;
 use thiserror::Error;
 
-use crate::espresso_client::types::NamespaceTransactionsInRange;
 #[cfg(test)]
 use serde_json::Value;
 
@@ -24,6 +23,10 @@ pub enum LightClientError {
     /// Opening the verified-state storage failed.
     #[error("failed to open light client storage: {0}")]
     Storage(Error),
+
+    /// Constructing the read client (e.g. the fallback client over the query URLs) failed.
+    #[error("failed to build light client: {0}")]
+    Client(Error),
 
     /// A requested block height did not fit in `usize` on this platform.
     #[error("block height {0} exceeds usize")]
@@ -47,25 +50,26 @@ pub trait EspressoReader: Send + Sync {
         namespace: NamespaceId,
         start: u64,
         end: u64,
-    ) -> Result<Vec<NamespaceTransactionsInRange>, LightClientError>;
+    ) -> Result<Vec<Vec<Transaction>>, LightClientError>;
 }
 
 /// A read-only, trustless view of Espresso data: every block it returns is verified against
 /// HotShot consensus (rooted in the configured [`Genesis`]), so the query node is untrusted.
 ///
-/// To fail over across multiple query nodes, generalize over `S: Client` and build a
-/// `FallbackClient<QueryServiceClient>` in [`new`](Self::new); the read methods are unaffected.
+/// Reads go through a [`FallbackClient`] over the configured query URLs: each request is tried
+/// on the next node when one is down or lagging, so a single flaky node does not stall catch-up.
 pub struct LightClientEspressoReader {
-    inner: Arc<LightClient<SqliteStorage, QueryServiceClient>>,
+    inner: Arc<LightClient<SqliteStorage, FallbackClient<QueryServiceClient>>>,
 }
 
 impl LightClientEspressoReader {
-    /// `genesis` is the root of trust and must match the network `query_url` serves.
+    /// `genesis` is the root of trust and must match the network the query nodes serve.
+    /// `query_urls` is tried in order (primary first) via [`FallbackClient`]; must be non-empty.
     /// `db_path` persists the verified-state cache across restarts; `None` keeps it in memory
     /// (rebuilt via catch-up each start).
     pub async fn new(
         genesis: Genesis,
-        query_url: Url,
+        query_urls: Vec<Url>,
         db_path: Option<PathBuf>,
         decaf: bool,
         num_stake_tables_in_memory: usize,
@@ -79,7 +83,12 @@ impl LightClientEspressoReader {
         .await
         .map_err(LightClientError::Storage)?;
 
-        let server = QueryServiceClient::new(query_url);
+        let clients: Vec<QueryServiceClient> = query_urls
+            .into_iter()
+            .map(QueryServiceClient::new)
+            .collect();
+        let server = FallbackClient::new(clients)
+            .map_err(|e| LightClientError::Client(anyhow::anyhow!("fallback client: {e}")))?;
         let inner = LightClient::from_genesis_with_options(
             storage,
             server,
@@ -107,33 +116,23 @@ impl EspressoReader for LightClientEspressoReader {
             .map_err(LightClientError::Verification)
     }
 
-    /// Verified namespace transactions for the half-open range `[start, end)` — one entry
-    /// per height (including empty blocks), which the streamer's positional parsing relies on.
-    ///
-    /// `proof` is always `None`: inclusion was already verified inside the light client, and
-    /// nothing downstream reads that field.
+    /// Verified namespace transactions for the half-open range `[start, end)` — one inner
+    /// `Vec` per height (including empty blocks), which the streamer's positional parsing
+    /// relies on. No inclusion proof is returned: verification already happened inside the
+    /// light client, and nothing downstream needs the proof.
     async fn namespace_transactions_in_range(
         &self,
         namespace: NamespaceId,
         start: u64,
         end: u64,
-    ) -> Result<Vec<NamespaceTransactionsInRange>, LightClientError> {
+    ) -> Result<Vec<Vec<Transaction>>, LightClientError> {
         let start_usize =
             usize::try_from(start).map_err(|_| LightClientError::HeightOverflow(start))?;
         let end_usize = usize::try_from(end).map_err(|_| LightClientError::HeightOverflow(end))?;
-        let verified: Vec<Vec<Transaction>> = self
-            .inner
+        self.inner
             .fetch_namespaces_in_range(start_usize, end_usize, namespace)
             .await
-            .map_err(LightClientError::Verification)?;
-
-        Ok(verified
-            .into_iter()
-            .map(|transactions| NamespaceTransactionsInRange {
-                transactions,
-                proof: None,
-            })
-            .collect())
+            .map_err(LightClientError::Verification)
     }
 }
 
@@ -168,11 +167,13 @@ impl EspressoReader for UnverifiedEspressoReader {
         namespace: NamespaceId,
         start: u64,
         end: u64,
-    ) -> Result<Vec<NamespaceTransactionsInRange>, LightClientError> {
-        self.client
+    ) -> Result<Vec<Vec<Transaction>>, LightClientError> {
+        let ranges = self
+            .client
             .fetch_namespace_transactions_in_range(namespace, start, end)
             .await
-            .map_err(LightClientError::Verification)
+            .map_err(LightClientError::Verification)?;
+        Ok(ranges.into_iter().map(|r| r.transactions).collect())
     }
 }
 
@@ -185,7 +186,7 @@ impl LightClientEspressoReader {
             r#"{"epoch_height":100,"first_epoch_with_dynamic_stake_table":1,"stake_table":[]}"#,
         )
         .expect("valid test genesis");
-        Self::new(genesis, query_url, None, false, 100)
+        Self::new(genesis, vec![query_url], None, false, 100)
             .await
             .expect("failed to build in-memory test light client")
     }
@@ -254,7 +255,7 @@ mod light_client_tests {
             .await
             .expect("verified namespace range")
             .into_iter()
-            .flat_map(|block| block.transactions)
+            .flatten()
             .map(|tx| tx.payload().to_vec())
             .collect()
     }
@@ -265,10 +266,15 @@ mod light_client_tests {
     async fn verifies_namespace_content_isolation_and_absence() {
         let node = EspressoDevNode::start().await;
         let url = node.client.config.base_url.clone();
-        let reader =
-            LightClientEspressoReader::new(genesis_from_node(&url).await, url, None, false, 100)
-                .await
-                .expect("build reader");
+        let reader = LightClientEspressoReader::new(
+            genesis_from_node(&url).await,
+            vec![url],
+            None,
+            false,
+            100,
+        )
+        .await
+        .expect("build reader");
 
         let ns_a = NamespaceId::from(1u64);
         let ns_b = NamespaceId::from(2u64);
@@ -338,7 +344,7 @@ mod light_client_tests {
         let node = EspressoDevNode::start().await;
         let url = node.client.config.base_url.clone();
         // dev node doesn't trigger the decaf path but the flag must be accepted without error
-        LightClientEspressoReader::new(genesis_from_node(&url).await, url, None, true, 100)
+        LightClientEspressoReader::new(genesis_from_node(&url).await, vec![url], None, true, 100)
             .await
             .expect("reader with decaf=true must construct successfully");
         node.stop();
@@ -372,10 +378,15 @@ mod light_client_tests {
         // With decaf: false — stake table catch-up must fail at epoch 1056 because those epoch
         // root headers lack next_stake_table_hash (pre-DRB upgrade on decaf). Force catch-up by
         // requesting the stake table quorum for epoch 1057 (just past the boundary).
-        let reader_no_decaf =
-            LightClientEspressoReader::new(genesis.clone(), decaf_url.clone(), None, false, 100)
-                .await
-                .expect("build reader");
+        let reader_no_decaf = LightClientEspressoReader::new(
+            genesis.clone(),
+            vec![decaf_url.clone()],
+            None,
+            false,
+            100,
+        )
+        .await
+        .expect("build reader");
         // The stall happens when catching up through epoch 1056 to reach epoch 1057.
         // epoch 1056 is first_epoch_with_dynamic_stake_table; its root header (at block
         // 3000 * 1054 = 3162000) lacks next_stake_table_hash on decaf pre-DRB.
@@ -396,9 +407,10 @@ mod light_client_tests {
         );
 
         // With decaf: true — same catch-up must succeed.
-        let reader_decaf = LightClientEspressoReader::new(genesis, decaf_url, None, true, 4096)
-            .await
-            .expect("build reader");
+        let reader_decaf =
+            LightClientEspressoReader::new(genesis, vec![decaf_url], None, true, 4096)
+                .await
+                .expect("build reader");
         reader_decaf
             .inner
             .quorum_for_epoch(hotshot_types::data::EpochNumber::new(1057))

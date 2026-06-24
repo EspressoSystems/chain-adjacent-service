@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use anyhow::Result;
-use espresso_types::NamespaceId;
+use espresso_types::{NamespaceId, Transaction};
 use tokio::sync::{mpsc, watch};
 
 use std::sync::Arc;
@@ -11,7 +11,6 @@ use crate::VerificationReceiver;
 use crate::config::{AdvancedConfig, RollupConfig, StreamerConfig};
 use crate::espresso_client::client::NotFound;
 use crate::espresso_client::light_client::{EspressoReader, LightClientError};
-use crate::espresso_client::types::NamespaceTransactionsInRange;
 use crate::rollups::rollup::{BatchCursorFetcher, Rollup, RollupQueueEntry};
 use crate::utils::exponential_backoff;
 
@@ -97,7 +96,7 @@ impl<R: Rollup> Streamer<R> {
         let (broadcast_retry_tx, mut broadcast_retry_rx) = mpsc::channel::<()>(1);
         let mut retry = BroadcastRetry::new(broadcast_retry_tx);
 
-        let (sender, mut receiver) = mpsc::channel::<(Vec<NamespaceTransactionsInRange>, u64)>(
+        let (sender, mut receiver) = mpsc::channel::<(Vec<Vec<Transaction>>, u64)>(
             self.advanced_config.hotshot_transaction_channel_capacity,
         );
         let config = self.config.clone();
@@ -185,7 +184,7 @@ impl<R: Rollup> Streamer<R> {
                         tracing::error!("hotshot block poller channel was closed");
                         continue;
                     };
-                    let tx_count: usize = transactions.iter().map(|t| t.transactions.len()).sum();
+                    let tx_count: usize = transactions.iter().map(|t| t.len()).sum();
                     tracing::debug!(
                         height,
                         ranges = transactions.len(),
@@ -240,7 +239,7 @@ impl<R: Rollup> Streamer<R> {
 
     pub async fn handle_hotshot_transactions(
         &mut self,
-        transactions: Vec<NamespaceTransactionsInRange>,
+        transactions: Vec<Vec<Transaction>>,
         height: u64,
         sender: mpsc::Sender<R::FeedMessage>,
         retry: &mut BroadcastRetry,
@@ -435,7 +434,7 @@ pub async fn poll_hotshot_blocks(
     client: Arc<dyn EspressoReader>,
     next_hotshot_block_num: u64,
     namespace_id: NamespaceId,
-    sender: mpsc::Sender<(Vec<NamespaceTransactionsInRange>, u64)>,
+    sender: mpsc::Sender<(Vec<Vec<Transaction>>, u64)>,
 ) -> Result<()> {
     let mut from_block = next_hotshot_block_num;
     let mut backoff = Duration::from_millis(config.initial_backoff_ms);
@@ -512,10 +511,7 @@ pub async fn poll_hotshot_blocks(
                 continue;
             }
         };
-        let tx_count: usize = hotshot_transactions
-            .iter()
-            .map(|t| t.transactions.len())
-            .sum();
+        let tx_count: usize = hotshot_transactions.iter().map(|t| t.len()).sum();
         tracing::debug!(
             from_block,
             to_block,

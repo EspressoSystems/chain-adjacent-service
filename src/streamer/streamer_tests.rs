@@ -1,12 +1,9 @@
-use espresso_types::NamespaceId;
+use espresso_types::{NamespaceId, Transaction};
 use tokio::sync::mpsc;
 
 use crate::{
     config::{AdvancedConfig, RollupConfig, RollupType::Nitro, StreamerConfig},
-    espresso_client::{
-        light_client::{EspressoReader, LightClientError, LightClientEspressoReader},
-        types::NamespaceTransactionsInRange,
-    },
+    espresso_client::light_client::{EspressoReader, LightClientError, LightClientEspressoReader},
     espresso_e2e::{
         espresso_dev_node::EspressoDevNode,
         mock_rollup::{MockEntry, MockRollup, make_entry, make_mock_espresso_transaction},
@@ -60,7 +57,7 @@ async fn make_streamer_with_cap(
 /// serves `/light-client` (EspressoSystems/espresso-network#4453).
 async fn dev_node_reader(base_url: url::Url) -> LightClientEspressoReader {
     let genesis = crate::espresso_client::light_client::genesis_from_node(&base_url).await;
-    LightClientEspressoReader::new(genesis, base_url, None, false, 100)
+    LightClientEspressoReader::new(genesis, vec![base_url], None, false, 100)
         .await
         .expect("build dev node reader")
 }
@@ -468,13 +465,12 @@ impl EspressoReader for MockEspressoReader {
         _namespace: NamespaceId,
         start: u64,
         end: u64,
-    ) -> Result<Vec<NamespaceTransactionsInRange>, LightClientError> {
+    ) -> Result<Vec<Vec<Transaction>>, LightClientError> {
         let blocks = (start..end)
-            .map(|height| NamespaceTransactionsInRange {
-                transactions: Self::seq_at_height(height)
+            .map(|height| {
+                Self::seq_at_height(height)
                     .map(|seq| vec![make_mock_espresso_transaction(seq)])
-                    .unwrap_or_default(),
-                proof: None,
+                    .unwrap_or_default()
             })
             .collect();
         Ok(blocks)
