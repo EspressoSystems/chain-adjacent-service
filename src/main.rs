@@ -1,4 +1,3 @@
-use std::env;
 use std::sync::Arc;
 
 use alloy::{
@@ -18,7 +17,7 @@ use chain_adjacent_service::key_manager::tee_verifier::TEEVerifier;
 use chain_adjacent_service::rollups::nitro::types::{BatchCursor, Nitro};
 use chain_adjacent_service::rollups::rollup::{BatchCursorFetcher, L1Monitor};
 use chain_adjacent_service::secrets::{
-    apply_overrides_nitro, assert_no_placeholders_nitro, fetch_genesis, fetch_secret_overrides,
+    apply_overrides_nitro, assert_no_placeholders_nitro, fetch_secret_overrides,
     resolve_operator_private_key,
 };
 use chain_adjacent_service::streamer::streamer::Streamer;
@@ -54,11 +53,6 @@ async fn main() -> Result<()> {
             let overrides = fetch_secret_overrides(config.key_manager.tee_type).await?;
             if let Some(overrides) = overrides.as_ref() {
                 apply_overrides_nitro(&mut config, overrides)?;
-            }
-            let region =
-                env::var(chain_adjacent_service::secrets::ENV_AWS_REGION).unwrap_or_default();
-            if let Some(genesis) = fetch_genesis(&region, config.key_manager.tee_type).await? {
-                config.espresso_client.light_client.genesis = genesis;
             }
             assert_no_placeholders_nitro(&config)?;
             info!("Configuration loaded and validated successfully");
@@ -253,6 +247,20 @@ async fn build_reader(
     if std::env::var("CAS_E2E_UNVERIFIED_READER").is_ok() {
         tracing::warn!(
             "CAS_E2E_UNVERIFIED_READER set — using non-verifying reader (e2e builds only)"
+        );
+        return Ok(Arc::new(
+            chain_adjacent_service::espresso_client::light_client::UnverifiedEspressoReader::new(
+                espresso.client.clone(),
+            ),
+        ));
+    }
+
+    // Trusted mode: read directly from the query node without verification. This is a deliberate,
+    // attested choice — `light_client.enabled` is part of the measured config (CONFIG_HASH).
+    if !espresso.light_client.enabled {
+        tracing::warn!(
+            "light_client.enabled = false — reading Espresso WITHOUT consensus verification \
+             (trusting the query node); this mode is reflected in the enclave attestation"
         );
         return Ok(Arc::new(
             chain_adjacent_service::espresso_client::light_client::UnverifiedEspressoReader::new(

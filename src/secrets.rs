@@ -2,7 +2,6 @@ use std::env;
 
 use anyhow::{Context, Result, bail};
 use aws_config::{BehaviorVersion, Region};
-use light_client::state::Genesis;
 use serde::Deserialize;
 
 use crate::config::{ServiceConfig, TeeType};
@@ -16,7 +15,6 @@ pub const PLACEHOLDER_URL: &str = "http://placeholder.invalid/";
 
 pub const ENV_AWS_REGION: &str = "AWS_REGION";
 pub const ENV_AWS_SECRET_ID: &str = "AWS_SECRET_ID";
-pub const ENV_AWS_GENESIS_SECRET_ID: &str = "AWS_GENESIS_SECRET_ID";
 pub const ENV_OPERATOR_PRIVATE_KEY: &str = "OPERATOR_PRIVATE_KEY";
 
 #[derive(Debug, Clone, Deserialize)]
@@ -162,53 +160,6 @@ pub fn apply_overrides_nitro(
     Ok(())
 }
 
-/// Fetches the light client genesis from a dedicated secret (`AWS_GENESIS_SECRET_ID`).
-/// Returns `Ok(None)` when the env var is unset — local/e2e runs skip this and rely on
-/// the genesis baked into the config file. Required in production (Nitro TEE).
-pub async fn fetch_genesis(region: &str, tee_type: TeeType) -> Result<Option<Genesis>> {
-    let secret_id = match env::var(ENV_AWS_GENESIS_SECRET_ID).ok() {
-        Some(id) => id,
-        None => {
-            if tee_type == TeeType::Nitro {
-                bail!("{ENV_AWS_GENESIS_SECRET_ID} not set but Tee type is Nitro");
-            }
-            tracing::info!("{ENV_AWS_GENESIS_SECRET_ID} not set; skipping genesis secret fetch");
-            return Ok(None);
-        }
-    };
-
-    let aws_cfg = aws_config::defaults(BehaviorVersion::latest())
-        .region(Region::new(region.to_string()))
-        .load()
-        .await;
-    let client = aws_sdk_secretsmanager::Client::new(&aws_cfg);
-
-    let resp = client
-        .get_secret_value()
-        .secret_id(&secret_id)
-        .send()
-        .await
-        .with_context(|| format!("fetching genesis secret {secret_id}"))?;
-
-    let secret_str = resp
-        .secret_string()
-        .context("genesis secret has no SecretString payload")?;
-
-    #[derive(Deserialize)]
-    struct GenesisSecret {
-        light_client_genesis: Genesis,
-    }
-    let parsed: GenesisSecret =
-        serde_json::from_str(secret_str).context("parsing genesis secret JSON")?;
-
-    tracing::info!(
-        field = "espresso_client.light_client.genesis",
-        secret_id,
-        "fetched genesis from secret"
-    );
-    Ok(Some(parsed.light_client_genesis))
-}
-
 /// Resolves the operator private key from AWS secret overrides, falling back
 /// to the `OPERATOR_PRIVATE_KEY` env var if the secret omits the field (or no
 /// AWS overrides were fetched). Errors only when both sources are missing.
@@ -251,7 +202,11 @@ pub fn assert_no_placeholders_nitro(cfg: &ServiceConfig<NitroConfig>) -> Result<
             );
         }
     }
+    // Genesis is the root of trust for verified reads, so it must be present in the (measured)
+    // config whenever the light client is enabled. When it's disabled (trusted mode) the reader
+    // never uses genesis, so an empty stake table is fine.
     if cfg.key_manager.tee_type == TeeType::Nitro
+        && cfg.espresso_client.light_client.enabled
         && cfg
             .espresso_client
             .light_client
@@ -260,7 +215,8 @@ pub fn assert_no_placeholders_nitro(cfg: &ServiceConfig<NitroConfig>) -> Result<
             .is_empty()
     {
         bail!(
-            "espresso_client.light_client.genesis.stake_table is empty — genesis was not overridden from secret"
+            "espresso_client.light_client.genesis.stake_table is empty but the light client is \
+             enabled — genesis must be set in the config (it is part of CONFIG_HASH)"
         );
     }
     Ok(())
