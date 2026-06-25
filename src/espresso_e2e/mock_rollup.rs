@@ -4,7 +4,6 @@ use tokio::sync::watch;
 
 use crate::{
     VerificationResult,
-    espresso_client::types::NamespaceTransactionsInRange,
     rollups::rollup::{CasCheckpoint, L1Monitor, Rollup, RollupQueueEntry},
 };
 
@@ -48,14 +47,14 @@ impl Rollup for MockRollup {
 
     fn parse_hotshot_transactions(
         _config: &Self::StackConfig,
-        entries: Vec<NamespaceTransactionsInRange>,
+        blocks: Vec<Vec<Transaction>>,
         starting_hotshot_height: u64,
     ) -> Vec<Self::Entry> {
         let mut parsed_entries = Vec::new();
         let mut hotshot_height = starting_hotshot_height;
 
-        for entry in entries {
-            for tx in entry.transactions {
+        for block_txs in blocks {
+            for tx in block_txs {
                 let payload = tx.payload();
 
                 let mut seq_bytes = [0u8; 8];

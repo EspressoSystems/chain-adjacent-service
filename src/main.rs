@@ -1,3 +1,4 @@
+use std::env;
 use std::sync::Arc;
 
 use alloy::{
@@ -8,13 +9,16 @@ use anyhow::{Context, Result};
 use chain_adjacent_service::config::{RollupType, TeeType};
 use chain_adjacent_service::da_api;
 use chain_adjacent_service::espresso_client::client::EspressoClient;
+use chain_adjacent_service::espresso_client::light_client::{
+    EspressoReader, LightClientEspressoReader,
+};
 use chain_adjacent_service::key_manager::attestation_client::HttpAttestationVerifierClient;
 use chain_adjacent_service::key_manager::key_manager::KeyManager;
 use chain_adjacent_service::key_manager::tee_verifier::TEEVerifier;
 use chain_adjacent_service::rollups::nitro::types::{BatchCursor, Nitro};
 use chain_adjacent_service::rollups::rollup::{BatchCursorFetcher, L1Monitor};
 use chain_adjacent_service::secrets::{
-    apply_overrides_nitro, assert_no_placeholders_nitro, fetch_secret_overrides,
+    apply_overrides_nitro, assert_no_placeholders_nitro, fetch_genesis, fetch_secret_overrides,
     resolve_operator_private_key,
 };
 use chain_adjacent_service::streamer::streamer::Streamer;
@@ -50,6 +54,11 @@ async fn main() -> Result<()> {
             let overrides = fetch_secret_overrides(config.key_manager.tee_type).await?;
             if let Some(overrides) = overrides.as_ref() {
                 apply_overrides_nitro(&mut config, overrides)?;
+            }
+            let region =
+                env::var(chain_adjacent_service::secrets::ENV_AWS_REGION).unwrap_or_default();
+            if let Some(genesis) = fetch_genesis(&region, config.key_manager.tee_type).await? {
+                config.espresso_client.light_client.genesis = genesis;
             }
             assert_no_placeholders_nitro(&config)?;
             info!("Configuration loaded and validated successfully");
@@ -136,7 +145,7 @@ async fn run<R: Rollup>(
 
     let config = R::resolve_config_with_checkpoint(config, batch_cursor.clone(), hotshot_height);
 
-    let client = EspressoClient::from_config(config.espresso_client.clone());
+    let client = EspressoClient::from_config(config.espresso_client.client.clone());
     let (submitter_sender, submitter_receiver) =
         mpsc::channel::<R::FeedMessage>(config.advanced.submitter_input_channel_capacity);
 
@@ -180,11 +189,11 @@ async fn run<R: Rollup>(
         l1_finalized_msg_idx_receiver.clone(),
     );
 
-    let client = EspressoClient::from_config(config.espresso_client);
+    let reader = build_reader(&config.espresso_client).await?;
     let (verification_sender, verification_receiver) =
         mpsc::channel(config.advanced.verification_channel_capacity);
     let mut streamer: Streamer<R> = Streamer::new(
-        client,
+        reader,
         config.streamer,
         config.rollup,
         config.advanced,
@@ -232,4 +241,38 @@ async fn run<R: Rollup>(
     }
     info!("all tasks completed; shutting down");
     Ok(())
+}
+
+/// Constructs the Espresso reader for the streamer. In production this is the verifying
+/// `LightClientEspressoReader`. Under the `e2e` feature the `CAS_E2E_UNVERIFIED_READER`
+/// env var selects a non-verifying reader so the drift e2e test can tamper query responses.
+async fn build_reader(
+    espresso: &chain_adjacent_service::config::EspressoConfig,
+) -> anyhow::Result<Arc<dyn EspressoReader>> {
+    #[cfg(feature = "e2e")]
+    if std::env::var("CAS_E2E_UNVERIFIED_READER").is_ok() {
+        tracing::warn!(
+            "CAS_E2E_UNVERIFIED_READER set — using non-verifying reader (e2e builds only)"
+        );
+        return Ok(Arc::new(
+            chain_adjacent_service::espresso_client::light_client::UnverifiedEspressoReader::new(
+                espresso.client.clone(),
+            ),
+        ));
+    }
+
+    // Primary node first, then any configured fallbacks — the FallbackClient tries them in order.
+    let mut query_urls = vec![espresso.client.base_url.clone()];
+    query_urls.extend(espresso.light_client.fallback_query_urls.iter().cloned());
+
+    Ok(Arc::new(
+        LightClientEspressoReader::new(
+            espresso.light_client.genesis.clone(),
+            query_urls,
+            espresso.light_client.db_path.clone(),
+            espresso.light_client.decaf,
+            espresso.light_client.num_stake_tables_in_memory,
+        )
+        .await?,
+    ))
 }

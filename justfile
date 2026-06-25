@@ -78,6 +78,14 @@ clippy-v3_10:
 
 # ─── Running tests ────────────────────────────────────────────────────────────
 
+# Run unit/integration tests against a single Nitro version (default v3.10).
+# `--all-features` can't be used: nitro-v3_9_9 and nitro-v3_10 are mutually exclusive.
+test-v3_10:
+    RUST_BACKTRACE=1 cargo test --no-default-features --features nitro-v3_10 -- --test-threads=1
+
+test-v3_9_9:
+    RUST_BACKTRACE=1 cargo test --no-default-features --features nitro-v3_9_9 -- --test-threads=1
+
 # Shared v3.9.9 env. Used by every recipe that needs to talk to the v3.9.9 stack.
 v3_9_9_env := "COMPOSE_FILE=docker-compose.yml:docker-compose.v3_9_9.yml " + \
     "NITRO_IMAGE=ghcr.io/espressosystems/nitro-espresso-integration/nitro-node:support-espresso-v3.9.9 " + \
@@ -96,8 +104,7 @@ test-e2e-v3_9_9 filter="":
     {{v3_9_9_env}} \
     RUST_BACKTRACE=1 cargo test --test nitro --no-default-features --features e2e,nitro-v3_9_9 {{filter}} -- --test-threads=1
 
-test:
-    RUST_BACKTRACE=1 cargo test --all-features -- --test-threads=1
+test: test-v3_10 test-v3_9_9
 
 # ─── L1 state generation ──────────────────────────────────────────────────────
 

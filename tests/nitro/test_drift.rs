@@ -16,7 +16,7 @@ use chain_adjacent_service::espresso_e2e::espresso_dev_node::EspressoDevNode;
 use crate::nitro_node::nitro_node::{NitroNode, NitroNodeConfig};
 use crate::test_e2e::{
     CAS_FEED_URL, CasRoute, connect_l1_ws_with_retries, count_batches_on_l1,
-    read_sequencer_inbox_address, read_tee_verifier_address, spawn_cas_with_retries,
+    read_sequencer_inbox_address, read_tee_verifier_address, spawn_cas_with_retries_unverified,
     wait_for_batches_on_l1, write_cas_config,
 };
 
@@ -259,10 +259,11 @@ async fn test_e2e_message_drift() {
         None,
         Some(&proxy_url),
         Some(10),
-    );
+    )
+    .await;
 
     let probe_url = CasRoute::Calldata.rpc_url_local();
-    let cas = spawn_cas_with_retries(&cas_config_path, &probe_url).await;
+    let cas = spawn_cas_with_retries_unverified(&cas_config_path, &probe_url).await;
 
     let l1 = connect_l1_ws_with_retries().await;
     let from_block = l1

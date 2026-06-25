@@ -2,6 +2,7 @@ use std::env;
 
 use anyhow::{Context, Result, bail};
 use aws_config::{BehaviorVersion, Region};
+use light_client::state::Genesis;
 use serde::Deserialize;
 
 use crate::config::{ServiceConfig, TeeType};
@@ -15,6 +16,7 @@ pub const PLACEHOLDER_URL: &str = "http://placeholder.invalid/";
 
 pub const ENV_AWS_REGION: &str = "AWS_REGION";
 pub const ENV_AWS_SECRET_ID: &str = "AWS_SECRET_ID";
+pub const ENV_AWS_GENESIS_SECRET_ID: &str = "AWS_GENESIS_SECRET_ID";
 pub const ENV_OPERATOR_PRIVATE_KEY: &str = "OPERATOR_PRIVATE_KEY";
 
 #[derive(Debug, Clone, Deserialize)]
@@ -103,7 +105,7 @@ pub fn apply_overrides_nitro(
     cfg: &mut ServiceConfig<NitroConfig>,
     overrides: &SecretOverrides,
 ) -> Result<()> {
-    cfg.espresso_client.base_url = url::Url::parse(&overrides.espresso_base_url)
+    cfg.espresso_client.client.base_url = url::Url::parse(&overrides.espresso_base_url)
         .context("overrides.espresso_base_url is not a valid URL")?;
     tracing::info!(
         field = "espresso_client.base_url",
@@ -160,6 +162,53 @@ pub fn apply_overrides_nitro(
     Ok(())
 }
 
+/// Fetches the light client genesis from a dedicated secret (`AWS_GENESIS_SECRET_ID`).
+/// Returns `Ok(None)` when the env var is unset — local/e2e runs skip this and rely on
+/// the genesis baked into the config file. Required in production (Nitro TEE).
+pub async fn fetch_genesis(region: &str, tee_type: TeeType) -> Result<Option<Genesis>> {
+    let secret_id = match env::var(ENV_AWS_GENESIS_SECRET_ID).ok() {
+        Some(id) => id,
+        None => {
+            if tee_type == TeeType::Nitro {
+                bail!("{ENV_AWS_GENESIS_SECRET_ID} not set but Tee type is Nitro");
+            }
+            tracing::info!("{ENV_AWS_GENESIS_SECRET_ID} not set; skipping genesis secret fetch");
+            return Ok(None);
+        }
+    };
+
+    let aws_cfg = aws_config::defaults(BehaviorVersion::latest())
+        .region(Region::new(region.to_string()))
+        .load()
+        .await;
+    let client = aws_sdk_secretsmanager::Client::new(&aws_cfg);
+
+    let resp = client
+        .get_secret_value()
+        .secret_id(&secret_id)
+        .send()
+        .await
+        .with_context(|| format!("fetching genesis secret {secret_id}"))?;
+
+    let secret_str = resp
+        .secret_string()
+        .context("genesis secret has no SecretString payload")?;
+
+    #[derive(Deserialize)]
+    struct GenesisSecret {
+        light_client_genesis: Genesis,
+    }
+    let parsed: GenesisSecret =
+        serde_json::from_str(secret_str).context("parsing genesis secret JSON")?;
+
+    tracing::info!(
+        field = "espresso_client.light_client.genesis",
+        secret_id,
+        "fetched genesis from secret"
+    );
+    Ok(Some(parsed.light_client_genesis))
+}
+
 /// Resolves the operator private key from AWS secret overrides, falling back
 /// to the `OPERATOR_PRIVATE_KEY` env var if the secret omits the field (or no
 /// AWS overrides were fetched). Errors only when both sources are missing.
@@ -180,7 +229,7 @@ pub fn resolve_operator_private_key(overrides: Option<&SecretOverrides>) -> Resu
 }
 
 pub fn assert_no_placeholders_nitro(cfg: &ServiceConfig<NitroConfig>) -> Result<()> {
-    if cfg.espresso_client.base_url.as_str() == PLACEHOLDER_URL {
+    if cfg.espresso_client.client.base_url.as_str() == PLACEHOLDER_URL {
         bail!("espresso_client.base_url was not overridden — still placeholder sentinel");
     }
     if cfg.rollup.stack.feed.web_socket_url == PLACEHOLDER_STR {
@@ -202,6 +251,18 @@ pub fn assert_no_placeholders_nitro(cfg: &ServiceConfig<NitroConfig>) -> Result<
             );
         }
     }
+    if cfg.key_manager.tee_type == TeeType::Nitro
+        && cfg
+            .espresso_client
+            .light_client
+            .genesis
+            .stake_table
+            .is_empty()
+    {
+        bail!(
+            "espresso_client.light_client.genesis.stake_table is empty — genesis was not overridden from secret"
+        );
+    }
     Ok(())
 }
 
@@ -212,7 +273,14 @@ mod tests {
     fn placeholder_config_json() -> &'static str {
         r#"{
             "espresso_client": {
-                "base_url": "http://placeholder.invalid/"
+                "base_url": "http://placeholder.invalid/",
+                "light_client": {
+                    "genesis": {
+                        "epoch_height": 100,
+                        "first_epoch_with_dynamic_stake_table": 1,
+                        "stake_table": []
+                    }
+                }
             },
             "rollup": {
                 "type": "nitro",
@@ -394,7 +462,7 @@ mod tests {
         apply_overrides_nitro(&mut cfg, &overrides).unwrap();
 
         assert_eq!(
-            cfg.espresso_client.base_url.as_str(),
+            cfg.espresso_client.client.base_url.as_str(),
             "https://query.example.com/"
         );
         assert_eq!(
@@ -444,7 +512,8 @@ mod tests {
         let mut cfg: ServiceConfig<NitroConfig> =
             serde_json::from_str(placeholder_config_json()).unwrap();
         // Apply only feed/ws/anytrust overrides; leave l1_http_url at PLACEHOLDER.
-        cfg.espresso_client.base_url = url::Url::parse("https://query.example.com/").unwrap();
+        cfg.espresso_client.client.base_url =
+            url::Url::parse("https://query.example.com/").unwrap();
         cfg.rollup.stack.feed.web_socket_url = "wss://feed.example.com/feed".to_string();
         cfg.rollup.stack.l1_ws_url = "wss://l1.example.com".to_string();
         for provider in cfg.da_server.da_providers.iter_mut() {

@@ -1,4 +1,7 @@
+use std::path::PathBuf;
+
 use alloy::primitives::Address;
+use light_client::state::Genesis;
 use serde::Deserialize;
 use url::Url;
 
@@ -7,9 +10,18 @@ use crate::{
     key_manager::key_manager::TeeType as KmTeeType, submitter::submitter::SubmitterConfig,
 };
 
+/// Espresso configuration: the query-node connection ([`EspressoClientConfig`], flattened) plus
+/// the light client's root of trust and cache. One node serves both submit and verified reads.
+#[derive(Debug, Clone, Deserialize)]
+pub struct EspressoConfig {
+    #[serde(flatten)]
+    pub client: EspressoClientConfig,
+    pub light_client: LightClientConfig,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServiceConfig<C> {
-    pub espresso_client: EspressoClientConfig,
+    pub espresso_client: EspressoConfig,
     #[serde(default)]
     pub streamer: StreamerConfig,
     pub rollup: RollupConfig<C>,
@@ -27,6 +39,40 @@ pub struct ServiceConfig<C> {
     /// to start from the wrong point and fail to make progress until restarted with the correct value.
     #[serde(default)]
     pub is_fresh_deployment: bool,
+}
+
+/// The primary query-node URL is reused from [`EspressoClientConfig::base_url`] (one node
+/// serves submit and read endpoints). Additional read-only fallback nodes can be listed in
+/// `fallback_query_urls`; only the root of trust, fallbacks, and cache location live here.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LightClientConfig {
+    /// Root of trust; must match the network the query node serves. Sourced from the
+    /// network's `genesis.toml`, delivered via the enclave secrets path.
+    pub genesis: Genesis,
+
+    /// Additional query-node URLs for the light-client read path, tried (in order, after the
+    /// primary `base_url`) when a node is down or lagging. Empty = primary only. The submit
+    /// path is unaffected; these are read-only and trust-minimized (every block is verified).
+    #[serde(default)]
+    pub fallback_query_urls: Vec<Url>,
+
+    /// Verified-state cache (leaves + stake tables) location. `None` = in-memory, rebuilt
+    /// via catch-up each start; persist across enclave restarts to avoid that cost.
+    #[serde(default)]
+    pub db_path: Option<PathBuf>,
+
+    /// Enable Decaf-specific trust bypass for pre-DRB epoch root headers that lack
+    /// `next_stake_table_hash`. Must be `true` when connecting to the Decaf testnet.
+    #[serde(default)]
+    pub decaf: bool,
+
+    /// Maximum number of stake tables to keep in memory during catch-up.
+    #[serde(default = "default_num_stake_tables_in_memory")]
+    pub num_stake_tables_in_memory: usize,
+}
+
+fn default_num_stake_tables_in_memory() -> usize {
+    100 // matches the light-client crate default
 }
 
 #[derive(Debug, Clone, Deserialize)]
