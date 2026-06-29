@@ -21,11 +21,22 @@ jobs:
       fail-fast: false
       matrix:
         nitro:
+          # Verified (trustless) builds — the default production path. Every Espresso
+          # block is checked against consensus via the light client.
           - feature: nitro-v3_9_9
             suffix: "-v3_9_9"
             latest: "auto"
           - feature: nitro-v3_10
             suffix: "-v3_10"
+            latest: "false"
+          # Unverified-reader builds — distinct binary/PCR0, separately attested. The
+          # deliberate production fallback for when the light client is unavailable and
+          # the chain must keep moving (reads the query node without consensus checks).
+          - feature: nitro-v3_9_9,unverified-reader
+            suffix: "-v3_9_9-unverified"
+            latest: "false"
+          - feature: nitro-v3_10,unverified-reader
+            suffix: "-v3_10-unverified"
             latest: "false"
 
     steps:
