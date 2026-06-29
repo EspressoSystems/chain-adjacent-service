@@ -24,18 +24,24 @@ jobs:
           # Verified (trustless) builds — the default production path. Every Espresso
           # block is checked against consensus via the light client.
           - feature: nitro-v3_9_9
+            cache_key: nitro-v3_9_9
             suffix: "-v3_9_9"
             latest: "auto"
           - feature: nitro-v3_10
+            cache_key: nitro-v3_10
             suffix: "-v3_10"
             latest: "false"
           # Unverified-reader builds — distinct binary/PCR0, separately attested. The
           # deliberate production fallback for when the light client is unavailable and
           # the chain must keep moving (reads the query node without consensus checks).
+          # cache_key is comma-free: buildx cache refs treat commas as attribute
+          # separators, so the feature string itself can't be used in the ref.
           - feature: nitro-v3_9_9,unverified-reader
+            cache_key: nitro-v3_9_9-unverified
             suffix: "-v3_9_9-unverified"
             latest: "false"
           - feature: nitro-v3_10,unverified-reader
+            cache_key: nitro-v3_10-unverified
             suffix: "-v3_10-unverified"
             latest: "false"
 
@@ -78,6 +84,6 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: |
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-${{ matrix.nitro.feature }}
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-${{ matrix.nitro.cache_key }}
             type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-nitro-v3_9_9
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-${{ matrix.nitro.feature }},mode=max,image-manifest=true,oci-mediatypes=true
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-${{ matrix.nitro.cache_key }},mode=max,image-manifest=true,oci-mediatypes=true
