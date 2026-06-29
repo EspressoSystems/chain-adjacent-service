@@ -6,6 +6,11 @@ edition = "2024"
 [features]
 default = ["nitro-v3_9_9"]
 e2e = []
+# Builds CAS to read Espresso WITHOUT consensus verification (trusted mode).
+# Produces a distinct binary/PCR0 from the default trustless build. Intended as a
+# deliberate, separately-attested fallback (e.g. if the light client is broken),
+# never the default.
+unverified-reader = []
 nitro-v3_9_9 = []
 nitro-v3_10 = []
 

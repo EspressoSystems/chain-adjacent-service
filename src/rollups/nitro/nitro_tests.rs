@@ -385,7 +385,6 @@ fn test_resolve_config_with_latest_batch_info() {
                 client_timeout_secs: 30,
             },
             light_client: crate::config::LightClientConfig {
-                enabled: true,
                 genesis: serde_json::from_str(
                     r#"{"epoch_height":100,"first_epoch_with_dynamic_stake_table":1,"stake_table":[]}"#,
                 )

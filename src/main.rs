@@ -8,9 +8,9 @@ use anyhow::{Context, Result};
 use chain_adjacent_service::config::{RollupType, TeeType};
 use chain_adjacent_service::da_api;
 use chain_adjacent_service::espresso_client::client::EspressoClient;
-use chain_adjacent_service::espresso_client::light_client::{
-    EspressoReader, LightClientEspressoReader,
-};
+use chain_adjacent_service::espresso_client::light_client::EspressoReader;
+#[cfg(not(feature = "unverified-reader"))]
+use chain_adjacent_service::espresso_client::light_client::LightClientEspressoReader;
 use chain_adjacent_service::key_manager::attestation_client::HttpAttestationVerifierClient;
 use chain_adjacent_service::key_manager::key_manager::KeyManager;
 use chain_adjacent_service::key_manager::tee_verifier::TEEVerifier;
@@ -255,12 +255,14 @@ async fn build_reader(
         ));
     }
 
-    // Trusted mode: read directly from the query node without verification. This is a deliberate,
-    // attested choice — `light_client.enabled` is part of the measured config (CONFIG_HASH).
-    if !espresso.light_client.enabled {
+    // Trusted mode: compiled with `--features unverified-reader`, CAS reads directly from the query
+    // node WITHOUT consensus verification. This is a separate binary with its own PCR0 — a
+    // deliberate, separately-attested fallback (e.g. if the light client is broken), never default.
+    #[cfg(feature = "unverified-reader")]
+    {
         tracing::warn!(
-            "light_client.enabled = false — reading Espresso WITHOUT consensus verification \
-             (trusting the query node); this mode is reflected in the enclave attestation"
+            "built with `unverified-reader` — reading Espresso WITHOUT consensus verification \
+             (trusting the query node); this is a distinct binary/PCR0 from the verified build"
         );
         return Ok(Arc::new(
             chain_adjacent_service::espresso_client::light_client::UnverifiedEspressoReader::new(
@@ -269,18 +271,22 @@ async fn build_reader(
         ));
     }
 
-    // Primary node first, then any configured fallbacks — the FallbackClient tries them in order.
-    let mut query_urls = vec![espresso.client.base_url.clone()];
-    query_urls.extend(espresso.light_client.fallback_query_urls.iter().cloned());
+    // Default (trustless): every block verified against consensus via the light client.
+    #[cfg(not(feature = "unverified-reader"))]
+    {
+        // Primary node first, then any configured fallbacks — the FallbackClient tries them in order.
+        let mut query_urls = vec![espresso.client.base_url.clone()];
+        query_urls.extend(espresso.light_client.fallback_query_urls.iter().cloned());
 
-    Ok(Arc::new(
-        LightClientEspressoReader::new(
-            espresso.light_client.genesis.clone(),
-            query_urls,
-            espresso.light_client.db_path.clone(),
-            espresso.light_client.decaf,
-            espresso.light_client.num_stake_tables_in_memory,
-        )
-        .await?,
-    ))
+        Ok(Arc::new(
+            LightClientEspressoReader::new(
+                espresso.light_client.genesis.clone(),
+                query_urls,
+                espresso.light_client.db_path.clone(),
+                espresso.light_client.decaf,
+                espresso.light_client.num_stake_tables_in_memory,
+            )
+            .await?,
+        ))
+    }
 }

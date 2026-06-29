@@ -203,10 +203,10 @@ pub fn assert_no_placeholders_nitro(cfg: &ServiceConfig<NitroConfig>) -> Result<
         }
     }
     // Genesis is the root of trust for verified reads, so it must be present in the (measured)
-    // config whenever the light client is enabled. When it's disabled (trusted mode) the reader
-    // never uses genesis, so an empty stake table is fine.
+    // config. Trusted-mode builds (the `unverified-reader` feature) never use genesis, so this check
+    // is compiled out there.
+    #[cfg(not(feature = "unverified-reader"))]
     if cfg.key_manager.tee_type == TeeType::Nitro
-        && cfg.espresso_client.light_client.enabled
         && cfg
             .espresso_client
             .light_client
@@ -215,8 +215,8 @@ pub fn assert_no_placeholders_nitro(cfg: &ServiceConfig<NitroConfig>) -> Result<
             .is_empty()
     {
         bail!(
-            "espresso_client.light_client.genesis.stake_table is empty but the light client is \
-             enabled — genesis must be set in the config (it is part of CONFIG_HASH)"
+            "espresso_client.light_client.genesis.stake_table is empty — genesis must be set in \
+             the config (it is the light client's root of trust and is part of CONFIG_HASH)"
         );
     }
     Ok(())

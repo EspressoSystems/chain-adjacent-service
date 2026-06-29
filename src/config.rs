@@ -46,14 +46,9 @@ pub struct ServiceConfig<C> {
 /// `fallback_query_urls`; only the root of trust, fallbacks, and cache location live here.
 #[derive(Debug, Clone, Deserialize)]
 pub struct LightClientConfig {
-    /// `true` (default) routes reads through the trustless light client; `false` reads directly
-    /// from the query node **without verification** (trusted mode). This field is part of
-    /// the measured config (`CONFIG_HASH`), so the chosen mode is reflected in the enclave attestation.
-    #[serde(default = "default_light_client_enabled")]
-    pub enabled: bool,
-
     /// Root of trust; must match the network the query node serves. Sourced from the
-    /// network's `genesis.toml`, baked into the measured config. Unused when `enabled = false`.
+    /// network's `genesis.toml`, baked into the measured config. Unused by trusted-mode
+    /// builds (the `unverified-reader` feature), which don't verify against consensus.
     pub genesis: Genesis,
 
     /// Additional query-node URLs for the light-client read path, tried (in order, after the
@@ -79,10 +74,6 @@ pub struct LightClientConfig {
 
 fn default_num_stake_tables_in_memory() -> usize {
     100 // matches the light-client crate default
-}
-
-fn default_light_client_enabled() -> bool {
-    true // trustless verification is the default; opt out explicitly via config
 }
 
 #[derive(Debug, Clone, Deserialize)]

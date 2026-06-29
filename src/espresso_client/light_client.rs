@@ -137,14 +137,15 @@ impl EspressoReader for LightClientEspressoReader {
 }
 
 /// Non-verifying reader over the plain query client: reads Espresso data directly from the query
-/// node **without** verifying it against consensus. Selected when `light_client.enabled = false`
-/// (trusted mode), and also used by e2e tests that exercise streamer behavior (e.g. out-of-order
-/// handling) rather than verification. Trusting the query node is a deliberate, attested choice —
-/// the mode is part of the measured config (`CONFIG_HASH`).
+/// node **without** verifying it against consensus. Compiled only under the `unverified-reader`
+/// feature (a deliberate, separately-attested trusted build) or `e2e` (tests that exercise
+/// streamer behavior rather than verification). It is absent from the default trustless binary.
+#[cfg(any(feature = "unverified-reader", feature = "e2e"))]
 pub struct UnverifiedEspressoReader {
     client: crate::espresso_client::client::EspressoClient,
 }
 
+#[cfg(any(feature = "unverified-reader", feature = "e2e"))]
 impl UnverifiedEspressoReader {
     pub fn new(config: crate::espresso_client::client::Config) -> Self {
         Self {
@@ -153,6 +154,7 @@ impl UnverifiedEspressoReader {
     }
 }
 
+#[cfg(any(feature = "unverified-reader", feature = "e2e"))]
 #[async_trait]
 impl EspressoReader for UnverifiedEspressoReader {
     async fn block_height(&self) -> Result<u64, LightClientError> {
@@ -334,40 +336,6 @@ mod light_client_tests {
         let config: ServiceConfig<NitroConfig> =
             serde_json::from_str(json).expect("config must deserialize");
         assert!(config.espresso_client.light_client.decaf);
-    }
-
-    // The light-client toggle defaults to enabled (trustless) when omitted, and can be turned off
-    // via config. The field is part of the measured config, so the mode is reflected in the hash.
-    #[test]
-    fn light_client_enabled_defaults_true_and_parses_false() {
-        use crate::config::ServiceConfig;
-        use crate::rollups::nitro::config::NitroConfig;
-
-        let with = |lc: &str| {
-            format!(
-                r#"{{
-                    "espresso_client": {{
-                        "base_url": "http://placeholder.invalid/",
-                        "light_client": {{ {lc} "genesis": {{ "epoch_height": 3000, "first_epoch_with_dynamic_stake_table": 1, "stake_table": [] }} }}
-                    }},
-                    "rollup": {{ "type": "nitro", "namespace_id": 1, "stack": {{ "chain_id": 412346, "feed": {{ "web_socket_url": "PLACEHOLDER", "current_message_count": 0 }}, "l1_ws_url": "PLACEHOLDER", "l1_http_url": "PLACEHOLDER", "sequencer_inbox_address": "0x0000000000000000000000000000000000000000" }} }},
-                    "key_manager": {{ "tee_verifier_address": "0x0000000000000000000000000000000000000000", "attestation_verifier_url": "http://localhost:8080/", "tee_type": "test" }}
-                }}"#
-            )
-        };
-
-        // Omitted → defaults to enabled (trustless).
-        let default_cfg: ServiceConfig<NitroConfig> =
-            serde_json::from_str(&with("")).expect("config must deserialize");
-        assert!(
-            default_cfg.espresso_client.light_client.enabled,
-            "light client must default to enabled"
-        );
-
-        // Explicit false → trusted mode.
-        let disabled_cfg: ServiceConfig<NitroConfig> =
-            serde_json::from_str(&with(r#""enabled": false,"#)).expect("config must deserialize");
-        assert!(!disabled_cfg.espresso_client.light_client.enabled);
     }
 
     // Verifies that `decaf: true` is accepted and the reader constructs successfully.
