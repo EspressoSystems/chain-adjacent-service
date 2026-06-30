@@ -429,17 +429,16 @@ mod light_client_tests {
         );
 
         // With decaf: true — same catch-up must succeed.
-        let reader_decaf =
-            LightClientEspressoReader::new(
-                genesis,
-                vec![decaf_url],
-                None,
-                true,
-                4096,
-                std::time::Duration::from_millis(300),
-            )
-            .await
-            .expect("build reader");
+        let reader_decaf = LightClientEspressoReader::new(
+            genesis,
+            vec![decaf_url],
+            None,
+            true,
+            4096,
+            std::time::Duration::from_millis(300),
+        )
+        .await
+        .expect("build reader");
         reader_decaf
             .inner
             .quorum_for_epoch(hotshot_types::data::EpochNumber::new(1057))
