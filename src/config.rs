@@ -81,7 +81,7 @@ fn default_num_stake_tables_in_memory() -> usize {
 }
 
 fn default_fallback_delay_ms() -> u64 {
-    500
+    300 // matches the light-client crate default
 }
 
 #[derive(Debug, Clone, Deserialize)]
