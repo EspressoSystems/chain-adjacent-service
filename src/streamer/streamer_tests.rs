@@ -57,9 +57,16 @@ async fn make_streamer_with_cap(
 /// serves `/light-client` (EspressoSystems/espresso-network#4453).
 async fn dev_node_reader(base_url: url::Url) -> LightClientEspressoReader {
     let genesis = crate::espresso_client::light_client::genesis_from_node(&base_url).await;
-    LightClientEspressoReader::new(genesis, vec![base_url], None, false, 100)
-        .await
-        .expect("build dev node reader")
+    LightClientEspressoReader::new(
+        genesis,
+        vec![base_url],
+        None,
+        false,
+        100,
+        std::time::Duration::from_millis(300),
+    )
+    .await
+    .expect("build dev node reader")
 }
 
 fn queue_positions(streamer: &Streamer<MockRollup>) -> Vec<u64> {

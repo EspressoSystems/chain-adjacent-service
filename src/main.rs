@@ -285,6 +285,7 @@ async fn build_reader(
                 espresso.light_client.db_path.clone(),
                 espresso.light_client.decaf,
                 espresso.light_client.num_stake_tables_in_memory,
+                std::time::Duration::from_millis(espresso.light_client.fallback_delay_ms),
             )
             .await?,
         ))

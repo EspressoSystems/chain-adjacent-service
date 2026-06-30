@@ -393,6 +393,7 @@ fn test_resolve_config_with_latest_batch_info() {
                 db_path: None,
                 decaf: false,
                 num_stake_tables_in_memory: 100,
+                fallback_delay_ms: 500,
             },
         },
         submitter: SubmitterConfig::default(),

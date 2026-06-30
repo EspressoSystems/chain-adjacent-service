@@ -70,10 +70,18 @@ pub struct LightClientConfig {
     /// Maximum number of stake tables to keep in memory during catch-up.
     #[serde(default = "default_num_stake_tables_in_memory")]
     pub num_stake_tables_in_memory: usize,
+
+    /// How long to wait on the primary query node before *also* firing the next fallback.
+    #[serde(default = "default_fallback_delay_ms")]
+    pub fallback_delay_ms: u64,
 }
 
 fn default_num_stake_tables_in_memory() -> usize {
     100 // matches the light-client crate default
+}
+
+fn default_fallback_delay_ms() -> u64 {
+    500
 }
 
 #[derive(Debug, Clone, Deserialize)]

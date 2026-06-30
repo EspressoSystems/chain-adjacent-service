@@ -73,6 +73,7 @@ impl LightClientEspressoReader {
         db_path: Option<PathBuf>,
         decaf: bool,
         num_stake_tables_in_memory: usize,
+        fallback_delay: std::time::Duration,
     ) -> Result<Self, LightClientError> {
         let storage = LightClientSqliteOptions {
             lc_path: db_path,
@@ -87,7 +88,10 @@ impl LightClientEspressoReader {
             .into_iter()
             .map(QueryServiceClient::new)
             .collect();
-        let server = FallbackClient::new(clients)
+        let server = FallbackClient::builder()
+            .clients(clients)
+            .fallback_delay(fallback_delay)
+            .build()
             .map_err(|e| LightClientError::Client(anyhow::anyhow!("fallback client: {e}")))?;
         let inner = LightClient::from_genesis_with_options(
             storage,
@@ -188,9 +192,16 @@ impl LightClientEspressoReader {
             r#"{"epoch_height":100,"first_epoch_with_dynamic_stake_table":1,"stake_table":[]}"#,
         )
         .expect("valid test genesis");
-        Self::new(genesis, vec![query_url], None, false, 100)
-            .await
-            .expect("failed to build in-memory test light client")
+        Self::new(
+            genesis,
+            vec![query_url],
+            None,
+            false,
+            100,
+            std::time::Duration::from_millis(300),
+        )
+        .await
+        .expect("failed to build in-memory test light client")
     }
 }
 
@@ -274,6 +285,7 @@ mod light_client_tests {
             None,
             false,
             100,
+            std::time::Duration::from_millis(300),
         )
         .await
         .expect("build reader");
@@ -346,9 +358,16 @@ mod light_client_tests {
         let node = EspressoDevNode::start().await;
         let url = node.client.config.base_url.clone();
         // dev node doesn't trigger the decaf path but the flag must be accepted without error
-        LightClientEspressoReader::new(genesis_from_node(&url).await, vec![url], None, true, 100)
-            .await
-            .expect("reader with decaf=true must construct successfully");
+        LightClientEspressoReader::new(
+            genesis_from_node(&url).await,
+            vec![url],
+            None,
+            true,
+            100,
+            std::time::Duration::from_millis(300),
+        )
+        .await
+        .expect("reader with decaf=true must construct successfully");
         node.stop();
     }
 
@@ -386,6 +405,7 @@ mod light_client_tests {
             None,
             false,
             100,
+            std::time::Duration::from_millis(300),
         )
         .await
         .expect("build reader");
@@ -410,9 +430,16 @@ mod light_client_tests {
 
         // With decaf: true — same catch-up must succeed.
         let reader_decaf =
-            LightClientEspressoReader::new(genesis, vec![decaf_url], None, true, 4096)
-                .await
-                .expect("build reader");
+            LightClientEspressoReader::new(
+                genesis,
+                vec![decaf_url],
+                None,
+                true,
+                4096,
+                std::time::Duration::from_millis(300),
+            )
+            .await
+            .expect("build reader");
         reader_decaf
             .inner
             .quorum_for_epoch(hotshot_types::data::EpochNumber::new(1057))
