@@ -1,5 +1,5 @@
-use std::env;
 use std::sync::Arc;
+use std::time::Duration;
 
 use alloy::{
     providers::{Provider, ProviderBuilder},
@@ -9,16 +9,16 @@ use anyhow::{Context, Result};
 use chain_adjacent_service::config::{RollupType, TeeType};
 use chain_adjacent_service::da_api;
 use chain_adjacent_service::espresso_client::client::EspressoClient;
-use chain_adjacent_service::espresso_client::light_client::{
-    EspressoReader, LightClientEspressoReader,
-};
+use chain_adjacent_service::espresso_client::light_client::EspressoReader;
+#[cfg(not(feature = "unverified-reader"))]
+use chain_adjacent_service::espresso_client::light_client::LightClientEspressoReader;
 use chain_adjacent_service::key_manager::attestation_client::HttpAttestationVerifierClient;
 use chain_adjacent_service::key_manager::key_manager::KeyManager;
 use chain_adjacent_service::key_manager::tee_verifier::TEEVerifier;
 use chain_adjacent_service::rollups::nitro::types::{BatchCursor, Nitro};
 use chain_adjacent_service::rollups::rollup::{BatchCursorFetcher, L1Monitor};
 use chain_adjacent_service::secrets::{
-    apply_overrides_nitro, assert_no_placeholders_nitro, fetch_genesis, fetch_secret_overrides,
+    apply_overrides_nitro, assert_no_placeholders_nitro, fetch_secret_overrides,
     resolve_operator_private_key,
 };
 use chain_adjacent_service::streamer::streamer::Streamer;
@@ -54,11 +54,6 @@ async fn main() -> Result<()> {
             let overrides = fetch_secret_overrides(config.key_manager.tee_type).await?;
             if let Some(overrides) = overrides.as_ref() {
                 apply_overrides_nitro(&mut config, overrides)?;
-            }
-            let region =
-                env::var(chain_adjacent_service::secrets::ENV_AWS_REGION).unwrap_or_default();
-            if let Some(genesis) = fetch_genesis(&region, config.key_manager.tee_type).await? {
-                config.espresso_client.light_client.genesis = genesis;
             }
             assert_no_placeholders_nitro(&config)?;
             info!("Configuration loaded and validated successfully");
@@ -261,18 +256,39 @@ async fn build_reader(
         ));
     }
 
-    // Primary node first, then any configured fallbacks — the FallbackClient tries them in order.
-    let mut query_urls = vec![espresso.client.base_url.clone()];
-    query_urls.extend(espresso.light_client.fallback_query_urls.iter().cloned());
+    // Trusted mode: compiled with `--features unverified-reader`, CAS reads directly from the query
+    // node WITHOUT consensus verification. This is a separate binary with its own PCR0 — a
+    // deliberate, separately-attested fallback (e.g. if the light client is broken), never default.
+    #[cfg(feature = "unverified-reader")]
+    {
+        tracing::warn!(
+            "built with `unverified-reader` — reading Espresso WITHOUT consensus verification \
+             (trusting the query node); this is a distinct binary/PCR0 from the verified build"
+        );
+        return Ok(Arc::new(
+            chain_adjacent_service::espresso_client::light_client::UnverifiedEspressoReader::new(
+                espresso.client.clone(),
+            ),
+        ));
+    }
 
-    Ok(Arc::new(
-        LightClientEspressoReader::new(
-            espresso.light_client.genesis.clone(),
-            query_urls,
-            espresso.light_client.db_path.clone(),
-            espresso.light_client.decaf,
-            espresso.light_client.num_stake_tables_in_memory,
-        )
-        .await?,
-    ))
+    // Default (trustless): every block verified against consensus via the light client.
+    #[cfg(not(feature = "unverified-reader"))]
+    {
+        // Primary node first, then any configured fallbacks — the FallbackClient tries them in order.
+        let mut query_urls = vec![espresso.client.base_url.clone()];
+        query_urls.extend(espresso.light_client.fallback_query_urls.iter().cloned());
+
+        Ok(Arc::new(
+            LightClientEspressoReader::new(
+                espresso.light_client.genesis.clone(),
+                query_urls,
+                espresso.light_client.db_path.clone(),
+                espresso.light_client.decaf,
+                espresso.light_client.num_stake_tables_in_memory,
+                Duration::from_millis(espresso.light_client.fallback_delay_ms),
+            )
+            .await?,
+        ))
+    }
 }

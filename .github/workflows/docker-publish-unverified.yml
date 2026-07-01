@@ -1,12 +1,9 @@
-name: Docker Publish
+name: Docker Publish (unverified-reader)
 
-# Verified (trustless) images — the default production path — build on every push to main,
-# on release tags, and on manual dispatch. The unverified-reader fallback images build only
-# on manual dispatch (see docker-publish-unverified.yml).
+# The unverified-reader images read Espresso WITHOUT consensus verification — a distinct
+# binary/PCR0, a deliberate separately-attested production fallback for when the light client
+# is unavailable. They are NOT the default path, so they build only on manual dispatch.
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
   workflow_dispatch:
 
 env:
@@ -23,15 +20,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # cache_key is comma-free (buildx cache refs split on commas).
         nitro:
-          - feature: nitro-v3_9_9
-            cache_key: nitro-v3_9_9
-            suffix: "-v3_9_9"
-            latest: "auto"
-          - feature: nitro-v3_10
-            cache_key: nitro-v3_10
-            suffix: "-v3_10"
-            latest: "false"
+          - feature: nitro-v3_9_9,unverified-reader
+            cache_key: nitro-v3_9_9-unverified
+            suffix: "-v3_9_9-unverified"
+          - feature: nitro-v3_10,unverified-reader
+            cache_key: nitro-v3_10-unverified
+            suffix: "-v3_10-unverified"
 
     steps:
       - uses: actions/checkout@v4
@@ -54,7 +50,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           flavor: |
-            latest=${{ matrix.nitro.latest }}
+            latest=false
             suffix=${{ matrix.nitro.suffix }}
           tags: |
             type=ref,event=branch
@@ -71,6 +67,8 @@ jobs:
             CARGO_FEATURES=${{ matrix.nitro.feature }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Warm from this variant's own cache, then the canonical verified v3_9_9 base
+          # (built on every main push, so it stays fresh).
           cache-from: |
             type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-${{ matrix.nitro.cache_key }}
             type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-nitro-v3_9_9

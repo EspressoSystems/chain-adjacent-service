@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Error;
 use async_trait::async_trait;
@@ -73,6 +74,7 @@ impl LightClientEspressoReader {
         db_path: Option<PathBuf>,
         decaf: bool,
         num_stake_tables_in_memory: usize,
+        fallback_delay: Duration,
     ) -> Result<Self, LightClientError> {
         let storage = LightClientSqliteOptions {
             lc_path: db_path,
@@ -87,7 +89,10 @@ impl LightClientEspressoReader {
             .into_iter()
             .map(QueryServiceClient::new)
             .collect();
-        let server = FallbackClient::new(clients)
+        let server = FallbackClient::builder()
+            .clients(clients)
+            .fallback_delay(fallback_delay)
+            .build()
             .map_err(|e| LightClientError::Client(anyhow::anyhow!("fallback client: {e}")))?;
         let inner = LightClient::from_genesis_with_options(
             storage,
@@ -136,14 +141,16 @@ impl EspressoReader for LightClientEspressoReader {
     }
 }
 
-/// Non-verifying reader over the plain query client, for e2e tests that exercise streamer
-/// behavior (e.g. out-of-order handling) rather than verification. Never used by release builds.
-#[cfg(feature = "e2e")]
+/// Non-verifying reader over the plain query client: reads Espresso data directly from the query
+/// node **without** verifying it against consensus. Compiled only under the `unverified-reader`
+/// feature (a deliberate, separately-attested trusted build) or `e2e` (tests that exercise
+/// streamer behavior rather than verification). It is absent from the default trustless binary.
+#[cfg(any(feature = "unverified-reader", feature = "e2e"))]
 pub struct UnverifiedEspressoReader {
     client: crate::espresso_client::client::EspressoClient,
 }
 
-#[cfg(feature = "e2e")]
+#[cfg(any(feature = "unverified-reader", feature = "e2e"))]
 impl UnverifiedEspressoReader {
     pub fn new(config: crate::espresso_client::client::Config) -> Self {
         Self {
@@ -152,7 +159,7 @@ impl UnverifiedEspressoReader {
     }
 }
 
-#[cfg(feature = "e2e")]
+#[cfg(any(feature = "unverified-reader", feature = "e2e"))]
 #[async_trait]
 impl EspressoReader for UnverifiedEspressoReader {
     async fn block_height(&self) -> Result<u64, LightClientError> {
@@ -186,9 +193,16 @@ impl LightClientEspressoReader {
             r#"{"epoch_height":100,"first_epoch_with_dynamic_stake_table":1,"stake_table":[]}"#,
         )
         .expect("valid test genesis");
-        Self::new(genesis, vec![query_url], None, false, 100)
-            .await
-            .expect("failed to build in-memory test light client")
+        Self::new(
+            genesis,
+            vec![query_url],
+            None,
+            false,
+            100,
+            Duration::from_millis(300),
+        )
+        .await
+        .expect("failed to build in-memory test light client")
     }
 }
 
@@ -200,7 +214,7 @@ pub(crate) async fn genesis_from_node(query_url: &Url) -> Genesis {
     let config_url = query_url.join("config/hotshot").expect("join config url");
     let response: Value = reqwest::Client::new()
         .get(config_url)
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(Duration::from_secs(10))
         .send()
         .await
         .expect("fetch /config/hotshot")
@@ -234,7 +248,6 @@ pub(crate) async fn genesis_from_node(query_url: &Url) -> Genesis {
 /// so it runs in CI). Genesis-regime only. Decaf on the devnet covers dynamic catch-up.
 #[cfg(test)]
 mod light_client_tests {
-    use std::time::Duration;
 
     use tokio::time::{Instant, sleep};
 
@@ -272,6 +285,7 @@ mod light_client_tests {
             None,
             false,
             100,
+            Duration::from_millis(300),
         )
         .await
         .expect("build reader");
@@ -344,9 +358,16 @@ mod light_client_tests {
         let node = EspressoDevNode::start().await;
         let url = node.client.config.base_url.clone();
         // dev node doesn't trigger the decaf path but the flag must be accepted without error
-        LightClientEspressoReader::new(genesis_from_node(&url).await, vec![url], None, true, 100)
-            .await
-            .expect("reader with decaf=true must construct successfully");
+        LightClientEspressoReader::new(
+            genesis_from_node(&url).await,
+            vec![url],
+            None,
+            true,
+            100,
+            Duration::from_millis(300),
+        )
+        .await
+        .expect("reader with decaf=true must construct successfully");
         node.stop();
     }
 
@@ -384,6 +405,7 @@ mod light_client_tests {
             None,
             false,
             100,
+            Duration::from_millis(300),
         )
         .await
         .expect("build reader");
@@ -407,10 +429,16 @@ mod light_client_tests {
         );
 
         // With decaf: true — same catch-up must succeed.
-        let reader_decaf =
-            LightClientEspressoReader::new(genesis, vec![decaf_url], None, true, 4096)
-                .await
-                .expect("build reader");
+        let reader_decaf = LightClientEspressoReader::new(
+            genesis,
+            vec![decaf_url],
+            None,
+            true,
+            4096,
+            Duration::from_millis(300),
+        )
+        .await
+        .expect("build reader");
         reader_decaf
             .inner
             .quorum_for_epoch(hotshot_types::data::EpochNumber::new(1057))

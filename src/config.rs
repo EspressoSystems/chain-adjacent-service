@@ -47,7 +47,8 @@ pub struct ServiceConfig<C> {
 #[derive(Debug, Clone, Deserialize)]
 pub struct LightClientConfig {
     /// Root of trust; must match the network the query node serves. Sourced from the
-    /// network's `genesis.toml`, delivered via the enclave secrets path.
+    /// network's `genesis.toml`, baked into the measured config. Unused by trusted-mode
+    /// builds (the `unverified-reader` feature), which don't verify against consensus.
     pub genesis: Genesis,
 
     /// Additional query-node URLs for the light-client read path, tried (in order, after the
@@ -69,10 +70,18 @@ pub struct LightClientConfig {
     /// Maximum number of stake tables to keep in memory during catch-up.
     #[serde(default = "default_num_stake_tables_in_memory")]
     pub num_stake_tables_in_memory: usize,
+
+    /// How long to wait on the primary query node before *also* firing the next fallback.
+    #[serde(default = "default_fallback_delay_ms")]
+    pub fallback_delay_ms: u64,
 }
 
 fn default_num_stake_tables_in_memory() -> usize {
     100 // matches the light-client crate default
+}
+
+fn default_fallback_delay_ms() -> u64 {
+    300 // matches the light-client crate default
 }
 
 #[derive(Debug, Clone, Deserialize)]
