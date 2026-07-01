@@ -1,8 +1,8 @@
 name: Docker Publish
 
+# Built on demand only (manual dispatch or release tag), not on every push.
 on:
   push:
-    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -20,9 +20,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # unverified-reader = the trusted-mode fallback build (distinct PCR0).
+        # cache_key is comma-free (buildx cache refs split on commas).
         nitro:
-          # Verified (trustless) builds — the default production path. Every Espresso
-          # block is checked against consensus via the light client.
           - feature: nitro-v3_9_9
             cache_key: nitro-v3_9_9
             suffix: "-v3_9_9"
@@ -31,11 +31,6 @@ jobs:
             cache_key: nitro-v3_10
             suffix: "-v3_10"
             latest: "false"
-          # Unverified-reader builds — distinct binary/PCR0, separately attested. The
-          # deliberate production fallback for when the light client is unavailable and
-          # the chain must keep moving (reads the query node without consensus checks).
-          # cache_key is comma-free: buildx cache refs treat commas as attribute
-          # separators, so the feature string itself can't be used in the ref.
           - feature: nitro-v3_9_9,unverified-reader
             cache_key: nitro-v3_9_9-unverified
             suffix: "-v3_9_9-unverified"

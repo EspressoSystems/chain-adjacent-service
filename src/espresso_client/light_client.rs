@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Error;
 use async_trait::async_trait;
@@ -73,7 +74,7 @@ impl LightClientEspressoReader {
         db_path: Option<PathBuf>,
         decaf: bool,
         num_stake_tables_in_memory: usize,
-        fallback_delay: std::time::Duration,
+        fallback_delay: Duration,
     ) -> Result<Self, LightClientError> {
         let storage = LightClientSqliteOptions {
             lc_path: db_path,
@@ -198,7 +199,7 @@ impl LightClientEspressoReader {
             None,
             false,
             100,
-            std::time::Duration::from_millis(300),
+            Duration::from_millis(300),
         )
         .await
         .expect("failed to build in-memory test light client")
@@ -213,7 +214,7 @@ pub(crate) async fn genesis_from_node(query_url: &Url) -> Genesis {
     let config_url = query_url.join("config/hotshot").expect("join config url");
     let response: Value = reqwest::Client::new()
         .get(config_url)
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(Duration::from_secs(10))
         .send()
         .await
         .expect("fetch /config/hotshot")
@@ -247,7 +248,6 @@ pub(crate) async fn genesis_from_node(query_url: &Url) -> Genesis {
 /// so it runs in CI). Genesis-regime only. Decaf on the devnet covers dynamic catch-up.
 #[cfg(test)]
 mod light_client_tests {
-    use std::time::Duration;
 
     use tokio::time::{Instant, sleep};
 
@@ -285,7 +285,7 @@ mod light_client_tests {
             None,
             false,
             100,
-            std::time::Duration::from_millis(300),
+            Duration::from_millis(300),
         )
         .await
         .expect("build reader");
@@ -364,7 +364,7 @@ mod light_client_tests {
             None,
             true,
             100,
-            std::time::Duration::from_millis(300),
+            Duration::from_millis(300),
         )
         .await
         .expect("reader with decaf=true must construct successfully");
@@ -405,7 +405,7 @@ mod light_client_tests {
             None,
             false,
             100,
-            std::time::Duration::from_millis(300),
+            Duration::from_millis(300),
         )
         .await
         .expect("build reader");
@@ -435,7 +435,7 @@ mod light_client_tests {
             None,
             true,
             4096,
-            std::time::Duration::from_millis(300),
+            Duration::from_millis(300),
         )
         .await
         .expect("build reader");

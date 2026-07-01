@@ -63,7 +63,7 @@ async fn dev_node_reader(base_url: url::Url) -> LightClientEspressoReader {
         None,
         false,
         100,
-        std::time::Duration::from_millis(300),
+        Duration::from_millis(300),
     )
     .await
     .expect("build dev node reader")
