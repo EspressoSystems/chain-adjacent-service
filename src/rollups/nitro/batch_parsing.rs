@@ -1,18 +1,34 @@
+//! Parses a Nitro sequencer batch into the message stream CAS verifies against its feed queue.
+//!
+//! The invariant this module must uphold is one-directional: whenever `parse_batch` succeeds, the
+//! message stream it returns must be exactly the stream the canonical Nitro replayer
+//! (`arbstate/inbox.go` `getNextMsg`/`Pop`) produces from the same bytes. It does not have to
+//! reproduce every upstream behaviour — being *stricter* is always safe, because CAS is a
+//! gatekeeper and a refused batch simply never gets signed.
+//!
+//! Concretely: upstream turns a segment it cannot interpret into a *counted* `InvalidL1Message`
+//! placeholder rather than removing it. CAS has no way to verify such a slot (there is no feed
+//! entry behind it) and no way to represent it, so any segment that would become a placeholder is
+//! rejected here. Dropping it instead would let a batch poster insert message slots that CAS never
+//! saw while still collecting a signature.
+
 use alloy::primitives::Bytes;
 use alloy_rlp::Decodable;
-use anyhow::{Result, bail};
-use tracing::warn;
+use anyhow::{Context, Result, bail};
 
 use super::types::BatchMessage;
 
 const MAX_DECOMPRESSED_LEN: usize = 1024 * 1024 * 16; // 16 MiB
-const MAX_L2_MESSAGE_SIZE: usize = 1 << 21; // 2 MiB
+/// Must match `arbostypes.MaxL2MessageSize`: upstream discards anything larger.
+const MAX_L2_MESSAGE_SIZE: usize = 256 * 1024;
 const MAX_SEGMENTS: usize = 100 * 1024;
 
 const BROTLI_HEADER_BYTE: u8 = 0x00;
 const BATCH_SEGMENT_KIND_L2_MESSAGE: u8 = 0;
 const BATCH_SEGMENT_KIND_L2_MESSAGE_BROTLI: u8 = 1;
 const BATCH_SEGMENT_KIND_DELAYED_MESSAGES: u8 = 2;
+const BATCH_SEGMENT_KIND_ADVANCE_TIMESTAMP: u8 = 3;
+const BATCH_SEGMENT_KIND_ADVANCE_L1_BLOCK_NUMBER: u8 = 4;
 
 pub(super) fn parse_batch(batch_content: Bytes) -> Result<Vec<BatchMessage>> {
     let payload: &[u8] = &batch_content[..];
@@ -64,23 +80,21 @@ pub(super) fn parse_batch(batch_content: Bytes) -> Result<Vec<BatchMessage>> {
                 batch_messages.push(BatchMessage::L2Msg(Bytes::copy_from_slice(data)));
             }
             BATCH_SEGMENT_KIND_L2_MESSAGE_BROTLI => {
-                match super::decompress::brotli::decompress(data, MAX_L2_MESSAGE_SIZE) {
-                    Ok(decompressed_msg) => {
-                        batch_messages.push(BatchMessage::L2Msg(Bytes::from(decompressed_msg)));
-                    }
-                    Err(e) => {
-                        warn!(
-                            "dropping brotli-compressed L2 message, decompression failed: {}",
-                            e
-                        );
-                    }
-                }
+                // A failed or oversize decode replays as a counted placeholder upstream, so it is
+                // not ours to skip. An honest batch poster never produces one.
+                let decompressed_msg =
+                    super::decompress::brotli::decompress(data, MAX_L2_MESSAGE_SIZE).context(
+                        "brotli-compressed L2 message segment would replay as a placeholder",
+                    )?;
+                batch_messages.push(BatchMessage::L2Msg(Bytes::from(decompressed_msg)));
             }
             BATCH_SEGMENT_KIND_DELAYED_MESSAGES => {
                 batch_messages.push(BatchMessage::DelayedMsg);
             }
-            // AdvanceTimestamp (3) and AdvanceL1BlockNumber (4) are metadata-only; skip them.
-            _ => {}
+            // Metadata-only: upstream consumes no message slot for these either.
+            BATCH_SEGMENT_KIND_ADVANCE_TIMESTAMP | BATCH_SEGMENT_KIND_ADVANCE_L1_BLOCK_NUMBER => {}
+            // Upstream logs "bad sequencer message segment kind" and emits a counted placeholder.
+            _ => bail!("unknown batch segment kind: {kind}"),
         }
     }
 
@@ -90,6 +104,7 @@ pub(super) fn parse_batch(batch_content: Bytes) -> Result<Vec<BatchMessage>> {
 #[cfg(test)]
 mod tests {
     use super::{
+        BATCH_SEGMENT_KIND_ADVANCE_L1_BLOCK_NUMBER, BATCH_SEGMENT_KIND_ADVANCE_TIMESTAMP,
         BATCH_SEGMENT_KIND_DELAYED_MESSAGES, BATCH_SEGMENT_KIND_L2_MESSAGE,
         BATCH_SEGMENT_KIND_L2_MESSAGE_BROTLI, BROTLI_HEADER_BYTE, BatchMessage,
         MAX_DECOMPRESSED_LEN, MAX_L2_MESSAGE_SIZE, MAX_SEGMENTS, parse_batch,
@@ -180,8 +195,10 @@ mod tests {
         );
     }
 
+    /// Upstream would replay this as a counted placeholder, so the whole batch must be rejected
+    /// rather than the segment silently removed.
     #[test]
-    fn brotli_l2_msg_oversize_is_dropped() {
+    fn brotli_l2_msg_oversize_errors() {
         let huge = vec![0u8; MAX_L2_MESSAGE_SIZE + 1];
         let segment = [
             &[BATCH_SEGMENT_KIND_L2_MESSAGE_BROTLI][..],
@@ -196,16 +213,71 @@ mod tests {
         combined.extend_from_slice(&l2_inner);
         combined.extend_from_slice(&delayed_inner);
 
-        let messages = parse_batch(wrap_brotli(&combined)).unwrap();
-        assert_eq!(messages, vec![BatchMessage::DelayedMsg]);
+        let err = parse_batch(wrap_brotli(&combined)).unwrap_err();
+        assert!(err.to_string().contains("would replay as a placeholder"));
     }
 
     #[test]
-    fn unknown_kind_skipped() {
+    fn brotli_l2_msg_undecompressable_errors() {
+        let segment = [
+            &[BATCH_SEGMENT_KIND_L2_MESSAGE_BROTLI][..],
+            &[0xff, 0xff, 0xff][..],
+        ]
+        .concat();
+        let inner = rlp_encode(&segment);
+        let err = parse_batch(wrap_brotli(&inner)).unwrap_err();
+        assert!(err.to_string().contains("would replay as a placeholder"));
+    }
+
+    /// A dropped segment shifts every later message one slot left in CAS's view, which is exactly
+    /// what makes it match the feed queue and pass verification. Reject the batch instead.
+    #[test]
+    fn segment_that_would_become_a_placeholder_does_not_shift_the_stream() {
+        let a = [&[BATCH_SEGMENT_KIND_L2_MESSAGE][..], b"A"].concat();
+        let corrupt = [
+            &[BATCH_SEGMENT_KIND_L2_MESSAGE_BROTLI][..],
+            &[0xff, 0xff, 0xff][..],
+        ]
+        .concat();
+        let b = [&[BATCH_SEGMENT_KIND_L2_MESSAGE][..], b"B"].concat();
+
+        let mut inner = Vec::new();
+        inner.extend_from_slice(&rlp_encode(&a));
+        inner.extend_from_slice(&rlp_encode(&corrupt));
+        inner.extend_from_slice(&rlp_encode(&b));
+
+        assert!(parse_batch(wrap_brotli(&inner)).is_err());
+    }
+
+    #[test]
+    fn unknown_kind_errors() {
         let segment = vec![0xff, 0x01, 0x02];
         let inner = rlp_encode(&segment);
+        let err = parse_batch(wrap_brotli(&inner)).unwrap_err();
+        assert!(err.to_string().contains("unknown batch segment kind"));
+    }
+
+    /// AdvanceTimestamp / AdvanceL1BlockNumber are metadata: upstream consumes no slot for them
+    /// either, so they stay skipped.
+    #[test]
+    fn advance_segments_consume_no_slot() {
+        let mut inner = Vec::new();
+        inner.extend_from_slice(&rlp_encode(
+            &[&[BATCH_SEGMENT_KIND_ADVANCE_TIMESTAMP][..], &[0x84][..]].concat(),
+        ));
+        inner.extend_from_slice(&rlp_encode(
+            &[
+                &[BATCH_SEGMENT_KIND_ADVANCE_L1_BLOCK_NUMBER][..],
+                &[0x84][..],
+            ]
+            .concat(),
+        ));
+        inner.extend_from_slice(&rlp_encode(
+            &[&[BATCH_SEGMENT_KIND_L2_MESSAGE][..], b"hello"].concat(),
+        ));
+
         let messages = parse_batch(wrap_brotli(&inner)).unwrap();
-        assert!(messages.is_empty());
+        assert_eq!(messages, vec![BatchMessage::L2Msg(Bytes::from("hello"))]);
     }
 
     #[test]

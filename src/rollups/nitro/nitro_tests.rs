@@ -137,7 +137,7 @@ fn test_verify_batch_delayed_msg_first_entry_invalid() {
 #[test]
 fn test_verify_batch_delayed_msg_subsequent_entry_valid() {
     let ctx = BatchCursor {
-        last_batch_delayed_messages_read: 0,
+        last_batch_delayed_messages_read: 10,
         next_batch_start_pos: 0,
     };
     let batch = vec![
@@ -157,7 +157,7 @@ fn test_verify_batch_delayed_msg_subsequent_entry_valid() {
 #[test]
 fn test_verify_batch_delayed_msg_subsequent_entry_invalid() {
     let ctx = BatchCursor {
-        last_batch_delayed_messages_read: 0,
+        last_batch_delayed_messages_read: 10,
         next_batch_start_pos: 0,
     };
     let batch = vec![
@@ -523,4 +523,67 @@ fn test_build_payload_overflow_preserves_remaining() {
 
     // The second message must remain; it did not fit.
     assert_eq!(messages.len(), 1);
+}
+
+/// A sequencer message must not move the delayed-inbox read count. If it could, the signed
+/// `after_delayed_messages_read` would outrun the batch's delayed segments and the replayer would
+/// append that many virtual delayed messages the batch never covered.
+#[test]
+fn test_verify_batch_l2msg_cannot_advance_delayed_messages_read() {
+    let ctx = BatchCursor {
+        last_batch_delayed_messages_read: 10,
+        next_batch_start_pos: 0,
+    };
+    let batch = vec![BatchMessage::L2Msg(AlloyBytes::copy_from_slice(b"A"))];
+    let queue = vec![make_entry_with_l2msg(b"A", 15, 0)];
+
+    let result = <Nitro as Rollup>::verify_batch_messages(&batch, &queue, &ctx);
+    assert!(!result.success);
+}
+
+/// The mirror case: an L2 entry walking the count backwards would make the signed
+/// `after_delayed_messages_read` cover fewer delayed messages than the batch has segments, and the
+/// surplus segments replay as `InvalidL1Message` placeholders.
+#[test]
+fn test_verify_batch_l2msg_cannot_rewind_delayed_messages_read() {
+    let ctx = BatchCursor {
+        last_batch_delayed_messages_read: 10,
+        next_batch_start_pos: 0,
+    };
+    let batch = vec![
+        BatchMessage::DelayedMsg,
+        BatchMessage::L2Msg(AlloyBytes::copy_from_slice(b"A")),
+        BatchMessage::DelayedMsg,
+    ];
+    let queue = vec![
+        make_entry_no_message(11, 0),
+        make_entry_with_l2msg(b"A", 10, 1),
+        make_entry_no_message(11, 2),
+    ];
+
+    let result = <Nitro as Rollup>::verify_batch_messages(&batch, &queue, &ctx);
+    assert!(!result.success);
+}
+
+/// The signed value must equal the cursor plus the batch's delayed segment count.
+#[test]
+fn test_verify_batch_after_delayed_messages_read_matches_segment_count() {
+    let ctx = BatchCursor {
+        last_batch_delayed_messages_read: 10,
+        next_batch_start_pos: 0,
+    };
+    let batch = vec![
+        BatchMessage::DelayedMsg,
+        BatchMessage::L2Msg(AlloyBytes::copy_from_slice(b"A")),
+        BatchMessage::DelayedMsg,
+    ];
+    let queue = vec![
+        make_entry_no_message(11, 0),
+        make_entry_with_l2msg(b"A", 11, 1),
+        make_entry_no_message(12, 2),
+    ];
+
+    let result = <Nitro as Rollup>::verify_batch_messages(&batch, &queue, &ctx);
+    assert!(result.success);
+    assert_eq!(result.after_delayed_messages_read, 12);
 }
