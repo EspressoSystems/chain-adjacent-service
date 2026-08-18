@@ -41,4 +41,9 @@ ignore = [
     "RUSTSEC-2026-0097",
     # lru IterMut Stacked Borrows — transitive
     "RUSTSEC-2026-0002",
+    # rkyv 0.7 OOB read on archives containing Rc/Arc, via Push-CDN's cdn-proto.
+    # Unlike the rest of this list the fix is a semver-major bump (0.7 -> 0.8.17)
+    # and the crate sits on cdn-proto's network deserialization path, so this one
+    # is worth chasing rather than carrying: revisit when the Push-CDN pin moves.
+    "RUSTSEC-2026-0235",
 ]

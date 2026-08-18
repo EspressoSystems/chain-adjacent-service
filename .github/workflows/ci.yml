@@ -50,6 +50,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # audit-check only builds cargo-audit from source when it is not already on
+      # PATH, and that build uses the toolchain rust-toolchain.toml pins for this
+      # repo. cargo-audit's dependencies raise their MSRV freely, so that build
+      # breaks whenever they outrun our pin. Drop in the prebuilt binary instead:
+      # the audit only reads Cargo.lock, so it has no reason to track our pin.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
       - uses: rustsec/audit-check@v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
