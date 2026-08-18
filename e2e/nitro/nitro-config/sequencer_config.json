@@ -44,7 +44,8 @@
     },
     "execution": {
         "sequencer": {
-            "enable": true
+            "enable": true,
+            "max-acceptable-timestamp-delta": "8760h"
         },
         "forwarding-target": "null"
     },
