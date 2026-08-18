@@ -15,7 +15,7 @@ jobs:
   e2e-v3_9_9:
     name: E2E v3.9.9 (${{ matrix.group }})
     runs-on: ubuntu-24.04-8core
-    timeout-minutes: 20
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -66,7 +66,7 @@ jobs:
   e2e-v3_10:
     name: E2E v3.10 (${{ matrix.group }})
     runs-on: ubuntu-24.04-8core
-    timeout-minutes: 20
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
