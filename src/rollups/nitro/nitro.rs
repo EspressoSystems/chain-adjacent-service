@@ -136,12 +136,23 @@ impl Rollup for Nitro {
             );
             return VerificationResult::failure();
         }
+        // Running delayed-inbox read count: a delayed message advances it by one, a sequencer
+        // message must leave it untouched. Every queue entry has to agree with it.
+        //
+        // This is not just bookkeeping. The batch's final value is what we sign as
+        // `after_delayed_messages_read`, and the on-chain replayer keeps emitting delayed messages
+        // (`arbstate/inbox.go`, "reading virtual delayed message segment") until it reaches that
+        // number, regardless of how many delayed segments the batch actually contains. So a queue
+        // whose counts drift from this total makes the chain execute messages the batch never
+        // covered, or replace covered ones with `InvalidL1Message` placeholders.
+        let mut expected_delayed_messages_read = context.last_batch_delayed_messages_read;
+
         for (index, msg) in batch_messages.iter().enumerate() {
+            // Safe here because we have already checked that batch_messages
+            // length is not greater than queue length
+            let entry = &queue[index];
             match msg {
                 BatchMessage::L2Msg(content) => {
-                    // Safe here because we have already checked that batch_messages
-                    // length is not greater than queuelength
-                    let entry = &queue[index];
                     let Some(msg_bytes) = entry.feed_message.message.message.as_ref() else {
                         tracing::warn!("message with metadata does not contain a message");
                         return VerificationResult::failure();
@@ -157,23 +168,18 @@ impl Rollup for Nitro {
                     }
                 }
                 BatchMessage::DelayedMsg => {
-                    let prev_delayed_message_read = if index == 0 {
-                        context.last_batch_delayed_messages_read
-                    } else {
-                        // Safe here because delayed messages should always be less than batch messages
-                        let prev_entry = &queue[index - 1];
-                        prev_entry.feed_message.message.delayed_messages_read
-                    };
-
-                    if prev_delayed_message_read + 1
-                        != queue[index].feed_message.message.delayed_messages_read
-                    {
-                        tracing::warn!(
-                            "delayed messages read count does not match streamer queue entry"
-                        );
-                        return VerificationResult::failure();
-                    }
+                    expected_delayed_messages_read += 1;
                 }
+            }
+
+            if entry.feed_message.message.delayed_messages_read != expected_delayed_messages_read {
+                tracing::warn!(
+                    "delayed messages read count does not match streamer queue entry, index={}, expected={}, got={}",
+                    index,
+                    expected_delayed_messages_read,
+                    entry.feed_message.message.delayed_messages_read,
+                );
+                return VerificationResult::failure();
             }
         }
 
@@ -188,10 +194,7 @@ impl Rollup for Nitro {
             .map(|e| e.hotshot_height())
             .min()
             .unwrap_or(0);
-        let after_delayed_messages_read = queue[batch_messages.len() - 1]
-            .feed_message
-            .message
-            .delayed_messages_read;
+        let after_delayed_messages_read = expected_delayed_messages_read;
         let min_espresso_block_still_in_queue = queue[batch_messages.len()..]
             .iter()
             .map(|e| e.hotshot_height())

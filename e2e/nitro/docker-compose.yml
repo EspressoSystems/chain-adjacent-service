@@ -1,7 +1,24 @@
 services:
   l1-anvil:
     image: ghcr.io/foundry-rs/foundry:latest
-    entrypoint: ["anvil"]
+    # `--load-state` resumes the snapshot's clock rather than starting at the wall
+    # clock, so the chain runs however old the committed snapshot is. Nitro reads
+    # L1 time in several places -- the sequencer refuses to build blocks past
+    # `max-acceptable-timestamp-delta`, and the batch poster drops messages whose
+    # timestamp exceeds the L1 bound -- and both fail as silent stalls. `--timestamp`
+    # is ignored alongside `--load-state`, so realign over RPC once anvil is up and
+    # only report healthy afterwards, which is what `depends_on` gates the stack on.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        anvil "$$@" &
+        anvil_pid=$$!
+        until cast block-number --rpc-url http://localhost:8545 >/dev/null 2>&1; do sleep 0.2; done
+        cast rpc anvil_setTime "$$(date +%s)" --rpc-url http://localhost:8545 >/dev/null
+        touch /tmp/clock-realigned
+        wait $$anvil_pid
+      - --
     command:
       [
         "--host",
@@ -21,7 +38,10 @@ services:
       - "8545:8545"
     healthcheck:
       test:
-        ["CMD", "cast", "block-number", "--rpc-url", "http://localhost:8545"]
+        [
+          "CMD-SHELL",
+          "test -f /tmp/clock-realigned && cast block-number --rpc-url http://localhost:8545 >/dev/null",
+        ]
       interval: 2s
       timeout: 2s
       retries: 10
@@ -188,7 +208,10 @@ services:
     volumes:
       - "./das-keys/a:/das-keys:ro"
     tmpfs:
-      - /home/user/das-store
+      # A bare tmpfs mount lands root-owned and read-only for the image's
+      # non-root `user`, which anytrustserver reports as "must be readable and
+      # writeable". Give it world-writable sticky permissions instead.
+      - /home/user/das-store:mode=1777
     command:
       - --parent-chain.sequencer-inbox-address=none
       - --data-availability.key.key-dir=/das-keys
@@ -211,7 +234,10 @@ services:
     volumes:
       - "./das-keys/b:/das-keys:ro"
     tmpfs:
-      - /home/user/das-store
+      # A bare tmpfs mount lands root-owned and read-only for the image's
+      # non-root `user`, which anytrustserver reports as "must be readable and
+      # writeable". Give it world-writable sticky permissions instead.
+      - /home/user/das-store:mode=1777
     command:
       - --parent-chain.sequencer-inbox-address=none
       - --data-availability.key.key-dir=/das-keys
@@ -232,7 +258,10 @@ services:
     image: ${NITRO_IMAGE}
     entrypoint: ["/usr/local/bin/anytrustserver"]
     tmpfs:
-      - /home/user/das-store
+      # A bare tmpfs mount lands root-owned and read-only for the image's
+      # non-root `user`, which anytrustserver reports as "must be readable and
+      # writeable". Give it world-writable sticky permissions instead.
+      - /home/user/das-store:mode=1777
     command:
       - --parent-chain.sequencer-inbox-address=none
       - --data-availability.local-file-storage.enable

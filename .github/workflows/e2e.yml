@@ -15,15 +15,25 @@ jobs:
   e2e-v3_9_9:
     name: E2E v3.9.9 (${{ matrix.group }})
     runs-on: ubuntu-24.04-8core
-    timeout-minutes: 20
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         include:
+          # `filter` selects tests positionally, `skip` deselects. Exactly one of
+          # them carries each group; the other stays empty.
           - group: general
-            skip: "--skip test_e2e_anytrust --skip test_e2e_external_da"
+            filter: ""
+            skip: "--skip test_e2e_anytrust --skip test_e2e_external_da --skip test_e2e_message_drift"
           - group: anytrust
+            filter: ""
             skip: "--skip test_e2e_calldata --skip test_e2e_restart --skip test_e2e_l1_reorg --skip test_e2e_espresso --skip test_e2e_malicious --skip test_e2e_legacy --skip test_e2e_message_drift"
+          # Drift exercises CAS's recovery from a message missing on Espresso. It
+          # spends minutes waiting on that recovery and starves the rest of the
+          # suite of the job's budget, so it gets its own runner.
+          - group: drift
+            filter: "test_e2e_message_drift"
+            skip: ""
 
     steps:
       - uses: actions/checkout@v4
@@ -61,20 +71,30 @@ jobs:
         run: |
           RUST_BACKTRACE=1 cargo test --test nitro \
             --no-default-features --features e2e,nitro-v3_9_9 \
-            -- --test-threads=1 ${{ matrix.skip }}
+            ${{ matrix.filter }} -- --test-threads=1 ${{ matrix.skip }}
 
   e2e-v3_10:
     name: E2E v3.10 (${{ matrix.group }})
     runs-on: ubuntu-24.04-8core
-    timeout-minutes: 20
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         include:
+          # `filter` selects tests positionally, `skip` deselects. Exactly one of
+          # them carries each group; the other stays empty.
           - group: general
-            skip: "--skip test_e2e_anytrust --skip test_e2e_external_da"
+            filter: ""
+            skip: "--skip test_e2e_anytrust --skip test_e2e_external_da --skip test_e2e_message_drift"
           - group: anytrust
+            filter: ""
             skip: "--skip test_e2e_calldata --skip test_e2e_restart --skip test_e2e_l1_reorg --skip test_e2e_espresso --skip test_e2e_malicious --skip test_e2e_legacy --skip test_e2e_message_drift"
+          # Drift exercises CAS's recovery from a message missing on Espresso. It
+          # spends minutes waiting on that recovery and starves the rest of the
+          # suite of the job's budget, so it gets its own runner.
+          - group: drift
+            filter: "test_e2e_message_drift"
+            skip: ""
 
     steps:
       - uses: actions/checkout@v4
@@ -106,4 +126,4 @@ jobs:
         run: |
           RUST_BACKTRACE=1 cargo test --test nitro \
             --no-default-features --features e2e,nitro-v3_10 \
-            -- --test-threads=1 ${{ matrix.skip }}
+            ${{ matrix.filter }} -- --test-threads=1 ${{ matrix.skip }}
