@@ -3,6 +3,7 @@ use alloy::{
     signers::{SignerSync, local::PrivateKeySigner},
     sol_types::{Eip712Domain, SolStruct},
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 
 pub mod eip712 {
     alloy::sol! {
@@ -253,6 +254,11 @@ impl KeyManager {
         if attestation.is_empty() {
             return Err(KeyManagerError::EmptyAttestation(self.tee_type));
         }
+
+        tracing::info!(
+            attestation_base64 = %BASE64_STANDARD.encode(&attestation),
+            "Generated Nitro attestation document"
+        );
 
         let (journal_bytes, proof_bytes) = self
             .attestation_verifier_client
