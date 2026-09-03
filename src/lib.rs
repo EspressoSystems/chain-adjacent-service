@@ -13,6 +13,7 @@ pub mod ws_proxy_connect;
 
 use alloy::primitives::Bytes;
 use anyhow::Result;
+use std::io::IsTerminal;
 use tokio::sync::{mpsc, oneshot};
 
 #[derive(Debug)]
@@ -62,7 +63,9 @@ pub async fn cas_init() -> Result<()> {
     rustls::crypto::ring::default_provider()
         .install_default()
         .ok();
+    // Only emit ANSI colour codes when stdout is a real terminal.
     tracing_subscriber::fmt()
+        .with_ansi(std::io::stdout().is_terminal())
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init()
         .ok();
