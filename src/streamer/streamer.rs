@@ -35,6 +35,8 @@ pub struct Streamer<R: Rollup> {
     cursor_fetcher: Option<Arc<dyn BatchCursorFetcher<R::BatchCursor>>>,
     finalized_idx: u64,
     last_broadcast_position: u64,
+    /// True while the finalization channel is full and broadcasts are being retried.
+    broadcast_stalled: bool,
 }
 
 pub struct BroadcastRetry {
@@ -81,6 +83,7 @@ impl<R: Rollup> Streamer<R> {
             cursor_fetcher,
             finalized_idx: 0,
             last_broadcast_position: 0,
+            broadcast_stalled: false,
         }
     }
 
@@ -167,7 +170,7 @@ impl<R: Rollup> Streamer<R> {
                         None => R::BatchCursor::default(),
                     };
                     let verification_result = R::verify_batch_messages(&entries, &self.queue, &context);
-                    tracing::info!(
+                    tracing::debug!(
                         success = verification_result.success,
                         entries = entries.len(),
                         "batch verification completed"
@@ -270,12 +273,23 @@ impl<R: Rollup> Streamer<R> {
             let feed_message = R::convert_entry_to_feed_message(entry);
             match sender.try_send(feed_message) {
                 Ok(()) => {
+                    if self.broadcast_stalled {
+                        tracing::info!(seq, "finalization channel drained; broadcast resumed");
+                        self.broadcast_stalled = false;
+                    }
                     tracing::debug!(seq, "broadcast feed message to finalization channel");
                 }
                 Err(mpsc::error::TrySendError::Full(_)) => {
-                    tracing::warn!(
-                        "finalization channel is full; cannot broadcast feed message with sequence number {seq}"
-                    );
+                    // Backpressure can persist for many retries; warn once per
+                    // stall and keep the repeats at debug.
+                    if self.broadcast_stalled {
+                        tracing::debug!(seq, "finalization channel still full; retrying broadcast");
+                    } else {
+                        tracing::warn!(
+                            "finalization channel is full; cannot broadcast feed message with sequence number {seq}"
+                        );
+                        self.broadcast_stalled = true;
+                    }
                     retry.schedule(Duration::from_millis(self.config.retry_broadcast_delay_ms));
                     return;
                 }
@@ -296,14 +310,13 @@ impl<R: Rollup> Streamer<R> {
     /// promotion back to a full entry only happens via `promote_stubs`, which
     /// re-fetches that original block.
     fn filter_messages(&mut self, parsed_rollup_entries: Vec<<R as Rollup>::Entry>) {
+        let mut skipped_before_start: usize = 0;
+        let mut min_skipped_seq: Option<u64> = None;
         for parsed_entry in parsed_rollup_entries {
             let seq = parsed_entry.sequence_number();
             if seq < self.config.starting_pos {
-                tracing::warn!(
-                    "sequence number {} is less than the starting pos of the streamer {}",
-                    seq,
-                    self.config.starting_pos
-                );
+                skipped_before_start += 1;
+                min_skipped_seq = Some(min_skipped_seq.map_or(seq, |m| m.min(seq)));
                 continue;
             }
 
@@ -319,6 +332,14 @@ impl<R: Rollup> Streamer<R> {
                 self.stubs
                     .insert(evicted.sequence_number(), evicted.hotshot_height());
             }
+        }
+        if skipped_before_start > 0 {
+            tracing::warn!(
+                skipped = skipped_before_start,
+                min_seq = min_skipped_seq,
+                starting_pos = self.config.starting_pos,
+                "skipped entries with sequence number below the streamer starting pos"
+            );
         }
     }
 
@@ -443,12 +464,18 @@ pub async fn poll_hotshot_blocks(
     let mut not_found_warned = false;
     let progress_log_interval = Duration::from_millis(config.progress_log_interval_ms);
     let mut last_progress_log: Option<std::time::Instant> = None;
+    // Fetch errors repeat on every backoff tick while a node is down. Log the
+    // first one at error, then a periodic summary; the rest go to debug.
+    let mut fetch_errors = RepeatedErrorLog::new(progress_log_interval);
 
     loop {
         let latest_block_height = match client.block_height().await {
-            Ok(height) => height,
+            Ok(height) => {
+                fetch_errors.recovered("latest hotshot block height");
+                height
+            }
             Err(err) => {
-                tracing::error!("error while fetching latest hotshot block height: {err}");
+                fetch_errors.log("error while fetching latest hotshot block height", &err);
                 backoff =
                     exponential_backoff(backoff, Duration::from_millis(config.max_backoff_ms))
                         .await;
@@ -471,6 +498,7 @@ pub async fn poll_hotshot_blocks(
             .await
         {
             Ok(txns) => {
+                fetch_errors.recovered("namespace transactions");
                 if not_found_warned {
                     tracing::info!(from_block, to_block, "espresso availability recovered");
                 }
@@ -502,8 +530,11 @@ pub async fn poll_hotshot_blocks(
                     tokio::time::sleep(Duration::from_millis(config.initial_backoff_ms)).await;
                     continue;
                 }
-                tracing::error!(
-                    "error while fetching namespace transactions in range [{from_block}, {to_block}]: {err}"
+                fetch_errors.log(
+                    &format!(
+                        "error while fetching namespace transactions in range [{from_block}, {to_block}]"
+                    ),
+                    &err,
                 );
                 backoff =
                     exponential_backoff(backoff, Duration::from_millis(config.max_backoff_ms))
@@ -538,6 +569,50 @@ pub async fn poll_hotshot_blocks(
             .map_err(|err| anyhow::anyhow!("hotshot transactions channel closed: {err}"))?;
 
         from_block = to_block
+    }
+}
+
+/// Collapses a stream of identical-cause errors into one `error!` on the first
+/// occurrence, a periodic `error!` summary with the repeat count, and `debug!`
+/// in between. Call [`recovered`](Self::recovered) on success to reset.
+struct RepeatedErrorLog {
+    summary_interval: Duration,
+    count: u64,
+    last_logged: Option<std::time::Instant>,
+}
+
+impl RepeatedErrorLog {
+    fn new(summary_interval: Duration) -> Self {
+        Self {
+            summary_interval,
+            count: 0,
+            last_logged: None,
+        }
+    }
+
+    fn log(&mut self, msg: &str, err: &dyn std::fmt::Display) {
+        self.count += 1;
+        let due = self
+            .last_logged
+            .map(|t| t.elapsed() >= self.summary_interval)
+            .unwrap_or(true);
+        if due {
+            tracing::error!(repeats = self.count, "{msg}: {err}");
+            self.last_logged = Some(std::time::Instant::now());
+        } else {
+            tracing::debug!(repeats = self.count, "{msg}: {err}");
+        }
+    }
+
+    fn recovered(&mut self, what: &str) {
+        if self.count > 0 {
+            tracing::info!(
+                failures = self.count,
+                "recovered: fetching {what} succeeded"
+            );
+        }
+        self.count = 0;
+        self.last_logged = None;
     }
 }
 

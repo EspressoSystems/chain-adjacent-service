@@ -59,6 +59,22 @@ impl VerificationResult {
 pub type VerificationSender = mpsc::Sender<(Bytes, oneshot::Sender<VerificationResult>)>;
 pub type VerificationReceiver = mpsc::Receiver<(Bytes, oneshot::Sender<VerificationResult>)>;
 
+/// Log filter used when `RUST_LOG` is unset.
+///
+/// The upstream `light_client` crate is chatty: the fallback client logs every
+/// slow or failed request at info/warn, and stake-table catchup emits one line
+/// per epoch plus one per replayed event (thousands of lines for a multi-epoch
+/// catchup) at debug. Cap the crate at `warn`, but keep `light_client::state`
+/// at `info` so the per-epoch catchup progress lines remain visible.
+/// Any `RUST_LOG` value overrides this entirely.
+pub const DEFAULT_LOG_FILTER: &str =
+    "info,light_client=warn,light_client::state=info,hotshot=warn,stake_table=warn";
+
+fn default_env_filter() -> tracing_subscriber::EnvFilter {
+    tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_LOG_FILTER))
+}
+
 pub async fn cas_init() -> Result<()> {
     rustls::crypto::ring::default_provider()
         .install_default()
@@ -66,7 +82,7 @@ pub async fn cas_init() -> Result<()> {
     // Only emit ANSI colour codes when stdout is a real terminal.
     tracing_subscriber::fmt()
         .with_ansi(std::io::stdout().is_terminal())
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(default_env_filter())
         .try_init()
         .ok();
 
