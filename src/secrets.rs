@@ -28,6 +28,10 @@ pub struct SecretOverrides {
     pub is_fresh_deployment: bool,
     #[serde(default)]
     pub operator_private_key: Option<String>,
+    /// Optional tracing filter spec (same syntax as `RUST_LOG`, e.g.
+    /// `"info"` or `"debug,light_client=info"`).
+    #[serde(default)]
+    pub log_filter: Option<String>,
 }
 
 /// Fetches the secret overrides from AWS Secrets Manager.
@@ -402,6 +406,7 @@ mod tests {
             starting_hotshot_height: 0,
             is_fresh_deployment: true,
             operator_private_key: Some("0xfromsecret".to_string()),
+            log_filter: None,
         };
         let key = resolve_operator_private_key(Some(&overrides)).unwrap();
         assert_eq!(key, "0xfromsecret");

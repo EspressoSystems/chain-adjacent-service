@@ -94,7 +94,7 @@ tokio = { version = "1.49.0", features = [
 ] }
 tokio-util = { version = "0.7", features = ["codec"] }
 tracing = "0.1.43"
-tracing-subscriber = { version = "0.3.22", features = ["fmt", "json"] }
+tracing-subscriber = { version = "0.3.22", features = ["fmt", "json", "env-filter"] }
 url = "2"
 yawc = "0.3"
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
