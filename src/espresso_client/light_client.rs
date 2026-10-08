@@ -457,4 +457,72 @@ mod light_client_tests {
             .await
             .expect("catch-up to epoch 1057 must succeed with decaf=true");
     }
+
+    // End-to-end check of the committed mainnet light-client genesis (tee-image-builder
+    // chain-configs/cas/genesis/mainnet.json) against Espresso mainnet: rooted in that genesis,
+    // the light client must catch its stake table up through the first dynamic epoch (277),
+    // where the stake table switches from the genesis set to the contract-derived one. No L1
+    // RPC is needed: dynamic stake tables are learned from Espresso epoch-root headers.
+    //
+    // Logs go through the same subscriber as the binary. CAS_LOG_FILTER stands in for the
+    // secret's `log_filter` override; without it, RUST_LOG applies, then `info`.
+    //
+    // Run manually:
+    //   MAINNET_GENESIS=../tee-image-builder/chain-configs/cas/genesis/mainnet.json \
+    //   CAS_LOG_FILTER=info,light_client=debug \
+    //   cargo test --lib light_client_tests::mainnet_genesis_catches_up -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore = "requires network access to cache.main.net.espresso.network"]
+    async fn mainnet_genesis_catches_up() {
+        crate::init_logging(std::env::var("CAS_LOG_FILTER").ok().as_deref());
+
+        let genesis_path = std::env::var("MAINNET_GENESIS")
+            .expect("set MAINNET_GENESIS to the committed mainnet.json path");
+        let genesis: Genesis = serde_json::from_str(
+            &std::fs::read_to_string(&genesis_path).expect("read mainnet.json"),
+        )
+        .expect("mainnet.json must deserialize as Genesis (including chain_id)");
+
+        // Guard the known mainnet parameters so a wrong or stale file fails loudly.
+        assert_eq!(genesis.chain_id, MAINNET_CHAIN_ID, "unexpected chain_id");
+        assert_eq!(genesis.epoch_height, 40000, "unexpected epoch_height");
+        assert_eq!(
+            *genesis.first_epoch_with_dynamic_stake_table, 277,
+            "unexpected first dynamic epoch"
+        );
+        assert_eq!(
+            genesis.stake_table.len(),
+            100,
+            "unexpected stake table size"
+        );
+        let genesis_regime_end =
+            (*genesis.first_epoch_with_dynamic_stake_table - 1) * genesis.epoch_height;
+
+        let mainnet_url =
+            url::Url::parse("https://cache.main.net.espresso.network/").expect("valid mainnet URL");
+        let reader = LightClientEspressoReader::new(
+            genesis,
+            vec![mainnet_url],
+            None,
+            4096,
+            Duration::from_millis(300),
+        )
+        .await
+        .expect("build mainnet reader");
+
+        // Reaching epoch 278 requires catching up through epoch 277, the genesis -> dynamic
+        // stake table handoff.
+        reader
+            .inner
+            .quorum_for_epoch(hotshot_types::data::EpochNumber::new(278))
+            .await
+            .expect("mainnet catch-up through the dynamic-stake-table boundary must succeed");
+
+        let height = reader.block_height().await.expect("verified block height");
+        tracing::info!(height, "mainnet light client verified height");
+        assert!(
+            height > genesis_regime_end,
+            "verified height {height} should be past the genesis regime (block {genesis_regime_end})"
+        );
+    }
 }
