@@ -386,12 +386,11 @@ fn test_resolve_config_with_latest_batch_info() {
             },
             light_client: crate::config::LightClientConfig {
                 genesis: serde_json::from_str(
-                    r#"{"epoch_height":100,"first_epoch_with_dynamic_stake_table":1,"stake_table":[]}"#,
+                    r#"{"epoch_height":100,"first_epoch_with_dynamic_stake_table":1,"stake_table":[],"chain_id":0}"#,
                 )
                 .unwrap(),
                 fallback_query_urls: vec![],
                 db_path: None,
-                decaf: false,
                 num_stake_tables_in_memory: 100,
                 fallback_delay_ms: 500,
             },

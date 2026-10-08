@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM rust:1.93.1-bookworm AS builder
+FROM rust:1.94.1-bookworm AS builder
 
 # Cargo feature selecting the Nitro protocol version. Override via
 # `--build-arg CARGO_FEATURES=nitro-v3_10` to build the v3.10 variant.
