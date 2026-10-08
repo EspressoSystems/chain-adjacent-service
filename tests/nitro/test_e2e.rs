@@ -608,18 +608,6 @@ fn connect_http(url: &str) -> impl Provider + Clone {
     )
 }
 
-fn print_service_logs(services: &[&str]) {
-    for service in services {
-        println!("===== docker compose logs {service} (tail 200) =====");
-        let _ = std::process::Command::new("docker")
-            .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/e2e/nitro"))
-            .args(["compose", "logs", "--no-color", "--tail", "200", service])
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .status();
-    }
-}
-
 async fn wait_for_validator_to_reach(validator: &impl Provider, target: u64) {
     let deadline = Instant::now() + Duration::from_secs(3 * 60);
     loop {
@@ -632,14 +620,6 @@ async fn wait_for_validator_to_reach(validator: &impl Provider, target: u64) {
             return;
         }
         if Instant::now() >= deadline {
-            print_service_logs(&[
-                "poster",
-                "validator",
-                "daprovider-anytrust",
-                "das-mirror",
-                "das-committee-a",
-                "das-committee-b",
-            ]);
             panic!("timed out: validator at block {current}, target {target}");
         }
         println!("validator at block {current}, waiting to reach {target}");

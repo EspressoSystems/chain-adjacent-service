@@ -73,6 +73,15 @@ jobs:
             --no-default-features --features e2e,nitro-v3_9_9 \
             ${{ matrix.filter }} -- --test-threads=1 ${{ matrix.skip }}
 
+      - name: Upload container logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs-v3_9_9-${{ matrix.group }}
+          path: target/e2e-logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
   e2e-v3_10:
     name: E2E v3.10 (${{ matrix.group }})
     runs-on: ubuntu-24.04-8core
@@ -127,3 +136,12 @@ jobs:
           RUST_BACKTRACE=1 cargo test --test nitro \
             --no-default-features --features e2e,nitro-v3_10 \
             ${{ matrix.filter }} -- --test-threads=1 ${{ matrix.skip }}
+
+      - name: Upload container logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs-v3_10-${{ matrix.group }}
+          path: target/e2e-logs/
+          if-no-files-found: ignore
+          retention-days: 7
