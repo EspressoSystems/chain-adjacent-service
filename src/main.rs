@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use alloy::{
     providers::{Provider, ProviderBuilder},
@@ -275,11 +274,11 @@ async fn build_reader(
             "built with `unverified-reader` — reading Espresso WITHOUT consensus verification \
              (trusting the query node); this is a distinct binary/PCR0 from the verified build"
         );
-        return Ok(Arc::new(
+        Ok(Arc::new(
             chain_adjacent_service::espresso_client::light_client::UnverifiedEspressoReader::new(
                 espresso.client.clone(),
             ),
-        ));
+        ))
     }
 
     // Default (trustless): every block verified against consensus via the light client.
@@ -308,7 +307,7 @@ async fn build_reader(
                 query_urls,
                 espresso.light_client.db_path.clone(),
                 espresso.light_client.num_stake_tables_in_memory,
-                Duration::from_millis(espresso.light_client.fallback_delay_ms),
+                std::time::Duration::from_millis(espresso.light_client.fallback_delay_ms),
             )
             .await?,
         ))
