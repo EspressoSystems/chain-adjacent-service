@@ -72,13 +72,23 @@ impl LightClientEspressoReader {
         genesis: Genesis,
         query_urls: Vec<Url>,
         db_path: Option<PathBuf>,
-        decaf: bool,
         num_stake_tables_in_memory: usize,
         fallback_delay: Duration,
     ) -> Result<Self, LightClientError> {
+        // The chain id comes from the trusted (PCR0-measured) genesis and is not checked
+        // against the query node; log it so a mismatch is easy to spot.
+        match genesis.chain_id {
+            id if id == espresso_types::MAINNET_CHAIN_ID => {
+                tracing::info!("espresso chain id: {id}, name: mainnet")
+            }
+            id if id == espresso_types::DECAF_CHAIN_ID => {
+                tracing::info!("espresso chain id: {id}, name: decaf")
+            }
+            id => tracing::warn!("espresso chain id: {id}, name: unknown"),
+        }
+
         let storage = LightClientSqliteOptions {
             lc_path: db_path,
-            num_stake_tables: num_stake_tables_in_memory as u32,
             ..Default::default()
         }
         .connect()
@@ -99,7 +109,6 @@ impl LightClientEspressoReader {
             server,
             genesis,
             LightClientOptions {
-                decaf,
                 num_stake_tables_in_memory,
             },
         );
@@ -190,14 +199,13 @@ impl LightClientEspressoReader {
     /// without fetching data. Verification against it is meaningless — don't read real blocks.
     pub async fn new_for_test(query_url: Url) -> Self {
         let genesis = serde_json::from_str(
-            r#"{"epoch_height":100,"first_epoch_with_dynamic_stake_table":1,"stake_table":[]}"#,
+            r#"{"epoch_height":100,"first_epoch_with_dynamic_stake_table":1,"stake_table":[],"chain_id":0}"#,
         )
         .expect("valid test genesis");
         Self::new(
             genesis,
             vec![query_url],
             None,
-            false,
             100,
             Duration::from_millis(300),
         )
@@ -210,7 +218,10 @@ impl LightClientEspressoReader {
 /// with `first_epoch = epoch_start_block / epoch_height + 3`. Lets tests derive the genesis
 /// from the node they verify against rather than committing validator-key blobs.
 #[cfg(test)]
-pub(crate) async fn genesis_from_node(query_url: &Url) -> Genesis {
+pub(crate) async fn genesis_from_node(
+    query_url: &Url,
+    chain_id: espresso_types::ChainId,
+) -> Genesis {
     let config_url = query_url.join("config/hotshot").expect("join config url");
     let response: Value = reqwest::Client::new()
         .get(config_url)
@@ -236,12 +247,15 @@ pub(crate) async fn genesis_from_node(query_url: &Url) -> Genesis {
         .map(|node| node["stake_table_entry"].clone())
         .collect();
 
-    serde_json::from_value(serde_json::json!({
-        "epoch_height": epoch_height,
-        "first_epoch_with_dynamic_stake_table": epoch_start_block / epoch_height + 3,
-        "stake_table": stake_table,
-    }))
-    .expect("build genesis from node config")
+    Genesis {
+        epoch_height,
+        first_epoch_with_dynamic_stake_table: hotshot_types::data::EpochNumber::new(
+            epoch_start_block / epoch_height + 3,
+        ),
+        stake_table: serde_json::from_value(Value::Array(stake_table))
+            .expect("parse stake table from node config"),
+        chain_id,
+    }
 }
 
 /// Verifies the reader against a dockerized dev node (started in-test via `EspressoDevNode`,
@@ -253,6 +267,7 @@ mod light_client_tests {
 
     use super::*;
     use crate::espresso_e2e::espresso_dev_node::EspressoDevNode;
+    use espresso_types::{ChainId, DECAF_CHAIN_ID, MAINNET_CHAIN_ID};
 
     /// Verified tx payloads for `namespace` over `[0, height)`.
     async fn payloads(
@@ -280,10 +295,9 @@ mod light_client_tests {
         let node = EspressoDevNode::start().await;
         let url = node.client.config.base_url.clone();
         let reader = LightClientEspressoReader::new(
-            genesis_from_node(&url).await,
+            genesis_from_node(&url, ChainId::default()).await,
             vec![url],
             None,
-            false,
             100,
             Duration::from_millis(300),
         )
@@ -324,10 +338,9 @@ mod light_client_tests {
         assert!(unused.is_empty(), "unused namespace must verify as empty");
     }
 
-    // `decaf: true` must deserialize correctly from config JSON so devnet deployments
-    // can set it without code changes.
+    // The genesis chain id must deserialize from config JSON; Decaf behaviour keys off it.
     #[test]
-    fn decaf_flag_round_trips_through_config() {
+    fn genesis_chain_id_round_trips_through_config() {
         use crate::config::ServiceConfig;
         use crate::rollups::nitro::config::NitroConfig;
 
@@ -335,8 +348,7 @@ mod light_client_tests {
             "espresso_client": {
                 "base_url": "http://placeholder.invalid/",
                 "light_client": {
-                    "decaf": true,
-                    "genesis": { "epoch_height": 3000, "first_epoch_with_dynamic_stake_table": 1056, "stake_table": [] }
+                    "genesis": { "epoch_height": 3000, "first_epoch_with_dynamic_stake_table": 1056, "stake_table": [], "chain_id": "0xdecaf" }
                 }
             },
             "rollup": {
@@ -347,7 +359,19 @@ mod light_client_tests {
         }"#;
         let config: ServiceConfig<NitroConfig> =
             serde_json::from_str(json).expect("config must deserialize");
-        assert!(config.espresso_client.light_client.decaf);
+        assert_eq!(
+            config.espresso_client.light_client.genesis.chain_id,
+            DECAF_CHAIN_ID
+        );
+    }
+
+    // A genesis without `chain_id` is rejected at parse time rather than defaulted.
+    #[test]
+    fn genesis_without_chain_id_is_rejected() {
+        let res: Result<crate::config::LightClientConfig, _> = serde_json::from_str(
+            r#"{ "genesis": { "epoch_height": 1, "first_epoch_with_dynamic_stake_table": 1, "stake_table": [] } }"#,
+        );
+        assert!(res.is_err(), "missing chain_id must not deserialize");
     }
 
     // Verifies that `decaf: true` is accepted and the reader constructs successfully.
@@ -359,10 +383,9 @@ mod light_client_tests {
         let url = node.client.config.base_url.clone();
         // dev node doesn't trigger the decaf path but the flag must be accepted without error
         LightClientEspressoReader::new(
-            genesis_from_node(&url).await,
+            genesis_from_node(&url, DECAF_CHAIN_ID).await,
             vec![url],
             None,
-            true,
             100,
             Duration::from_millis(300),
         )
@@ -384,7 +407,7 @@ mod light_client_tests {
             .expect("valid decaf URL");
 
         // Genesis fetched from decaf — same values as in the light-client-genesis secret.
-        let genesis = genesis_from_node(&decaf_url).await;
+        let genesis = genesis_from_node(&decaf_url, DECAF_CHAIN_ID).await;
         assert_eq!(genesis.epoch_height, 3000, "unexpected decaf epoch_height");
         assert_eq!(
             *genesis.first_epoch_with_dynamic_stake_table, 1056,
@@ -400,10 +423,12 @@ mod light_client_tests {
         // root headers lack next_stake_table_hash (pre-DRB upgrade on decaf). Force catch-up by
         // requesting the stake table quorum for epoch 1057 (just past the boundary).
         let reader_no_decaf = LightClientEspressoReader::new(
-            genesis.clone(),
+            Genesis {
+                chain_id: MAINNET_CHAIN_ID,
+                ..genesis.clone()
+            },
             vec![decaf_url.clone()],
             None,
-            false,
             100,
             Duration::from_millis(300),
         )
@@ -433,7 +458,6 @@ mod light_client_tests {
             genesis,
             vec![decaf_url],
             None,
-            true,
             4096,
             Duration::from_millis(300),
         )
@@ -444,5 +468,128 @@ mod light_client_tests {
             .quorum_for_epoch(hotshot_types::data::EpochNumber::new(1057))
             .await
             .expect("catch-up to epoch 1057 must succeed with decaf=true");
+    }
+
+    // Check of the committed Decaf light-client genesis (tee-image-builder
+    // chain-configs/cas/genesis/decaf.json), the file devnets bake into their enclaves.
+    // Rooted in that genesis, the light client must catch up through the first dynamic epoch
+    // (1056), whose pre-DRB epoch-root headers lack `next_stake_table_hash` and need the
+    // Decaf trust bypass selected by `chain_id`. Stops at the handoff: a catchup to the
+    // current Decaf epoch would replay thousands of epochs.
+    //
+    // Run manually:
+    //   DECAF_GENESIS=<PATH_TO_REPO>/tee-image-builder/chain-configs/cas/genesis/decaf.json \
+    //   cargo test --lib light_client_tests::decaf_genesis_catches_up -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore = "requires network access to cache.decaf.testnet.espresso.network"]
+    async fn decaf_genesis_catches_up() {
+        crate::init_logging(std::env::var("CAS_LOG_FILTER").ok().as_deref());
+
+        let genesis_path = std::env::var("DECAF_GENESIS")
+            .expect("set DECAF_GENESIS to the committed decaf.json path");
+        let genesis: Genesis =
+            serde_json::from_str(&std::fs::read_to_string(&genesis_path).expect("read decaf.json"))
+                .expect("decaf.json must deserialize as Genesis (including chain_id)");
+
+        // Guard the known Decaf parameters so a wrong or stale file fails loudly.
+        assert_eq!(genesis.chain_id, DECAF_CHAIN_ID, "unexpected chain_id");
+        assert_eq!(genesis.epoch_height, 3000, "unexpected epoch_height");
+        assert_eq!(
+            *genesis.first_epoch_with_dynamic_stake_table, 1056,
+            "unexpected first dynamic epoch"
+        );
+        assert_eq!(
+            genesis.stake_table.len(),
+            100,
+            "unexpected stake table size"
+        );
+
+        let decaf_url = url::Url::parse("https://cache.decaf.testnet.espresso.network/")
+            .expect("valid decaf URL");
+        let reader = LightClientEspressoReader::new(
+            genesis,
+            vec![decaf_url],
+            None,
+            4096,
+            Duration::from_millis(300),
+        )
+        .await
+        .expect("build decaf reader");
+
+        // Reaching epoch 1058 requires catching up through 1056 and 1057, the genesis ->
+        // dynamic stake table handoff on Decaf.
+        reader
+            .inner
+            .quorum_for_epoch(hotshot_types::data::EpochNumber::new(1058))
+            .await
+            .expect("decaf catch-up through the dynamic-stake-table boundary must succeed");
+    }
+
+    // End-to-end check of the committed mainnet light-client genesis (tee-image-builder
+    // chain-configs/cas/genesis/mainnet.json) against Espresso mainnet: rooted in that genesis,
+    // the light client must catch its stake table up through the first dynamic epoch (277),
+    // where the stake table switches from the genesis set to the contract-derived one. No L1
+    // RPC is needed: dynamic stake tables are learned from Espresso epoch-root headers.
+    //
+    // Logs go through the same subscriber as the binary. CAS_LOG_FILTER stands in for the
+    // secret's `log_filter` override; without it, RUST_LOG applies, then `info`.
+    //
+    // Run manually:
+    //   MAINNET_GENESIS=../tee-image-builder/chain-configs/cas/genesis/mainnet.json \
+    //   CAS_LOG_FILTER=info,light_client=debug \
+    //   cargo test --lib light_client_tests::mainnet_genesis_catches_up -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore = "requires network access to cache.main.net.espresso.network"]
+    async fn mainnet_genesis_catches_up() {
+        crate::init_logging(std::env::var("CAS_LOG_FILTER").ok().as_deref());
+
+        let genesis_path = std::env::var("MAINNET_GENESIS")
+            .expect("set MAINNET_GENESIS to the committed mainnet.json path");
+        let genesis: Genesis = serde_json::from_str(
+            &std::fs::read_to_string(&genesis_path).expect("read mainnet.json"),
+        )
+        .expect("mainnet.json must deserialize as Genesis (including chain_id)");
+
+        // Guard the known mainnet parameters so a wrong or stale file fails loudly.
+        assert_eq!(genesis.chain_id, MAINNET_CHAIN_ID, "unexpected chain_id");
+        assert_eq!(genesis.epoch_height, 40000, "unexpected epoch_height");
+        assert_eq!(
+            *genesis.first_epoch_with_dynamic_stake_table, 277,
+            "unexpected first dynamic epoch"
+        );
+        assert_eq!(
+            genesis.stake_table.len(),
+            100,
+            "unexpected stake table size"
+        );
+        let genesis_regime_end =
+            (*genesis.first_epoch_with_dynamic_stake_table - 1) * genesis.epoch_height;
+
+        let mainnet_url =
+            url::Url::parse("https://cache.main.net.espresso.network/").expect("valid mainnet URL");
+        let reader = LightClientEspressoReader::new(
+            genesis,
+            vec![mainnet_url],
+            None,
+            4096,
+            Duration::from_millis(300),
+        )
+        .await
+        .expect("build mainnet reader");
+
+        // Reaching epoch 278 requires catching up through epoch 277, the genesis -> dynamic
+        // stake table handoff.
+        reader
+            .inner
+            .quorum_for_epoch(hotshot_types::data::EpochNumber::new(278))
+            .await
+            .expect("mainnet catch-up through the dynamic-stake-table boundary must succeed");
+
+        let height = reader.block_height().await.expect("verified block height");
+        tracing::info!(height, "mainnet light client verified height");
+        assert!(
+            height > genesis_regime_end,
+            "verified height {height} should be past the genesis regime (block {genesis_regime_end})"
+        );
     }
 }

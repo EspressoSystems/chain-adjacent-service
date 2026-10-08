@@ -77,6 +77,15 @@ chain-adjacent-service --config /path/to/config.json
 
 Secrets can be injected at runtime via **AWS Secrets Manager** — see `.env.example` for the required environment variables.
 
+### Log verbosity
+
+The log filter uses `RUST_LOG` syntax and starts from the `RUST_LOG` env var (default `info`).
+
+In the Nitro enclave `RUST_LOG` is baked into the image and therefore into PCR0. To change
+verbosity without rebuilding and re-registering the image, set the optional `log_filter` field
+in the AWS secret (e.g. `"log_filter": "debug"`) and restart the enclave; it is applied right
+after the secret is read.
+
 ## Running
 
 ### Binary

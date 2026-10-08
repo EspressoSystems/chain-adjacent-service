@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use alloy::{
     providers::{Provider, ProviderBuilder},
@@ -22,7 +21,9 @@ use chain_adjacent_service::secrets::{
     resolve_operator_private_key,
 };
 use chain_adjacent_service::streamer::streamer::Streamer;
-use chain_adjacent_service::{cas_init, config::ServiceConfig, rollups::rollup::Rollup};
+use chain_adjacent_service::{
+    cas_init, config::ServiceConfig, init_logging, rollups::rollup::Rollup,
+};
 
 use chain_adjacent_service::submitter::submitter::Submitter;
 use clap::Parser;
@@ -39,7 +40,7 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    cas_init().await?;
+    cas_init();
 
     let cli = Cli::parse();
     let config_contents = std::fs::read_to_string(&cli.config)?;
@@ -47,11 +48,19 @@ async fn main() -> Result<()> {
 
     match config.rollup.ty {
         RollupType::Nitro => {
-            info!(rollup_type = "nitro", "initializing rollup stack");
             let mut config: ServiceConfig<<Nitro as Rollup>::StackConfig> =
                 serde_json::from_str(&config_contents)?;
 
+            // Fetch the runtime secret before initialising logging so its
+            // `log_filter` can set the verbosity for the whole run.
             let overrides = fetch_secret_overrides(config.key_manager.tee_type).await?;
+            init_logging(overrides.as_ref().and_then(|o| o.log_filter.as_deref()));
+            info!(
+                rollup_type = "nitro",
+                secret_overrides = overrides.is_some(),
+                "initializing rollup stack"
+            );
+
             if let Some(overrides) = overrides.as_ref() {
                 apply_overrides_nitro(&mut config, overrides)?;
             }
@@ -265,11 +274,11 @@ async fn build_reader(
             "built with `unverified-reader` — reading Espresso WITHOUT consensus verification \
              (trusting the query node); this is a distinct binary/PCR0 from the verified build"
         );
-        return Ok(Arc::new(
+        Ok(Arc::new(
             chain_adjacent_service::espresso_client::light_client::UnverifiedEspressoReader::new(
                 espresso.client.clone(),
             ),
-        ));
+        ))
     }
 
     // Default (trustless): every block verified against consensus via the light client.
@@ -284,9 +293,8 @@ async fn build_reader(
                 espresso.light_client.genesis.clone(),
                 query_urls,
                 espresso.light_client.db_path.clone(),
-                espresso.light_client.decaf,
                 espresso.light_client.num_stake_tables_in_memory,
-                Duration::from_millis(espresso.light_client.fallback_delay_ms),
+                std::time::Duration::from_millis(espresso.light_client.fallback_delay_ms),
             )
             .await?,
         ))

@@ -56,12 +56,15 @@ async fn make_streamer_with_cap(
 /// `/config/hotshot` so the light client actually verifies. Requires a dev-node image that
 /// serves `/light-client` (EspressoSystems/espresso-network#4453).
 async fn dev_node_reader(base_url: url::Url) -> LightClientEspressoReader {
-    let genesis = crate::espresso_client::light_client::genesis_from_node(&base_url).await;
+    let genesis = crate::espresso_client::light_client::genesis_from_node(
+        &base_url,
+        espresso_types::ChainId::default(),
+    )
+    .await;
     LightClientEspressoReader::new(
         genesis,
         vec![base_url],
         None,
-        false,
         100,
         Duration::from_millis(300),
     )

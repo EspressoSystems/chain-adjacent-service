@@ -12,7 +12,6 @@ pub mod utils;
 pub mod ws_proxy_connect;
 
 use alloy::primitives::Bytes;
-use anyhow::Result;
 use std::io::IsTerminal;
 use tokio::sync::{mpsc, oneshot};
 
@@ -59,16 +58,54 @@ impl VerificationResult {
 pub type VerificationSender = mpsc::Sender<(Bytes, oneshot::Sender<VerificationResult>)>;
 pub type VerificationReceiver = mpsc::Receiver<(Bytes, oneshot::Sender<VerificationResult>)>;
 
-pub async fn cas_init() -> Result<()> {
+pub fn cas_init() {
     rustls::crypto::ring::default_provider()
         .install_default()
         .ok();
+}
+
+/// Initialises logging.
+///
+/// The filter spec (`RUST_LOG` syntax) is chosen in this order:
+/// 1. `override_spec`, if given and valid;
+/// 2. the `RUST_LOG` environment variable;
+/// 3. Default to `info`.
+///
+/// Nitro deployments pass the `log_filter` field of the AWS secret as
+/// `override_spec`, so verbosity can change without rebuilding the image,
+/// where `RUST_LOG` is baked into PCR0. An unparsable override is skipped
+/// with a warning instead of failing startup: a verbosity typo must not take
+/// the service down.
+pub fn init_logging(override_spec: Option<&str>) {
+    use tracing_subscriber::EnvFilter;
+
+    let mut rejected = None;
+    let (filter, spec, source) = override_spec
+        .and_then(|s| match EnvFilter::try_new(s) {
+            Ok(filter) => Some((filter, s.to_owned(), "runtime override")),
+            Err(err) => {
+                rejected = Some((s.to_owned(), err.to_string()));
+                None
+            }
+        })
+        .unwrap_or_else(|| match std::env::var("RUST_LOG") {
+            Ok(s) => (EnvFilter::new(&s), s, "RUST_LOG env"),
+            Err(_) => (
+                EnvFilter::new("info"),
+                "info".to_owned(),
+                "built-in default",
+            ),
+        });
+
     // Only emit ANSI colour codes when stdout is a real terminal.
     tracing_subscriber::fmt()
         .with_ansi(std::io::stdout().is_terminal())
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(filter)
         .try_init()
         .ok();
 
-    Ok(())
+    tracing::info!(filter = %spec, source, "logging initialised");
+    if let Some((bad, err)) = rejected {
+        tracing::warn!(spec = %bad, %err, "ignoring invalid runtime log filter override");
+    }
 }
