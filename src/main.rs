@@ -288,19 +288,6 @@ async fn build_reader(
         let mut query_urls = vec![espresso.client.base_url.clone()];
         query_urls.extend(espresso.light_client.fallback_query_urls.iter().cloned());
 
-        // The chain id comes from the trusted (PCR0-measured) genesis and is not checked
-        // against the query node; log it so a mismatch is easy to spot.
-        let chain_id = espresso.light_client.genesis.chain_id;
-        match chain_id {
-            id if id == espresso_types::MAINNET_CHAIN_ID => {
-                info!("espresso chain id: {id}, name: mainnet")
-            }
-            id if id == espresso_types::DECAF_CHAIN_ID => {
-                info!("espresso chain id: {id}, name: decaf")
-            }
-            id => tracing::warn!("espresso chain id: {id}, name: unknown"),
-        }
-
         Ok(Arc::new(
             LightClientEspressoReader::new(
                 espresso.light_client.genesis.clone(),

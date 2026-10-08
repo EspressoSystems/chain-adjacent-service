@@ -75,6 +75,18 @@ impl LightClientEspressoReader {
         num_stake_tables_in_memory: usize,
         fallback_delay: Duration,
     ) -> Result<Self, LightClientError> {
+        // The chain id comes from the trusted (PCR0-measured) genesis and is not checked
+        // against the query node; log it so a mismatch is easy to spot.
+        match genesis.chain_id {
+            id if id == espresso_types::MAINNET_CHAIN_ID => {
+                tracing::info!("espresso chain id: {id}, name: mainnet")
+            }
+            id if id == espresso_types::DECAF_CHAIN_ID => {
+                tracing::info!("espresso chain id: {id}, name: decaf")
+            }
+            id => tracing::warn!("espresso chain id: {id}, name: unknown"),
+        }
+
         let storage = LightClientSqliteOptions {
             lc_path: db_path,
             ..Default::default()
