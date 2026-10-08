@@ -375,10 +375,29 @@ async fn devnode_light_client_genesis(base_url: &str) -> serde_json::Value {
         .iter()
         .map(|n| n["stake_table_entry"].clone())
         .collect();
+    // The chain id is not in /config/hotshot. Like upstream's light-client genesis generator,
+    // read it from the genesis header, whose chain config is always stored in full.
+    let genesis_header: espresso_types::Header = reqwest::Client::new()
+        .get(format!(
+            "{}/availability/header/0",
+            base_url.trim_end_matches('/')
+        ))
+        .send()
+        .await
+        .expect("fetch genesis header")
+        .json()
+        .await
+        .expect("parse genesis header");
+    let chain_id = genesis_header
+        .chain_config()
+        .resolve()
+        .expect("genesis header carries the full chain config")
+        .chain_id;
     json!({
         "epoch_height": epoch_height,
         "first_epoch_with_dynamic_stake_table": epoch_start_block / epoch_height + 3,
         "stake_table": stake_table,
+        "chain_id": chain_id,
     })
 }
 
