@@ -470,6 +470,61 @@ mod light_client_tests {
             .expect("catch-up to epoch 1057 must succeed with decaf=true");
     }
 
+    // Check of the committed Decaf light-client genesis (tee-image-builder
+    // chain-configs/cas/genesis/decaf.json), the file devnets bake into their enclaves.
+    // Rooted in that genesis, the light client must catch up through the first dynamic epoch
+    // (1056), whose pre-DRB epoch-root headers lack `next_stake_table_hash` and need the
+    // Decaf trust bypass selected by `chain_id`. Stops at the handoff: a catchup to the
+    // current Decaf epoch would replay thousands of epochs.
+    //
+    // Run manually:
+    //   DECAF_GENESIS=<PATH_TO_REPO>/tee-image-builder/chain-configs/cas/genesis/decaf.json \
+    //   cargo test --lib light_client_tests::decaf_genesis_catches_up -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore = "requires network access to cache.decaf.testnet.espresso.network"]
+    async fn decaf_genesis_catches_up() {
+        crate::init_logging(std::env::var("CAS_LOG_FILTER").ok().as_deref());
+
+        let genesis_path = std::env::var("DECAF_GENESIS")
+            .expect("set DECAF_GENESIS to the committed decaf.json path");
+        let genesis: Genesis =
+            serde_json::from_str(&std::fs::read_to_string(&genesis_path).expect("read decaf.json"))
+                .expect("decaf.json must deserialize as Genesis (including chain_id)");
+
+        // Guard the known Decaf parameters so a wrong or stale file fails loudly.
+        assert_eq!(genesis.chain_id, DECAF_CHAIN_ID, "unexpected chain_id");
+        assert_eq!(genesis.epoch_height, 3000, "unexpected epoch_height");
+        assert_eq!(
+            *genesis.first_epoch_with_dynamic_stake_table, 1056,
+            "unexpected first dynamic epoch"
+        );
+        assert_eq!(
+            genesis.stake_table.len(),
+            100,
+            "unexpected stake table size"
+        );
+
+        let decaf_url = url::Url::parse("https://cache.decaf.testnet.espresso.network/")
+            .expect("valid decaf URL");
+        let reader = LightClientEspressoReader::new(
+            genesis,
+            vec![decaf_url],
+            None,
+            4096,
+            Duration::from_millis(300),
+        )
+        .await
+        .expect("build decaf reader");
+
+        // Reaching epoch 1058 requires catching up through 1056 and 1057, the genesis ->
+        // dynamic stake table handoff on Decaf.
+        reader
+            .inner
+            .quorum_for_epoch(hotshot_types::data::EpochNumber::new(1058))
+            .await
+            .expect("decaf catch-up through the dynamic-stake-table boundary must succeed");
+    }
+
     // End-to-end check of the committed mainnet light-client genesis (tee-image-builder
     // chain-configs/cas/genesis/mainnet.json) against Espresso mainnet: rooted in that genesis,
     // the light client must catch its stake table up through the first dynamic epoch (277),
