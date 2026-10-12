@@ -269,8 +269,9 @@ pub mod testing {
         // Fetch namespace transactions in chunks of 100 (server limit)
         let mut found_seqs: Vec<u64> = Vec::new();
         let mut from = 0u64;
-        while from <= latest_height {
-            let to = std::cmp::min(from + 100, latest_height + 1);
+        // `latest_height` is a block count, so the newest block is `latest_height - 1`.
+        while from < latest_height {
+            let to = std::cmp::min(from + 100, latest_height);
             let blocks = espresso_node
                 .client
                 .fetch_namespace_transactions_in_range(namespace_id, from, to)

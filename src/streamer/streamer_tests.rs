@@ -464,10 +464,10 @@ impl MockEspressoReader {
 #[async_trait]
 impl EspressoReader for MockEspressoReader {
     async fn block_height(&self) -> Result<u64, LightClientError> {
-        // First poll exposes the chain up to the gap (height 6); later polls expose the
-        // resubmitted seq 4 at height 11.
+        // `block_height` is a block count. First poll exposes the chain up to the gap (blocks
+        // 0..=6); later polls expose the resubmitted seq 4 at height 11 (blocks 0..=11).
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
-        Ok(if n == 0 { 6 } else { 11 })
+        Ok(if n == 0 { 7 } else { 12 })
     }
 
     async fn namespace_transactions_in_range(

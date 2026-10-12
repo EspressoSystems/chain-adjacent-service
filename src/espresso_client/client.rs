@@ -105,7 +105,8 @@ impl EspressoClient {
         self.get(url).await
     }
 
-    /// Returns the latest finalized HotShot block height via `GET /status/block-height`.
+    /// Returns the number of finalized HotShot blocks (one more than the latest block number)
+    /// via `GET /status/block-height`.
     pub async fn fetch_latest_hotshot_block_height(&self) -> Result<u64> {
         let url = self.config.base_url.join("status/block-height")?;
         self.get(url).await
