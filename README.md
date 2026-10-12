@@ -84,7 +84,8 @@ The log filter uses `RUST_LOG` syntax and starts from the `RUST_LOG` env var (de
 In the Nitro enclave `RUST_LOG` is baked into the image and therefore into PCR0. To change
 verbosity without rebuilding and re-registering the image, set the optional `log_filter` field
 in the AWS secret (e.g. `"log_filter": "debug"`) and restart the enclave; it is applied right
-after the secret is read.
+after the secret is read. If `log_filter` sets no overall level (e.g. `"light_client=debug"`),
+`info` is kept for everything else, so a typo can't mute all logs.
 
 ## Running
 

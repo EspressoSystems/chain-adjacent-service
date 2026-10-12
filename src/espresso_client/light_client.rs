@@ -267,6 +267,15 @@ mod light_client_tests {
 
     use super::*;
     use crate::espresso_e2e::espresso_dev_node::EspressoDevNode;
+
+    /// Logging as the binary sets it up; `CAS_LOG_FILTER` stands in for the secret's
+    /// `log_filter` override.
+    fn init_test_logging() {
+        let log_filter = crate::init_logging();
+        if let Ok(filter) = std::env::var("CAS_LOG_FILTER") {
+            log_filter.apply_override(&filter);
+        }
+    }
     use espresso_types::{ChainId, DECAF_CHAIN_ID, MAINNET_CHAIN_ID};
 
     /// Verified tx payloads for `namespace` over `[0, height)`.
@@ -483,7 +492,7 @@ mod light_client_tests {
     #[tokio::test]
     #[ignore = "requires network access to cache.decaf.testnet.espresso.network"]
     async fn decaf_genesis_catches_up() {
-        crate::init_logging(std::env::var("CAS_LOG_FILTER").ok().as_deref());
+        init_test_logging();
 
         let genesis_path = std::env::var("DECAF_GENESIS")
             .expect("set DECAF_GENESIS to the committed decaf.json path");
@@ -541,7 +550,7 @@ mod light_client_tests {
     #[tokio::test]
     #[ignore = "requires network access to cache.main.net.espresso.network"]
     async fn mainnet_genesis_catches_up() {
-        crate::init_logging(std::env::var("CAS_LOG_FILTER").ok().as_deref());
+        init_test_logging();
 
         let genesis_path = std::env::var("MAINNET_GENESIS")
             .expect("set MAINNET_GENESIS to the committed mainnet.json path");

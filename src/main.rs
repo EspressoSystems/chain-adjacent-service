@@ -41,6 +41,7 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<()> {
     cas_init();
+    let log_filter = init_logging();
 
     let cli = Cli::parse();
     let config_contents = std::fs::read_to_string(&cli.config)?;
@@ -48,20 +49,15 @@ async fn main() -> Result<()> {
 
     match config.rollup.ty {
         RollupType::Nitro => {
+            info!(rollup_type = "nitro", "initializing rollup stack");
             let mut config: ServiceConfig<<Nitro as Rollup>::StackConfig> =
                 serde_json::from_str(&config_contents)?;
 
-            // Fetch the runtime secret before initialising logging so its
-            // `log_filter` can set the verbosity for the whole run.
             let overrides = fetch_secret_overrides(config.key_manager.tee_type).await?;
-            init_logging(overrides.as_ref().and_then(|o| o.log_filter.as_deref()));
-            info!(
-                rollup_type = "nitro",
-                secret_overrides = overrides.is_some(),
-                "initializing rollup stack"
-            );
-
             if let Some(overrides) = overrides.as_ref() {
+                if let Some(filter) = overrides.log_filter.as_deref() {
+                    log_filter.apply_override(filter);
+                }
                 apply_overrides_nitro(&mut config, overrides)?;
             }
             assert_no_placeholders_nitro(&config)?;
