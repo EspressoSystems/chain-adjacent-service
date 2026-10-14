@@ -608,6 +608,29 @@ fn connect_http(url: &str) -> impl Provider + Clone {
     )
 }
 
+/// Newest block at or below `head` holding a transaction other than an ArbOS internal one
+/// (type `0x6a`). Trailing batch-report-only blocks can remain unposted until Nitro's
+/// empty-batch delay expires (three days by default), so an L1-syncing validator need
+/// not reach the sequencer head within this test's timeout.
+async fn last_block_with_user_tx(sequencer: &impl Provider, head: u64) -> u64 {
+    for number in (0..=head).rev() {
+        let block: Value = sequencer
+            .raw_request(
+                "eth_getBlockByNumber".into(),
+                (format!("{number:#x}"), true),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("failed to get sequencer block {number}: {e}"));
+        let has_user_tx = block["transactions"]
+            .as_array()
+            .is_some_and(|txs| txs.iter().any(|tx| tx["type"] != "0x6a"));
+        if has_user_tx {
+            return number;
+        }
+    }
+    0
+}
+
 async fn wait_for_validator_to_reach(validator: &impl Provider, target: u64) {
     let deadline = Instant::now() + Duration::from_secs(3 * 60);
     loop {
@@ -792,11 +815,14 @@ async fn run_e2e(route: CasRoute) {
     sleep(Duration::from_secs(3)).await;
 
     let sequencer = connect_http(SEQUENCER_HTTP_URL);
-    let sequencer_block = sequencer
+    let sequencer_head = sequencer
         .get_block_number()
         .await
         .expect("failed to get sequencer block number");
-    println!("Sequencer at block {sequencer_block}");
+    let sequencer_block = last_block_with_user_tx(&sequencer, sequencer_head).await;
+    println!(
+        "Sequencer at block {sequencer_head}, last user transaction in block {sequencer_block}"
+    );
 
     println!("Starting block validator...");
     let rollup = read_rollup_address();
