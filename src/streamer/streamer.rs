@@ -455,16 +455,17 @@ pub async fn poll_hotshot_blocks(
                 continue;
             }
         };
-        if from_block > latest_block_height {
+        // `block_height` is the number of blocks, so the newest block is `latest_block_height - 1`.
+        if from_block >= latest_block_height {
             // Wait for a bit before checking for new blocks again.
             tokio::time::sleep(Duration::from_millis(config.initial_backoff_ms)).await;
             continue;
         }
-        // to block is set to latest_block_height + 1 because fetch_namespace_transactions_in_range is explusive of the last block
-        // otherwise its set to from_block + HOTSHOT_RANGE_LIMIT
+        // The range end is exclusive, so ending at `latest_block_height` includes the newest
+        // block without asking for one that does not exist yet.
         let to_block = std::cmp::min(
             from_block.saturating_add(HOTSHOT_RANGE_LIMIT),
-            latest_block_height.saturating_add(1),
+            latest_block_height,
         );
         let hotshot_transactions = match client
             .namespace_transactions_in_range(namespace_id, from_block, to_block)
@@ -479,7 +480,7 @@ pub async fn poll_hotshot_blocks(
                 txns
             }
             Err(err) => {
-                if matches!(&err, LightClientError::Verification(e) if e.downcast_ref::<NotFound>().is_some() || e.to_string().contains("404"))
+                if matches!(&err, LightClientError::Verification(e) if e.downcast_ref::<NotFound>().is_some() || format!("{e:#}").contains("error 404"))
                 {
                     let first = *not_found_since.get_or_insert_with(std::time::Instant::now);
                     let stuck_for = first.elapsed();

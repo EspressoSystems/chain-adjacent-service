@@ -1,10 +1,8 @@
 # Chain Adjacent Service
 
-Espresso's Chain Adjacent Service (CAS) is a data availability service integrated with the Espresso network. It implements Rollup's DA API to handle requests from the batch poster.
+Chain Adjacent Service (CAS) connects Arbitrum Nitro rollups to Espresso. It implements the rollup's data availability (DA) API and checks that proposed batches follow the ordering agreed upon by Espresso.
 
-Unlike a standard DA service, CAS does not only store data with Espresso - it also verifies that the data ordering is consistent with the ordering agreed upon by the Espresso network. Once verified, CAS returns a certificate to the batch poster, which is then posted on-chain and validated by the SequencerInbox contract.
-
-This certificate contains a TEE signature and associated metadata, providing proof that the batch poster's data matches the data CAS has certified as correct.
+After verification, CAS returns a certificate to the batch poster. The certificate contains a signature from the trusted execution environment (TEE) and the metadata needed for on-chain validation by the `SequencerInbox` contract.
 
 **Currently supported:** Arbitrum Nitro (v3.9.9 and v3.10).
 
@@ -12,26 +10,25 @@ This certificate contains a TEE signature and associated metadata, providing pro
 
 ![Architecture](flow.png)
 
-
 Key modules under `src/`:
 
 | Module | Purpose |
-|---|---|
+| --- | --- |
 | `da_api/` | JSON-RPC DA provider server (axum). Handles `Store`/`GetByHash` and supports calldata + AnyTrust providers. |
 | `streamer/` | Polls Espresso blocks, extracts namespace transactions, manages verification queue. |
 | `submitter/` | Batches feed messages and submits Espresso transactions. |
-| `espresso_client/` | HTTP/WS client for the Espresso sequencer API. |
+| `espresso_client/` | Query-service client and verified light-client reader for Espresso. |
 | `key_manager/` | TEE key management (AWS Nitro Enclaves), attestation verification, on-chain signer registration. |
 | `rollups/` | `Rollup` trait definition + Nitro implementation (batch parsing, L1 monitor, feed relay). |
 | `secrets.rs` | AWS Secrets Manager integration for runtime secret overrides. |
 | `config.rs` | JSON configuration deserialization. |
 
-## Feature Flags
+## Feature flags
 
 Nitro protocol versions are mutually exclusive features:
 
 | Feature | Description |
-|---|---|
+| --- | --- |
 | `nitro-v3_9_9` (default) | Arbitrum Nitro v3.9.9 protocol |
 | `nitro-v3_10` | Arbitrum Nitro v3.10 protocol |
 
@@ -45,10 +42,10 @@ cargo build --release --no-default-features --features nitro-v3_10
 
 ### Prerequisites
 
-- **Rust 1.93.1** (pinned in `rust-toolchain.toml`)
+- **Rust 1.94.1** (pinned in `rust-toolchain.toml`)
 - **Docker** (for E2E tests)
 
-### Getting Started
+### Getting started
 
 ```bash
 # Ensure rustup picks up rust-toolchain.toml automatically.
@@ -75,7 +72,13 @@ CAS reads a JSON config file specified via CLI or environment variable:
 chain-adjacent-service --config /path/to/config.json
 ```
 
-Secrets can be injected at runtime via **AWS Secrets Manager** — see `.env.example` for the required environment variables.
+Secrets can be injected at runtime via AWS Secrets Manager — see [`.env.example`](.env.example) for the required environment variables.
+
+### Log verbosity
+
+The log filter uses `RUST_LOG` syntax and starts from the `RUST_LOG` environment variable (default `info`).
+
+In the Nitro enclave `RUST_LOG` is baked into the image and therefore into PCR0. To change verbosity without rebuilding and re-registering the image, set the optional `log_filter` field in the AWS secret (e.g. `"log_filter": "debug"`) and restart the enclave; it is applied right after the secret is read. If `log_filter` sets no overall level (e.g. `"light_client=debug"`), `info` is kept for everything else, so module-specific filters retain the default level elsewhere.
 
 ## Running
 
@@ -101,19 +104,21 @@ docker run -v /path/to/config.json:/etc/cas/config.json cas:v3.10
 
 The image runs as a non-root user and expects the config at `/etc/cas/config.json` by default.
 
+See [CAS images and enclave builds](docs/image-builds.md) for published version tags, the `tee-image-builder` inputs, and the distinction between Nitro version and Espresso network.
+
 ## Testing
 
-### Unit Tests
+### Unit and integration tests
 
 ```bash
 just test
 ```
 
-Runs `cargo test --all-features` (sequential).
+Runs the tests separately for Nitro 3.10 and 3.9.9, with one test thread per run.
 
-### E2E Tests
+### E2E tests
 
-E2E tests spin up a full Nitro stack via Docker Compose.
+End-to-end (E2E) tests start a full Nitro stack through Docker Compose.
 
 ```bash
 # Nitro v3.10 (default)
@@ -127,7 +132,7 @@ just test-e2e-v3_9_9
 just test-e2e test_e2e_anytrust
 ```
 
-### Docker Compose Helpers
+### Docker Compose helpers
 
 ```bash
 just e2e-up              # Start Nitro v3.10 stack
@@ -137,12 +142,21 @@ just e2e-down-v3_9_9     # Stop Nitro v3.9.9 stack
 just clean               # Tear down all leftover E2E containers
 ```
 
+## Documentation
+
+- [Overview](docs/light-client-integration.md): CAS's role and how verified reads fit together.
+- [Technical reference](docs/light-client-reference.md): source entry points, config and API behavior.
+- [Catch-up and genesis verification](docs/light-client-catchup.md): detailed diagrams, network assumptions and validation commands.
+- [Image builds](docs/image-builds.md): Nitro-version selection, publishing and enclave build inputs.
+
+For operators, [hosting CAS](docs/cas-deployment-topology.md) maps the required service connections and the boundaries between enclave configuration and host networking.
+
 ## CI
 
 GitHub Actions runs on every push to `main` and on pull requests:
 
 | Job | What it does |
-|---|---|
+| --- | --- |
 | **Formatting** | `cargo fmt --all --check` |
 | **Tests** | `cargo test --all-targets` |
 | **Clippy** | Runs separately per Nitro version (mutually exclusive features) |
@@ -150,8 +164,7 @@ GitHub Actions runs on every push to `main` and on pull requests:
 
 ## License
 
-Copyright
-(c) 2022 Espresso Systems espresso-network was developed by Espresso Systems. While we plan to adopt an open source license, we have not yet selected one. As such, all rights are reserved for the time being. Please reach out to us if you have thoughts on licensing.
+Copyright (c) 2022 Espresso Systems espresso-network was developed by Espresso Systems. While we plan to adopt an open source license, we have not yet selected one. As such, all rights are reserved for the time being. Please reach out to us if you have thoughts on licensing.
 
 ## Disclaimer
 

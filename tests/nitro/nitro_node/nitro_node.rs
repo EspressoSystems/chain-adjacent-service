@@ -54,22 +54,50 @@ fn run_compose(args: &[&str]) {
     }
 }
 
+const COMPOSE_PROFILES: [&str; 8] = [
+    "--profile",
+    "poster",
+    "--profile",
+    "deploy",
+    "--profile",
+    "anytrust",
+    "--profile",
+    "validator",
+];
+
+/// Where failed tests save container logs. CI uploads this directory as an artifact.
+const E2E_LOG_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/target/e2e-logs");
+
+/// Save every compose service's logs, interleaved and timestamped, to
+/// `target/e2e-logs/<test name>.log`. Called on a failing test before teardown removes the
+/// containers.
+fn save_service_logs() {
+    let test_name = std::thread::current()
+        .name()
+        .unwrap_or("unknown-test")
+        .replace("::", "__");
+    let path = std::path::Path::new(E2E_LOG_DIR).join(format!("{test_name}.log"));
+    let saved = std::fs::create_dir_all(E2E_LOG_DIR)
+        .and_then(|()| std::fs::File::create(&path))
+        .and_then(|file| {
+            compose_command()
+                .stdout(file)
+                .args(["compose"])
+                .args(COMPOSE_PROFILES)
+                .args(["logs", "--no-color", "--timestamps"])
+                .status()
+        });
+    match saved {
+        Ok(_) => eprintln!("saved container logs to {}", path.display()),
+        Err(err) => eprintln!("could not save container logs to {}: {err}", path.display()),
+    }
+}
+
 fn compose_down_status() -> std::io::Result<std::process::ExitStatus> {
     compose_command()
-        .args([
-            "compose",
-            "--profile",
-            "poster",
-            "--profile",
-            "deploy",
-            "--profile",
-            "anytrust",
-            "--profile",
-            "validator",
-            "down",
-            "-v",
-            "--remove-orphans",
-        ])
+        .args(["compose"])
+        .args(COMPOSE_PROFILES)
+        .args(["down", "-v", "--remove-orphans"])
         .status()
 }
 
@@ -223,6 +251,10 @@ impl NitroNode {
     }
 
     pub fn stop(&self) {
+        // A failing test unwinds through here; keep the containers' logs before removing them.
+        if std::thread::panicking() {
+            save_service_logs();
+        }
         let _ = run_compose_result(&["compose", "unpause", "espresso-dev-node"]);
         let status = compose_down_status();
 

@@ -49,6 +49,8 @@ pub struct LightClientConfig {
     /// Root of trust; must match the network the query node serves. Sourced from the
     /// network's `genesis.toml`, baked into the measured config. Unused by trusted-mode
     /// builds (the `unverified-reader` feature), which don't verify against consensus.
+    /// `genesis.chain_id` is required and selects network-specific light-client behaviour,
+    /// e.g. the Decaf trust bypass for pre-DRB epoch roots.
     pub genesis: Genesis,
 
     /// Additional query-node URLs for the light-client read path, tried (in order, after the
@@ -61,11 +63,6 @@ pub struct LightClientConfig {
     /// via catch-up each start; persist across enclave restarts to avoid that cost.
     #[serde(default)]
     pub db_path: Option<PathBuf>,
-
-    /// Enable Decaf-specific trust bypass for pre-DRB epoch root headers that lack
-    /// `next_stake_table_hash`. Must be `true` when connecting to the Decaf testnet.
-    #[serde(default)]
-    pub decaf: bool,
 
     /// Maximum number of stake tables to keep in memory during catch-up.
     #[serde(default = "default_num_stake_tables_in_memory")]
