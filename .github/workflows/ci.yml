@@ -10,6 +10,18 @@ env:
   RUSTFLAGS: "-Dwarnings"
 
 jobs:
+  backport_workflow:
+    name: Backport workflow tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test .github/tests/backport.test.cjs
+
   fmt:
     name: Formatting
     runs-on: ubuntu-latest
