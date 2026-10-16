@@ -3,14 +3,17 @@ on:
   pull_request_target:
     types: [closed]
 permissions:
-  contents: write # so it can comment
-  pull-requests: write # so it can create pull requests
-  issues: write # so it can create issues
+  contents: write # Required to push backport branches.
+  pull-requests: write
+  issues: write
+# Serialize reruns for a PR so failure reports are not duplicated.
+concurrency:
+  group: backport-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
 jobs:
   backport:
     name: Backport pull request
     runs-on: ubuntu-latest
-    # Don't run on closed unmerged pull requests
     if: github.event.pull_request.merged
     steps:
       - uses: actions/checkout@v4
@@ -18,37 +21,51 @@ jobs:
         id: backport
         uses: korthout/backport-action@v3
 
-      - name: create issue if backport failed
+      - name: Report backport failures
+        # Also report action errors that occur before per-target outputs exist.
+        if: ${{ !cancelled() && (steps.backport.outcome == 'success' || steps.backport.outcome == 'failure') }}
         uses: actions/github-script@v7
+        env:
+          BACKPORT_RESULTS: ${{ steps.backport.outputs.was_successful_by_target }}
+          BACKPORT_SUCCESS: ${{ steps.backport.outputs.was_successful }}
+          BACKPORT_OUTCOME: ${{ steps.backport.outcome }}
         with:
           script: |
-            const pr = github.event.pull_request;
-            const byTarget = '${{ steps.backport.outputs.was_successful_by_target }}'
-              .split(' ')
-              .map(item => item.split('='))
-              .filter(arr => arr.length === 2);
-            const failedTargets = byTarget.filter(([label, ok]) => ok === 'false').map(([label]) => label);
-            const successfulTargets = byTarget.filter(([label, ok]) => ok === 'true').map(([label]) => label);
+            const pr = context.payload.pull_request;
+            // v3 emits newline-delimited target=true|false entries. Keep this
+            // data out of JavaScript source, including quotes in branch names.
+            const results = (process.env.BACKPORT_RESULTS || '').trim();
+            const byTarget = results ? results.split(/\s+/).map(item => {
+              const match = item.match(/^(.+)=(true|false)$/);
+              if (!match) throw new Error('Invalid backport result: ' + item);
+              return [match[1], match[2]];
+            }) : [];
+            const failed = byTarget.filter(([, ok]) => ok === 'false').map(([target]) => target);
+            const successful = byTarget.filter(([, ok]) => ok === 'true').map(([target]) => target);
+            const actionFailed = process.env.BACKPORT_OUTCOME === 'failure';
+            if (!failed.length && !actionFailed && process.env.BACKPORT_SUCCESS !== 'false') return;
 
-            if (failedTargets.length === 0) {
-              // nothing failed — don't create an issue
-              return;
-            }
-
-            const title = `Backport failed for PR #${pr.number} to: ${failedTargets.join(', ')}`;
-            const body = `
-            Backport action failed for PR #${pr.number}.
-            - **Original PR:** #${pr.number} (${pr.title})
-            - **Failed targets:** ${failedTargets.length ? failedTargets.map(t => \`\\\`${t}\\\`\`).join(', ') : 'None'}
-            - **Successful targets:** ${successfulTargets.length ? successfulTargets.map(t => \`\\\`${t}\\\`\`).join(', ') : 'None'}
-            `;
-
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title,
-              body,
-              labels: ['backport-failure'],
-              assignees: [pr.user.login]
+            const marker = `<!-- backport-failure:${pr.number} -->`;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}/attempts/${process.env.GITHUB_RUN_ATTEMPT || '1'}`;
+            const body = [
+              marker,
+              `Backporting PR #${pr.number} needs attention.`,
+              '',
+              `- Original PR: ${pr.html_url}`,
+              `- Failed targets: ${failed.length ? failed.join(', ') : 'Not reported; see workflow logs'}`,
+              `- Successful targets: ${successful.length ? successful.join(', ') : 'None reported'}`,
+              `- Workflow run: ${runUrl}`,
+              ...(actionFailed ? ['', 'The backport action failed. Target results may be incomplete.'] : []),
+            ].join('\n');
+            const title = `Backport failed for PR #${pr.number}`;
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              ...context.repo, state: 'open', creator: 'github-actions[bot]', per_page: 100,
             });
-
+            const existing = issues.find(issue => !issue.pull_request && issue.body?.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.update({ ...context.repo, issue_number: existing.number, title, body });
+            } else {
+              // Reporting must not depend on a label existing or the PR author
+              // being eligible for assignment in this repository.
+              await github.rest.issues.create({ ...context.repo, title, body });
+            }
