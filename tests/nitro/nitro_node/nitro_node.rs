@@ -131,6 +131,7 @@ impl NitroNode {
         })();
 
         if let Err(err) = startup {
+            save_service_logs();
             let _ = compose_down_status();
             panic!("{err}");
         }
