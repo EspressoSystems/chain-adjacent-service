@@ -78,6 +78,16 @@ impl EspressoDevNode {
                 .expect("failed to run docker compose - is docker running?");
 
             if !status.success() {
+                let _ = Command::new("docker")
+                    .args([
+                        "compose",
+                        "-f",
+                        COMPOSE_FILE,
+                        "logs",
+                        "--no-color",
+                        "--timestamps",
+                    ])
+                    .status();
                 panic!("docker compose up failed");
             }
         }
