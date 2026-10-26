@@ -208,11 +208,11 @@ pub mod testing {
         let espresso_node = EspressoDevNode::start().await;
         let config = SubmitterConfig {
             max_in_flight: 2,
-            // 10 seconds
-            finalization_wait_ms: 10000,
+            // 2 seconds
+            finalization_wait_ms: 2000,
             initial_backoff_ms: 100,
             max_backoff_ms: 1000,
-            max_finalization_poll_retries: 5,
+            max_finalization_poll_retries: 30,
         };
         let namespace_id = NamespaceId::from(1918988905u64);
         // Max 256 transactions at a time in the channel
@@ -228,7 +228,7 @@ pub mod testing {
 
         // Spawn a task to send 20 transactions at ~20 tx/sec
         let send_handle = tokio::spawn(async move {
-            for seq in 0..=20u64 {
+            for seq in 0..20u64 {
                 let tx = make_mock_espresso_transaction(seq);
                 sender.send(tx).await.expect("failed to send tx");
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -291,7 +291,7 @@ pub mod testing {
             from = to;
         }
 
-        for expected_seq in 0..=20u64 {
+        for expected_seq in 0..20u64 {
             assert!(
                 found_seqs.contains(&expected_seq),
                 "expected sequence {expected_seq} to be finalized on Espresso, found: {found_seqs:?}"
