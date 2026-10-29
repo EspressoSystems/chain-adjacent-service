@@ -28,12 +28,15 @@ jobs:
           - feature: nitro-v3_10,unverified-reader
             cache_key: nitro-v3_10-unverified
             suffix: "-v3_10-unverified"
+          - feature: nitro-v3_12_1,unverified-reader
+            cache_key: nitro-v3_12_1-unverified
+            suffix: "-v3_12_1-unverified"
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Lowercase image name
-        run: echo "IMAGE_NAME=${IMAGE_NAME,,}" >> $GITHUB_ENV
+        run: echo "IMAGE_NAME=${IMAGE_NAME,,}" >> "$GITHUB_ENV"
         env:
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
 

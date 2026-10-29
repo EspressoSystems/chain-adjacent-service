@@ -8,33 +8,43 @@ CAS publishes an application image. `tee-image-builder` uses it with the chain c
 | --- | --- | --- |
 | 3.9.9 | `nitro-v3_9_9` | `-v3_9_9` |
 | 3.10 | `nitro-v3_10` | `-v3_10` |
+| 3.12.1 | `nitro-v3_12_1` | `-v3_12_1` |
 
-These features are mutually exclusive. They select the feed-signature format and hashing scheme, along with supported AnyTrust headers. Choose the variant matching the rollup's Nitro protocol; changing runtime JSON or an environment variable cannot switch variants.
+The v3.9.9, v3.10 and v3.12.1 features are mutually exclusive. They select the feed-signature format and hashing scheme, along with supported AnyTrust headers. Choose the variant matching the rollup's Nitro protocol; changing runtime JSON or an environment variable cannot switch variants.
 
-Cargo and Docker default to 3.9.9. To build either variant explicitly:
+Cargo and Docker default to 3.9.9. To build a variant explicitly:
 
 ```bash
 docker build --build-arg CARGO_FEATURES=nitro-v3_9_9 -t cas:v3_9_9 .
 docker build --build-arg CARGO_FEATURES=nitro-v3_10 -t cas:v3_10 .
+docker build --build-arg CARGO_FEATURES=nitro-v3_12_1 -t cas:v3_12_1 .
 ```
 
-The Dockerfile's dependency-cache stage uses the 3.9.9 marker for both builds because the markers have identical dependency trees. The final build uses `CARGO_FEATURES` and `--no-default-features`, so the cache stage does not determine the final variant.
+The Dockerfile's dependency-cache stage uses the 3.9.9 marker for all three builds because the markers have identical dependency trees. The final build uses `CARGO_FEATURES` and `--no-default-features`, so the cache stage does not determine the final variant.
 
 `NITRO_IMAGE` in `e2e/nitro/.env` selects the Nitro node containers used by tests. It does not select the production CAS variant or the source image used by the enclave builder.
 
+## Nitro v3.12.1
+
+The v3.10 and v3.12.1 variants share feed-signature, batch-parsing and DA RPC formats. Each has an independent Cargo feature and image tag. The signature regression test uses the expected hash from [Nitro's Go test](https://github.com/OffchainLabs/nitro/blob/v3.12.1/broadcaster/message/message_signature_test.go).
+
+Keep `node.feed.input.rest.enable=false` when consuming CAS's feed: CAS serves websocket messages and does not implement Nitro's REST backlog API. The `execution.transaction-feed` endpoint uses a separate transaction/receipt schema and is not CAS's signed sequencer-message feed.
+
 ## Publishing
 
-[Docker Publish](../.github/workflows/docker-publish.yml) builds both verified variants on pushes to `main`, release tags matching `v*`, and manual dispatch. There is no workflow input to choose just one Nitro version; the matrix builds both.
+[Docker Publish](../.github/workflows/docker-publish.yml) builds all three verified variants on pushes to `main`, release tags matching `v*`, and manual dispatch. There is no workflow input to choose just one Nitro version; the matrix builds all three.
 
 The registry is `ghcr.io/espressosystems/chain-adjacent-service`. Tags include:
 
-- `main-v3_9_9` and `main-v3_10` for the main branch.
-- `<published-sha>-v3_9_9` and `<published-sha>-v3_10` for the published short commit SHA.
+- `main-v3_9_9`, `main-v3_10` and `main-v3_12_1` for the main branch.
+- `<published-sha>-v3_9_9`, `<published-sha>-v3_10` and `<published-sha>-v3_12_1` for the published short commit SHA.
 - Release-version tags with the same suffixes.
 
 Use an explicit published version when preparing an enclave deployment, and record the resolved image digest (its content hash) alongside its source revision and resulting PCR0, the measurement identifying the enclave image. Keep track of the actual published commit: a merge commit can differ from the PR head reviewed in CAS.
 
-The separate [unverified publish workflow](../.github/workflows/docker-publish-unverified.yml) runs only on manual dispatch and adds `unverified-reader` plus an `-unverified` tag suffix. Those images trust query responses and produce a distinct binary/enclave measurement; they are not the default verified images.
+The existing `latest` tag policy stays on the v3.9.9 variant; v3.10 and v3.12.1 use explicit version suffixes.
+
+The separate [unverified publish workflow](../.github/workflows/docker-publish-unverified.yml) builds all three variants only on manual dispatch and adds `unverified-reader` plus an `-unverified` tag suffix. Those images trust query responses and produce a distinct binary/enclave measurement; they are not the default verified images.
 
 ## Build the enclave in tee-image-builder
 

@@ -4,7 +4,7 @@ Chain Adjacent Service (CAS) connects Arbitrum Nitro rollups to Espresso. It imp
 
 After verification, CAS returns a certificate to the batch poster. The certificate contains a signature from the trusted execution environment (TEE) and the metadata needed for on-chain validation by the `SequencerInbox` contract.
 
-**Currently supported:** Arbitrum Nitro (v3.9.9 and v3.10).
+**Nitro versions:** Arbitrum Nitro v3.9.9, v3.10 and v3.12.1.
 
 ## Architecture
 
@@ -25,12 +25,13 @@ Key modules under `src/`:
 
 ## Feature flags
 
-Nitro protocol versions are mutually exclusive features:
+Nitro version features are mutually exclusive:
 
 | Feature | Description |
 | --- | --- |
 | `nitro-v3_9_9` (default) | Arbitrum Nitro v3.9.9 protocol |
 | `nitro-v3_10` | Arbitrum Nitro v3.10 protocol |
+| `nitro-v3_12_1` | Arbitrum Nitro v3.12.1 protocol |
 
 Build for a specific version:
 
@@ -62,6 +63,7 @@ just fmt
 # Clippy (pick one — features are mutually exclusive)
 just clippy-v3_9_9
 just clippy-v3_10
+just clippy-v3_12_1
 ```
 
 ## Configuration
@@ -98,6 +100,9 @@ just docker-build
 # Nitro v3.10
 docker build --build-arg CARGO_FEATURES=nitro-v3_10 -t cas:v3.10 .
 
+# Nitro v3.12.1
+docker build --build-arg CARGO_FEATURES=nitro-v3_12_1 -t cas:v3.12.1 .
+
 # Run
 docker run -v /path/to/config.json:/etc/cas/config.json cas:v3.10
 ```
@@ -114,11 +119,11 @@ See [CAS images and enclave builds](docs/image-builds.md) for published version 
 just test
 ```
 
-Runs the tests separately for Nitro 3.10 and 3.9.9, with one test thread per run.
+Runs the tests separately for Nitro 3.10, 3.9.9 and 3.12.1, with one test thread per run.
 
 ### E2E tests
 
-End-to-end (E2E) tests start a full Nitro stack through Docker Compose.
+End-to-end (E2E) tests start a full Nitro stack through Docker Compose. Run version-specific stacks sequentially because they use fixed host ports.
 
 ```bash
 # Nitro v3.10 (default)
@@ -127,6 +132,9 @@ just test-e2e
 # Nitro v3.9.9 (requires generated L1 state)
 just generate-l1-state-v3_9_9
 just test-e2e-v3_9_9
+
+# Nitro v3.12.1
+just test-e2e-v3_12_1
 
 # Optional: filter to a specific test
 just test-e2e test_e2e_anytrust
@@ -158,7 +166,7 @@ GitHub Actions runs on every push to `main` and on pull requests:
 | Job | What it does |
 | --- | --- |
 | **Formatting** | `cargo fmt --all --check` |
-| **Tests** | `cargo test --all-targets` |
+| **Tests** | `cargo test --locked --all-targets --no-default-features --features <variant>` for each variant |
 | **Clippy** | Runs separately per Nitro version (mutually exclusive features) |
 | **Audit** | `cargo audit` via rustsec |
 

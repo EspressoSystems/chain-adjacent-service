@@ -76,15 +76,21 @@ clippy-v3_9_9:
 clippy-v3_10:
     cargo clippy --all-targets --no-default-features --features nitro-v3_10 -- -D warnings
 
+clippy-v3_12_1:
+    cargo clippy --locked --all-targets --no-default-features --features nitro-v3_12_1 -- -D warnings
+
 # ─── Running tests ────────────────────────────────────────────────────────────
 
 # Run unit/integration tests against a single Nitro version (default v3.10).
-# `--all-features` can't be used: nitro-v3_9_9 and nitro-v3_10 are mutually exclusive.
+# `--all-features` can't be used: Nitro version features are mutually exclusive.
 test-v3_10:
     RUST_BACKTRACE=1 cargo test --no-default-features --features nitro-v3_10 -- --test-threads=1
 
 test-v3_9_9:
     RUST_BACKTRACE=1 cargo test --no-default-features --features nitro-v3_9_9 -- --test-threads=1
+
+test-v3_12_1:
+    RUST_BACKTRACE=1 cargo test --locked --no-default-features --features nitro-v3_12_1 -- --test-threads=1
 
 # Shared v3.9.9 env. Used by every recipe that needs to talk to the v3.9.9 stack.
 v3_9_9_env := "COMPOSE_FILE=docker-compose.yml:docker-compose.v3_9_9.yml " + \
@@ -104,7 +110,16 @@ test-e2e-v3_9_9 filter="":
     {{v3_9_9_env}} \
     RUST_BACKTRACE=1 cargo test --test nitro --no-default-features --features e2e,nitro-v3_9_9 {{filter}} -- --test-threads=1
 
-test: test-v3_10 test-v3_9_9
+# Run Nitro v3.12.1 against the shared chain fixture.
+test-e2e-v3_12_1 filter="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    set -a
+    source e2e/nitro/.env.v3_12_1
+    set +a
+    RUST_BACKTRACE=1 cargo test --locked --test nitro --no-default-features --features e2e,nitro-v3_12_1 {{filter}} -- --test-threads=1
+
+test: test-v3_10 test-v3_9_9 test-v3_12_1
 
 # ─── L1 state generation ──────────────────────────────────────────────────────
 

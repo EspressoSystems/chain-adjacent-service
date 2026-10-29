@@ -424,8 +424,13 @@ pub fn verify_broadcast_feed_message_signature(
     }
 }
 
-#[cfg(all(feature = "nitro-v3_9_9", feature = "nitro-v3_10"))]
-compile_error!("features `nitro-v3_9_9` and `nitro-v3_10` are mutually exclusive");
+const _: () = assert!(
+    cfg!(feature = "nitro-v3_9_9") as u8
+        + cfg!(feature = "nitro-v3_10") as u8
+        + cfg!(feature = "nitro-v3_12_1") as u8
+        <= 1,
+    "features `nitro-v3_9_9`, `nitro-v3_10` and `nitro-v3_12_1` are mutually exclusive"
+);
 
 /// Mirrors `MessageWithMetadata.Hash` in arbos/arbostypes/messagewithmeta.go
 /// from upstream nitro v3.9.9. Hash =
@@ -453,10 +458,8 @@ pub fn signature_hash(msg: &BroadcastFeedMessage, chain_id: u64) -> Result<Fixed
     Ok(hasher.finalize())
 }
 
-/// Mirrors `BroadcastFeedMessage.SignatureHash` in
-/// broadcaster/message/message.go from upstream nitro v3.10. Hashes the
-/// hand-picked subset of fields covered by the sequencer signature, prefixed
-/// with "Arbitrum Nitro Feed:".
+/// Matches `BroadcastFeedMessage.SignatureHash` in `broadcaster/message/message.go`.
+/// Hashes the signed fields with the "Arbitrum Nitro Feed:" prefix.
 #[cfg(not(feature = "nitro-v3_9_9"))]
 pub fn signature_hash(msg: &BroadcastFeedMessage, chain_id: u64) -> Result<FixedBytes<32>> {
     let l1_msg = msg

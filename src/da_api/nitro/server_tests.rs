@@ -158,9 +158,8 @@ async fn test_namespace_endpoints() {
 
 #[tokio::test]
 async fn test_anytrust_header_bytes_returned_locally() {
-    // is_anytrust=true: CAS answers `0x70` only and does NOT call
-    // the downstream sidecar (which would return 0x8088). The
-    // poster's local AnyTrust handler keeps ownership of 0x80/0x88.
+    // Legacy nodes route raw AnyTrust headers through CAS; newer nodes handle
+    // them locally. CAS answers this discovery request without calling the sidecar.
     let mock_da_provider = MockServer::start().await;
 
     // If CAS forwards, the mock will record the request — we assert
@@ -191,7 +190,10 @@ async fn test_anytrust_header_bytes_returned_locally() {
         .await
         .expect("RPC call failed");
 
+    #[cfg(feature = "nitro-v3_9_9")]
     assert_eq!(response["headerBytes"], "0x708088");
+    #[cfg(not(feature = "nitro-v3_9_9"))]
+    assert_eq!(response["headerBytes"], "0x70");
     assert_eq!(
         mock_da_provider.received_requests().await.unwrap().len(),
         0,

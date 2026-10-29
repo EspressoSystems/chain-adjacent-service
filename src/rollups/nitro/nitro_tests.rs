@@ -586,3 +586,82 @@ fn test_verify_batch_after_delayed_messages_read_matches_segment_count() {
     assert!(result.success);
     assert_eq!(result.after_delayed_messages_read, 12);
 }
+
+// https://github.com/OffchainLabs/nitro/blob/v3.12.1/broadcaster/message/message_signature_test.go
+#[cfg(not(feature = "nitro-v3_9_9"))]
+fn upstream_feed_message() -> BroadcastFeedMessage {
+    serde_json::from_str(
+        r#"{
+            "sequenceNumber": 12345,
+            "message": {
+                "message": {
+                    "header": {
+                        "kind": 0,
+                        "sender": "0x0000000000000000000000000000000000000000",
+                        "blockNumber": 0,
+                        "timestamp": 0,
+                        "requestId": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                        "baseFeeL1": 0
+                    },
+                    "l2Msg": "3q2+7w=="
+                },
+                "delayedMessagesRead": 3333
+            },
+            "signatureV2": null,
+            "blockMetadata": "3q2+rw=="
+        }"#,
+    )
+    .unwrap()
+}
+
+#[cfg(not(feature = "nitro-v3_9_9"))]
+#[test]
+fn test_signature_hash_matches_nitro_v3_12_1_go_vector() {
+    let msg = upstream_feed_message();
+    let expected = alloy::primitives::b256!(
+        "3d79853de5f9e4354e5d6c6d4cad19dcd969f9646f0cab21e5bdfee4902dfa2e"
+    );
+    assert_eq!(signature_hash(&msg, 0xa4b1).unwrap(), expected);
+
+    // The relay must retain the signed metadata and emit the current field name.
+    let serialized = serde_json::to_value(&msg).unwrap();
+    assert!(serialized.get("signatureV2").is_some());
+    assert!(serialized.get("signature").is_none());
+    assert_eq!(serialized["blockMetadata"], "3q2+rw==");
+    let decoded: BroadcastFeedMessage = serde_json::from_value(serialized).unwrap();
+    assert_eq!(signature_hash(&decoded, 0xa4b1).unwrap(), expected);
+}
+
+#[cfg(not(feature = "nitro-v3_9_9"))]
+#[test]
+fn test_feed_signature_rejects_tampering_and_untrusted_signers() {
+    use alloy::signers::{SignerSync, local::PrivateKeySigner};
+
+    let signer = PrivateKeySigner::from_slice(&[1; 32]).unwrap();
+    let mut msg = upstream_feed_message();
+    msg.block_hash = Some(alloy::primitives::B256::repeat_byte(0x11));
+    msg.signature = signer
+        .sign_hash_sync(&signature_hash(&msg, 0xa4b1).unwrap())
+        .unwrap()
+        .as_bytes()
+        .to_vec();
+    let trusted = [signer.address()];
+    verify_broadcast_feed_message_signature(0xa4b1, &trusted, &msg).unwrap();
+    assert!(verify_broadcast_feed_message_signature(0xa4b1, &[], &msg).is_err());
+    assert!(verify_broadcast_feed_message_signature(0xa4b2, &trusted, &msg).is_err());
+
+    let mut tampered = msg.clone();
+    tampered.block_metadata[0] ^= 1;
+    assert!(verify_broadcast_feed_message_signature(0xa4b1, &trusted, &tampered).is_err());
+
+    let mut tampered = msg.clone();
+    tampered.block_hash = None;
+    assert!(verify_broadcast_feed_message_signature(0xa4b1, &trusted, &tampered).is_err());
+
+    let mut tampered = msg.clone();
+    tampered.sequence_number += 1;
+    assert!(verify_broadcast_feed_message_signature(0xa4b1, &trusted, &tampered).is_err());
+
+    msg.signature.truncate(64);
+    assert!(verify_broadcast_feed_message_signature(0xa4b1, &trusted, &msg).is_err());
+}
