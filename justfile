@@ -110,7 +110,7 @@ test-e2e-v3_9_9 filter="":
     {{v3_9_9_env}} \
     RUST_BACKTRACE=1 cargo test --test nitro --no-default-features --features e2e,nitro-v3_9_9 {{filter}} -- --test-threads=1
 
-# Run Nitro v3.12.1 against the shared chain fixture.
+# Run all E2E tests against Nitro v3.12.1.
 test-e2e-v3_12_1 filter="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -132,6 +132,9 @@ generate-l1-state:
 # Outputs to e2e/nitro/generated-config-v3_9_9/.
 generate-l1-state-v3_9_9:
     ./e2e/nitro/generate-l1-state.sh .env.v3_9_9
+
+generate-l1-state-v3_12_1:
+    ./e2e/nitro/generate-l1-state.sh .env.v3_12_1
 
 # ─── Docker compose helpers ───────────────────────────────────────────────────
 

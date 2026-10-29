@@ -5,6 +5,9 @@
 #   docker compose -f docker-compose.yml -f docker-compose.generate.yml ...
 services:
   l1-anvil:
+    entrypoint: ["anvil"]
+    healthcheck:
+      test: ["CMD", "cast", "block-number", "--rpc-url", "http://localhost:8545"]
     command:
       [
         "--host",

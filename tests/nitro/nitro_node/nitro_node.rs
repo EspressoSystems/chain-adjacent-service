@@ -1,3 +1,8 @@
+use alloy::{
+    primitives::{U256, address},
+    providers::ProviderBuilder,
+    sol,
+};
 use std::{
     process::{Command, Stdio},
     sync::OnceLock,
@@ -8,6 +13,43 @@ const COMPOSE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/e2e/nitro");
 const UNUSED_CAS_FEED_URL: &str = "ws://unused.invalid";
 const UNUSED_CAS_CALLDATA_RPC_URL: &str = "http://unused.invalid";
 const UNUSED_SEQUENCER_INBOX_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
+
+sol! {
+    #[sol(rpc)]
+    interface ArbSys {
+        function arbOSVersion() external view returns (uint256);
+    }
+}
+
+pub(crate) async fn check_arbos_version(rpc_url: &str) -> Result<(), String> {
+    let expected_version = if cfg!(feature = "nitro-v3_12_1") {
+        61u64
+    } else {
+        40u64
+    };
+    let provider = ProviderBuilder::new().connect_http(
+        rpc_url
+            .parse()
+            .map_err(|err| format!("invalid Nitro RPC URL {rpc_url}: {err}"))?,
+    );
+    let arb_sys = ArbSys::new(
+        address!("0000000000000000000000000000000000000064"),
+        provider,
+    );
+    let reported = arb_sys
+        .arbOSVersion()
+        .call()
+        .await
+        .map_err(|err| format!("failed to query active ArbOS version: {err}"))?;
+    // ArbSys adds 55 to the internal Nitro ArbOS version.
+    if reported != U256::from(expected_version + 55) {
+        return Err(format!(
+            "expected ArbOS {expected_version} at {rpc_url}, but ArbSys reported {reported}"
+        ));
+    }
+    println!("Verified active ArbOS {expected_version} at {rpc_url} (ArbSys reported {reported})");
+    Ok(())
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct NitroNodeConfig {
@@ -111,8 +153,8 @@ impl NitroNode {
 
         let _ = compose_down_status();
 
-        let startup = (|| -> Result<(), String> {
-            println!("Loading pre-deployed L1 state (run `just generate-l1-state` to regenerate)");
+        let startup = async {
+            println!("Loading pre-deployed L1 state");
 
             run_compose_result(&[
                 "compose",
@@ -127,8 +169,10 @@ impl NitroNode {
             if !config.no_l2_traffic {
                 args.push("tx-generator");
             }
-            run_compose_result(&args)
-        })();
+            run_compose_result(&args)?;
+            check_arbos_version("http://localhost:8547").await
+        }
+        .await;
 
         if let Err(err) = startup {
             save_service_logs();

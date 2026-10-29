@@ -134,11 +134,14 @@ just generate-l1-state-v3_9_9
 just test-e2e-v3_9_9
 
 # Nitro v3.12.1
+just generate-l1-state-v3_12_1
 just test-e2e-v3_12_1
 
 # Optional: filter to a specific test
 just test-e2e test_e2e_anytrust
 ```
+
+The E2E suite runs against ArbOS 61 for Nitro v3.12.1 and ArbOS 40 for v3.9.9 and v3.10. Tests check the active ArbOS version on startup.
 
 ### Docker Compose helpers
 

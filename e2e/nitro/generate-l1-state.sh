@@ -5,6 +5,7 @@
 # Usage:
 #   ./e2e/nitro/generate-l1-state.sh                      # default (v3.10)
 #   ./e2e/nitro/generate-l1-state.sh .env.v3_9_9          # v3.9.9 overlay
+#   ./e2e/nitro/generate-l1-state.sh .env.v3_12_1         # v3.12.1 overlay
 #
 # `.env` is always sourced first for shared values (ports, accounts,
 # espresso config). If an overlay file is passed, it is sourced afterwards
@@ -14,7 +15,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 OVERLAY_FILE="${1:-}"
 
@@ -58,12 +58,12 @@ if [ -n "$OVERLAY_FILE" ]; then
     fi
 fi
 
-DC="docker compose ${DC_FILES[*]}"
+DC=(docker compose "${DC_FILES[@]}")
 
 # ── Teardown ──────────────────────────────────────────────────────────────────
 
 echo "==> Tearing down any leftover containers..."
-$DC --profile deploy down -v --remove-orphans 2>/dev/null || true
+"${DC[@]}" --profile deploy down -v --remove-orphans 2>/dev/null || true
 
 rm -rf "$CONFIG_PATH"
 mkdir -p "$CONFIG_PATH"
@@ -71,10 +71,10 @@ mkdir -p "$CONFIG_PATH"
 # ── Deploy contracts ──────────────────────────────────────────────────────────
 
 echo "==> Starting fresh Anvil L1..."
-$DC up -d --wait l1-anvil
+"${DC[@]}" up -d --wait l1-anvil
 
 echo "==> Deploying rollup contracts via rollup-creator..."
-$DC --profile deploy up rollup-creator
+"${DC[@]}" --profile deploy up rollup-creator
 
 # ── Register DAS keyset ───────────────────────────────────────────────────────
 
@@ -99,7 +99,6 @@ cat > "$DUMP_CONFIG" <<EOF
 EOF
 
 KEYSET_HEX=$(docker run --rm \
-    --platform linux/amd64 \
     --entrypoint "/usr/local/bin/$ANYTRUST_TOOL_BIN" \
     -v "$DUMP_CONFIG:/config.json:ro" \
     "$NITRO_IMAGE" \
@@ -116,16 +115,9 @@ SEQ_INBOX=$(jq -r '.["sequencer-inbox"]' "$CONFIG_PATH/deployment.json")
 UPGRADE_EXEC=$(jq -r '.["upgrade-executor"]' "$CONFIG_PATH/deployment.json")
 
 # Encode setValidKeyset(bytes) and send via upgrade-executor
-INNER_CALLDATA=$(docker run --rm \
-    --entrypoint cast \
-    ghcr.io/foundry-rs/foundry:latest \
-    calldata "setValidKeyset(bytes)" "$KEYSET_HEX")
+INNER_CALLDATA=$("${DC[@]}" exec -T l1-anvil cast calldata "setValidKeyset(bytes)" "$KEYSET_HEX")
 
-docker run --rm \
-    --network nitro_default \
-    --entrypoint cast \
-    ghcr.io/foundry-rs/foundry:latest \
-    send \
+"${DC[@]}" exec -T l1-anvil cast send \
     --rpc-url http://l1-anvil:8545 \
     --private-key "$DEPLOYER_PRIVATE_KEY" \
     "$UPGRADE_EXEC" \
@@ -140,21 +132,11 @@ echo "DAS keyset registered on SequencerInbox $SEQ_INBOX"
 echo "==> Authorizing validator EOA on rollup..."
 
 ROLLUP=$(jq -r '.rollup' "$CONFIG_PATH/deployment.json")
-VALIDATOR_ADDRESS=$(docker run --rm \
-    --entrypoint cast \
-    ghcr.io/foundry-rs/foundry:latest \
-    wallet address --private-key "0x${VALIDATOR_PRIVATE_KEY}")
+VALIDATOR_ADDRESS=$("${DC[@]}" exec -T l1-anvil cast wallet address --private-key "0x${VALIDATOR_PRIVATE_KEY}")
 
-INNER_CALLDATA=$(docker run --rm \
-    --entrypoint cast \
-    ghcr.io/foundry-rs/foundry:latest \
-    calldata "setValidator(address[],bool[])" "[$VALIDATOR_ADDRESS]" "[true]")
+INNER_CALLDATA=$("${DC[@]}" exec -T l1-anvil cast calldata "setValidator(address[],bool[])" "[$VALIDATOR_ADDRESS]" "[true]")
 
-docker run --rm \
-    --network nitro_default \
-    --entrypoint cast \
-    ghcr.io/foundry-rs/foundry:latest \
-    send \
+"${DC[@]}" exec -T l1-anvil cast send \
     --rpc-url http://l1-anvil:8545 \
     --private-key "$DEPLOYER_PRIVATE_KEY" \
     "$UPGRADE_EXEC" \
@@ -169,11 +151,18 @@ echo "Validator $VALIDATOR_ADDRESS authorized on rollup $ROLLUP"
 # The generate override starts Anvil with `--dump-state /state/l1-state.json`.
 # When Anvil receives SIGTERM (via `docker compose stop`), it writes the
 # full chain state to that path before exiting.
+FINAL_BLOCK=$("${DC[@]}" exec -T l1-anvil cast block-number)
 echo "==> Stopping Anvil (triggers state dump)..."
-$DC stop l1-anvil
+"${DC[@]}" stop l1-anvil
 
 echo "==> Cleaning up containers..."
-$DC --profile deploy down -v --remove-orphans
+"${DC[@]}" --profile deploy down -v --remove-orphans
+
+SNAPSHOT_BLOCK=$(jq -r '.block.number' "$CONFIG_PATH/l1-state.json")
+if (( SNAPSHOT_BLOCK < FINAL_BLOCK )); then
+    echo "ERROR: snapshot ends at $SNAPSHOT_BLOCK, before final deployment block $FINAL_BLOCK" >&2
+    exit 1
+fi
 
 echo ""
 echo "Generated files:"

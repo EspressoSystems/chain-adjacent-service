@@ -41,7 +41,7 @@ sol! {
     );
 }
 
-use crate::nitro_node::nitro_node::{NitroNode, NitroNodeConfig};
+use crate::nitro_node::nitro_node::{NitroNode, NitroNodeConfig, check_arbos_version};
 
 const CAS_BIN: &str = env!("CARGO_BIN_EXE_chain-adjacent-service");
 
@@ -831,6 +831,9 @@ async fn run_e2e(route: CasRoute) {
     println!("Starting block validator...");
     let rollup = read_rollup_address();
     nitro_node.start_block_validator();
+    check_arbos_version(VALIDATOR_HTTP_URL)
+        .await
+        .expect("validator ArbOS version mismatch");
 
     let validator = connect_http(VALIDATOR_HTTP_URL);
     wait_for_validator_to_reach(&validator, sequencer_block).await;
