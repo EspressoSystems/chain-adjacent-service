@@ -597,8 +597,8 @@ pub(crate) async fn count_batches_on_l1(
     provider
         .get_logs(&filter)
         .await
-        .map(|l| l.len())
-        .unwrap_or(0)
+        .expect("failed to query L1 batch delivery events")
+        .len()
 }
 
 fn connect_http(url: &str) -> impl Provider + Clone {
@@ -820,6 +820,10 @@ async fn run_e2e(route: CasRoute) {
         .await
         .expect("failed to get sequencer block number");
     let sequencer_block = last_block_with_user_tx(&sequencer, sequencer_head).await;
+    assert!(
+        sequencer_block > 0,
+        "sequencer did not include a user transaction"
+    );
     println!(
         "Sequencer at block {sequencer_head}, last user transaction in block {sequencer_block}"
     );

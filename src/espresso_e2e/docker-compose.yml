@@ -1,7 +1,7 @@
 services:
   espresso-dev-node:
-    image: ghcr.io/espressosystems/espresso-network/espresso-dev-node:main
-    platform: linux/amd64
+    image: ghcr.io/espressosystems/espresso-network/espresso-dev-node:0.6.3.16@sha256:cda6b6c4757c6fd1e4b2df13bf6202722d791e5fcc75f6a1e3bd196610602fec
+    platform: ${ESPRESSO_DEV_NODE_PLATFORM:-linux/amd64}
     ports:
       - "$ESPRESSO_SEQUENCER_API_PORT:$ESPRESSO_SEQUENCER_API_PORT"
       - "$ESPRESSO_BUILDER_PORT:$ESPRESSO_BUILDER_PORT"

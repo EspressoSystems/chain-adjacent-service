@@ -48,7 +48,7 @@ services:
 
   espresso-dev-node:
     image: ${ESPRESSO_DEV_NODE_IMAGE}
-    platform: linux/amd64
+    platform: ${ESPRESSO_DEV_NODE_PLATFORM:-linux/amd64}
     ports:
       - "${ESPRESSO_SEQUENCER_API_PORT}:${ESPRESSO_SEQUENCER_API_PORT}"
       - "${ESPRESSO_DEV_NODE_PORT}:${ESPRESSO_DEV_NODE_PORT}"

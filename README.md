@@ -123,7 +123,7 @@ Runs the tests separately for Nitro 3.10, 3.9.9 and 3.12.1, with one test thread
 
 ### E2E tests
 
-End-to-end (E2E) tests start a full Nitro stack through Docker Compose. Run version-specific stacks sequentially because they use fixed host ports.
+End-to-end (E2E) tests start a full Nitro stack through Docker Compose. Run version-specific stacks sequentially because they use fixed host ports. On Apple Silicon, set `ESPRESSO_DEV_NODE_PLATFORM=linux/arm64` to run the Espresso fixture natively; CI uses `linux/amd64`.
 
 ```bash
 # Nitro v3.10 (default)
