@@ -24,12 +24,15 @@ jobs:
         nitro:
           - feature: nitro-v3_9_9,unverified-reader
             cache_key: nitro-v3_9_9-unverified
+            version: "3.9.9"
             suffix: "-v3_9_9-unverified"
           - feature: nitro-v3_10,unverified-reader
             cache_key: nitro-v3_10-unverified
+            version: "3.10"
             suffix: "-v3_10-unverified"
           - feature: nitro-v3_12_1,unverified-reader
             cache_key: nitro-v3_12_1-unverified
+            version: "3.12.1"
             suffix: "-v3_12_1-unverified"
 
     steps:
@@ -59,8 +62,8 @@ jobs:
             type=ref,event=branch
             type=ref,event=pr
             type=sha,prefix=
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{version}},suffix=-nitro${{ matrix.nitro.version }}-unverified
+            type=semver,pattern={{major}}.{{minor}},suffix=-nitro${{ matrix.nitro.version }}-unverified
 
       - uses: docker/build-push-action@v6
         with:
