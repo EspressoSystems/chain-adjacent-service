@@ -48,7 +48,7 @@ services:
 
   espresso-dev-node:
     image: ${ESPRESSO_DEV_NODE_IMAGE}
-    platform: linux/amd64
+    platform: ${ESPRESSO_DEV_NODE_PLATFORM:-linux/amd64}
     ports:
       - "${ESPRESSO_SEQUENCER_API_PORT}:${ESPRESSO_SEQUENCER_API_PORT}"
       - "${ESPRESSO_DEV_NODE_PORT}:${ESPRESSO_DEV_NODE_PORT}"
@@ -95,7 +95,7 @@ services:
       PARENT_CHAIN_RPC: "http://l1-anvil:8545"
       PARENT_CHAIN_ID: 1337
       CHILD_CHAIN_NAME: "arb-dev-test"
-      CHILD_CHAIN_CONFIG_PATH: "/nitro-config/l2_chain_config.json"
+      CHILD_CHAIN_CONFIG_PATH: "/nitro-config/${L2_CHAIN_CONFIG_FILE:-l2_chain_config.json}"
       CHAIN_DEPLOYMENT_INFO: "/config/deployment.json"
       CHILD_CHAIN_INFO: "/config/deployed_chain_info.json"
       OWNER_ADDRESS: ${DEPLOYER_ADDRESS}
@@ -104,7 +104,7 @@ services:
       TEE_VERIFIER_INFO: "/config/tee_verifier_address.txt"
       AUTHORIZE_VALIDATORS: 10
       MAX_DATA_SIZE: 117964
-      WASM_MODULE_ROOT: "0xc2c02df561d4afaf9a1d6785f70098ec3874765c638e3cb6dbe8d3c83333e14c"
+      WASM_MODULE_ROOT: "${WASM_MODULE_ROOT:-0xc2c02df561d4afaf9a1d6785f70098ec3874765c638e3cb6dbe8d3c83333e14c}"
     depends_on:
       l1-anvil:
         condition: service_healthy

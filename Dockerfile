@@ -1,8 +1,7 @@
 # syntax=docker/dockerfile:1
 FROM rust:1.94.1-bookworm AS builder
 
-# Cargo feature selecting the Nitro protocol version. Override via
-# `--build-arg CARGO_FEATURES=nitro-v3_10` to build the v3.10 variant.
+# Select the Nitro variant with --build-arg CARGO_FEATURES=nitro-v3_12_1.
 ARG CARGO_FEATURES=nitro-v3_9_9
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -13,20 +12,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /build
 
-# Dep-cache layer: dummy crate compiles all dependencies so source-only
-# changes skip the expensive dep-resolution step. Feature is hardcoded to
-# nitro-v3_9_9 because both nitro features are empty markers with identical
-# dependency trees, letting both matrix variants share this cached layer.
+# All Nitro variants share dependencies. Cache them with a dummy crate;
+# the final build selects CARGO_FEATURES.
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && \
     echo "pub fn _dummy() {}" > src/lib.rs && \
     echo "fn main() {}" > src/main.rs && \
-    cargo build --release --no-default-features --features "nitro-v3_9_9" && \
+    cargo build --locked --release --no-default-features --features "nitro-v3_9_9" && \
     cargo clean --release -p chain-adjacent-service && \
     rm -rf src
 
 COPY src/ src/
-RUN cargo build --release --no-default-features --features "$CARGO_FEATURES" --bin chain-adjacent-service
+RUN cargo build --locked --release --no-default-features --features "$CARGO_FEATURES" --bin chain-adjacent-service
 
 FROM debian:bookworm-slim
 

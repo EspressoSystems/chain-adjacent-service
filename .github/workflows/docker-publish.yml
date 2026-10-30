@@ -32,12 +32,16 @@ jobs:
             cache_key: nitro-v3_10
             suffix: "-v3_10"
             latest: "false"
+          - feature: nitro-v3_12_1
+            cache_key: nitro-v3_12_1
+            suffix: "-v3_12_1"
+            latest: "false"
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Lowercase image name
-        run: echo "IMAGE_NAME=${IMAGE_NAME,,}" >> $GITHUB_ENV
+        run: echo "IMAGE_NAME=${IMAGE_NAME,,}" >> "$GITHUB_ENV"
         env:
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
 

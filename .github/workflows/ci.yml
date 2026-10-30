@@ -33,15 +33,19 @@ jobs:
       - run: cargo fmt --all --check
 
   test:
-    name: Tests
+    name: Tests (${{ matrix.nitro-feature }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        nitro-feature: [nitro-v3_9_9, nitro-v3_10, nitro-v3_12_1]
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --all-targets
+      - run: cargo test --locked --all-targets --no-default-features --features ${{ matrix.nitro-feature }} -- --test-threads=1
 
   clippy_check:
     name: Clippy
@@ -50,12 +54,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # nitro-v3_9_9 and nitro-v3_10 are mutually exclusive features, so
-      # --all-features fails the compile_error!. Run once per protocol version.
+      # Nitro version features are mutually exclusive.
       - name: Run Clippy (Nitro v3.9.9)
-        run: cargo clippy --all-targets --no-default-features --features e2e,nitro-v3_9_9
+        run: cargo clippy --locked --all-targets --no-default-features --features e2e,nitro-v3_9_9
       - name: Run Clippy (Nitro v3.10)
-        run: cargo clippy --all-targets --no-default-features --features e2e,nitro-v3_10
+        run: cargo clippy --locked --all-targets --no-default-features --features e2e,nitro-v3_10
+      - name: Run Clippy (Nitro v3.12.1)
+        run: cargo clippy --locked --all-targets --no-default-features --features e2e,nitro-v3_12_1
 
   audit:
     name: Cargo Audit

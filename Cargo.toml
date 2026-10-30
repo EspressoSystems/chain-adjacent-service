@@ -13,6 +13,7 @@ e2e = []
 unverified-reader = []
 nitro-v3_9_9 = []
 nitro-v3_10 = []
+nitro-v3_12_1 = []
 
 [lib]
 name = "chain_adjacent_service"

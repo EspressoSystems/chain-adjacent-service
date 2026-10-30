@@ -83,12 +83,22 @@ jobs:
           retention-days: 7
 
   e2e-v3_10:
-    name: E2E v3.10 (${{ matrix.group }})
+    name: E2E ${{ matrix.nitro.name }} (${{ matrix.group }})
     runs-on: ubuntu-24.04-8core
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
+        nitro:
+          - name: v3.10
+            version: v3_10
+            feature: nitro-v3_10
+            env-file: .env
+          - name: v3.12.1
+            version: v3_12_1
+            feature: nitro-v3_12_1
+            env-file: .env.v3_12_1
+        group: [general, anytrust, drift]
         include:
           # `filter` selects tests positionally, `skip` deselects. Exactly one of
           # them carries each group; the other stays empty.
@@ -124,6 +134,9 @@ jobs:
         run: |
           set -a
           source .env
+          if [[ "${{ matrix.nitro.env-file }}" != .env ]]; then
+            source "${{ matrix.nitro.env-file }}"
+          fi
           set +a
           docker pull "$NITRO_IMAGE" &
           docker pull "$ESPRESSO_DEV_NODE_IMAGE" &
@@ -133,15 +146,21 @@ jobs:
 
       - name: Run E2E tests (${{ matrix.group }})
         run: |
-          RUST_BACKTRACE=1 cargo test --test nitro \
-            --no-default-features --features e2e,nitro-v3_10 \
+          set -a
+          source e2e/nitro/.env
+          if [[ "${{ matrix.nitro.env-file }}" != .env ]]; then
+            source "e2e/nitro/${{ matrix.nitro.env-file }}"
+          fi
+          set +a
+          RUST_BACKTRACE=1 cargo test --locked --test nitro \
+            --no-default-features --features e2e,${{ matrix.nitro.feature }} \
             ${{ matrix.filter }} -- --test-threads=1 ${{ matrix.skip }}
 
       - name: Upload container logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-logs-v3_10-${{ matrix.group }}
+          name: e2e-logs-${{ matrix.nitro.version }}-${{ matrix.group }}
           path: target/e2e-logs/
           if-no-files-found: ignore
           retention-days: 7

@@ -41,7 +41,7 @@ sol! {
     );
 }
 
-use crate::nitro_node::nitro_node::{NitroNode, NitroNodeConfig};
+use crate::nitro_node::nitro_node::{NitroNode, NitroNodeConfig, check_arbos_version};
 
 const CAS_BIN: &str = env!("CARGO_BIN_EXE_chain-adjacent-service");
 
@@ -597,8 +597,8 @@ pub(crate) async fn count_batches_on_l1(
     provider
         .get_logs(&filter)
         .await
-        .map(|l| l.len())
-        .unwrap_or(0)
+        .expect("failed to query L1 batch delivery events")
+        .len()
 }
 
 fn connect_http(url: &str) -> impl Provider + Clone {
@@ -820,6 +820,10 @@ async fn run_e2e(route: CasRoute) {
         .await
         .expect("failed to get sequencer block number");
     let sequencer_block = last_block_with_user_tx(&sequencer, sequencer_head).await;
+    assert!(
+        sequencer_block > 0,
+        "sequencer did not include a user transaction"
+    );
     println!(
         "Sequencer at block {sequencer_head}, last user transaction in block {sequencer_block}"
     );
@@ -827,6 +831,9 @@ async fn run_e2e(route: CasRoute) {
     println!("Starting block validator...");
     let rollup = read_rollup_address();
     nitro_node.start_block_validator();
+    check_arbos_version(VALIDATOR_HTTP_URL)
+        .await
+        .expect("validator ArbOS version mismatch");
 
     let validator = connect_http(VALIDATOR_HTTP_URL);
     wait_for_validator_to_reach(&validator, sequencer_block).await;
