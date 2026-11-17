@@ -39,6 +39,19 @@ Build for a specific version:
 cargo build --release --no-default-features --features nitro-v3_10
 ```
 
+## Releases
+
+CAS release versions are independent of Nitro versions. Release images use
+`<CAS version>-nitro<Nitro version>`, for example:
+
+```text
+ghcr.io/espressosystems/chain-adjacent-service:0.1.0-nitro3.12.1
+```
+
+Select the Nitro variant matching your deployment and pin its image digest.
+Unverified-reader images append `-unverified` and are published only by manual
+workflow dispatch. Existing commit and branch image tags retain their naming.
+
 ## Development
 
 ### Prerequisites
