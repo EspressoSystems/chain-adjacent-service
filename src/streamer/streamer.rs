@@ -347,8 +347,7 @@ impl<R: Rollup> Streamer<R> {
             .collect::<std::collections::BTreeSet<u64>>()
             .into_iter()
             .collect();
-        let expected: std::collections::BTreeSet<u64> =
-            stubs_to_promote.iter().map(|(s, _)| *s).collect();
+        let expected: BTreeMap<u64, u64> = stubs_to_promote.iter().copied().collect();
 
         let namespace_id = espresso_types::NamespaceId::from(self.rollup_config.namespace_id);
 
@@ -379,8 +378,10 @@ impl<R: Rollup> Streamer<R> {
             let entries = R::parse_hotshot_transactions(&self.rollup_config.stack, txns, start);
             for entry in entries {
                 let seq = entry.sequence_number();
-                if expected.contains(&seq) {
-                    fetched.insert(seq, entry);
+                // Resubmissions can repeat a sequence in another block. Preserve the
+                // first occurrence at the stub's recorded height, as ingestion does.
+                if expected.get(&seq) == Some(&entry.hotshot_height()) {
+                    fetched.entry(seq).or_insert(entry);
                 }
             }
             i = j;
