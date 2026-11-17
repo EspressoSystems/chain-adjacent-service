@@ -1,5 +1,5 @@
 use espresso_types::{NamespaceId, Transaction};
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc, watch};
 
 use crate::{
     config::{AdvancedConfig, RollupConfig, RollupType::Nitro, StreamerConfig},
@@ -14,8 +14,9 @@ use crate::{
     },
 };
 use async_trait::async_trait;
-use std::sync::Arc;
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 async fn make_streamer(starting_pos: u64) -> Streamer<MockRollup> {
@@ -207,16 +208,45 @@ async fn test_filter_messages_leaves_stubs_alone() {
     assert_eq!(stub_entries(&streamer), vec![(3, 12), (4, 13)]);
 }
 
-/// Fixed Espresso blocks for exercising stub promotion without a running node.
+/// Fixed blocks and an optional one-shot range failure, shared by recovery tests.
+#[derive(Default)]
 struct StubPromotionReader {
-    starting_height: u64,
-    blocks: Vec<Vec<Transaction>>,
+    blocks: BTreeMap<u64, Vec<Transaction>>,
+    fail_once: Mutex<Option<u64>>,
+    requests: Mutex<Vec<(u64, u64)>>,
+    polled: Notify,
+    failed: Notify,
+}
+
+impl StubPromotionReader {
+    fn new(blocks: &[(u64, &[u64])], fail_at: Option<u64>) -> Arc<Self> {
+        Arc::new(Self {
+            blocks: blocks
+                .iter()
+                .map(|(height, seqs)| {
+                    (
+                        *height,
+                        seqs.iter()
+                            .map(|seq| make_mock_espresso_transaction(*seq))
+                            .collect(),
+                    )
+                })
+                .collect(),
+            fail_once: Mutex::new(fail_at),
+            ..Self::default()
+        })
+    }
+
+    fn requests(&self) -> Vec<(u64, u64)> {
+        self.requests.lock().unwrap().clone()
+    }
 }
 
 #[async_trait]
 impl EspressoReader for StubPromotionReader {
     async fn block_height(&self) -> Result<u64, LightClientError> {
-        Ok(self.starting_height + self.blocks.len() as u64)
+        self.polled.notify_one();
+        Ok(self.blocks.last_key_value().expect("test blocks").0 + 1)
     }
 
     async fn namespace_transactions_in_range(
@@ -225,146 +255,201 @@ impl EspressoReader for StubPromotionReader {
         start: u64,
         end: u64,
     ) -> Result<Vec<Vec<Transaction>>, LightClientError> {
-        let start = usize::try_from(start - self.starting_height).expect("start fits usize");
-        let end = usize::try_from(end - self.starting_height).expect("end fits usize");
-        Ok(self.blocks[start..end].to_vec())
+        self.requests.lock().unwrap().push((start, end));
+        let mut fail_once = self.fail_once.lock().unwrap();
+        if *fail_once == Some(start) {
+            *fail_once = None;
+            self.failed.notify_one();
+            return Err(LightClientError::Verification(anyhow::anyhow!(
+                "injected transient fetch failure"
+            )));
+        }
+        Ok((start..end)
+            .map(|height| self.blocks.get(&height).cloned().unwrap_or_default())
+            .collect())
     }
 }
 
-#[tokio::test]
-async fn test_duplicate_sequence_stub_promotion() {
-    let mut streamer = make_streamer_with_cap(1, 2).await;
-    streamer.client = Arc::new(StubPromotionReader {
-        starting_height: 12,
-        blocks: vec![
-            vec![make_mock_espresso_transaction(3)],
-            vec![
-                make_mock_espresso_transaction(3),
-                make_mock_espresso_transaction(4),
-            ],
-        ],
-    });
-    streamer.filter_messages(vec![
-        make_entry(1, 10),
-        make_entry(2, 11),
-        make_entry(3, 12),
-        make_entry(3, 13),
-        make_entry(4, 13),
-    ]);
-    assert_eq!(queue_positions(&streamer), vec![1, 2]);
-    assert_eq!(stub_entries(&streamer), vec![(3, 12), (4, 13)]);
-
-    // Pruning creates room for both stubs, so the refetch spans both copies of seq 3.
-    streamer.handle_finalization(2).await;
-    let promoted: Vec<_> = streamer
-        .queue
-        .iter()
-        .map(|entry| (entry.sequence_number(), entry.hotshot_height()))
-        .collect();
-    assert_eq!(promoted, vec![(3, 12), (4, 13)]);
-    assert!(streamer.stubs.is_empty());
-
-    let (feed_sender, mut feed_receiver) = mpsc::channel(2);
+async fn broadcast_positions(streamer: &mut Streamer<MockRollup>) -> Vec<u64> {
+    let (feed_sender, mut feed_receiver) =
+        mpsc::channel(streamer.config.max_full_queue_entries + 1);
     let (retry_sender, _retry_receiver) = mpsc::channel(1);
     let mut retry = BroadcastRetry::new(retry_sender);
     streamer
         .try_broadcast_feed_message(feed_sender, &mut retry)
         .await;
-    assert_eq!(
-        feed_receiver
-            .try_recv()
-            .expect("seq 3 broadcasts")
-            .sequence_number(),
-        3
-    );
-    assert_eq!(
-        feed_receiver
-            .try_recv()
-            .expect("seq 4 broadcasts")
-            .sequence_number(),
-        4
-    );
-    assert!(feed_receiver.try_recv().is_err());
-    assert_eq!(streamer.last_broadcast_position, 4);
+    std::iter::from_fn(|| feed_receiver.try_recv().ok())
+        .map(|entry| entry.sequence_number())
+        .collect()
 }
 
 #[tokio::test]
-async fn test_stub_promotion_uses_recorded_height() {
-    let mut streamer = make_streamer_with_cap(1, 2).await;
-    streamer.client = Arc::new(StubPromotionReader {
-        starting_height: 12,
-        blocks: vec![
-            vec![
-                make_mock_espresso_transaction(3),
-                make_mock_espresso_transaction(4),
-            ],
-            vec![make_mock_espresso_transaction(3)],
-        ],
-    });
-    // Seq 3 was first received at height 13; a duplicate at height 12 must not replace it.
-    streamer.filter_messages(vec![
-        make_entry(1, 10),
-        make_entry(2, 11),
-        make_entry(3, 13),
-        make_entry(4, 12),
-        make_entry(3, 12),
-    ]);
-    assert_eq!(stub_entries(&streamer), vec![(3, 13), (4, 12)]);
+async fn test_stub_promotion_preserves_recorded_height_across_ranges() {
+    // Cover a duplicate before and after the recorded occurrence. The other
+    // block also contains a distinct message that must still be promoted.
+    for (recorded, duplicate) in [(10, 110), (110, 10)] {
+        let reader = StubPromotionReader::new(&[(recorded, &[3]), (duplicate, &[3, 4])], None);
+        let mut streamer = make_streamer_with_cap(1, 2).await;
+        streamer.client = reader.clone();
+        streamer.filter_messages(vec![
+            make_entry(1, 1),
+            make_entry(2, 2),
+            make_entry(3, recorded),
+            make_entry(3, duplicate),
+            make_entry(4, duplicate),
+        ]);
 
-    streamer.handle_finalization(2).await;
-    let promoted: Vec<_> = streamer
-        .queue
-        .iter()
-        .map(|entry| (entry.sequence_number(), entry.hotshot_height()))
-        .collect();
-    assert_eq!(promoted, vec![(3, 13), (4, 12)]);
-    assert!(streamer.stubs.is_empty());
+        streamer.handle_finalization(2).await;
+        let promoted: Vec<_> = streamer
+            .queue
+            .iter()
+            .map(|entry| (entry.sequence_number(), entry.hotshot_height()))
+            .collect();
+        assert_eq!(promoted, vec![(3, recorded), (4, duplicate)]);
+        assert!(streamer.stubs.is_empty());
+        assert_eq!(reader.requests(), vec![(10, 11), (110, 111)]);
+        assert_eq!(broadcast_positions(&mut streamer).await, vec![3, 4]);
+    }
 }
 
 #[tokio::test]
-async fn test_stub_promotion_keeps_missing_recorded_height_and_blocks_feed_gap() {
+async fn test_stub_promotion_missing_recorded_entry_blocks_feed_gap() {
+    let reader = StubPromotionReader::new(&[(10, &[]), (110, &[3, 4])], None);
     let mut streamer = make_streamer_with_cap(1, 2).await;
-    streamer.client = Arc::new(StubPromotionReader {
-        starting_height: 12,
-        blocks: vec![
-            vec![],
-            vec![
-                make_mock_espresso_transaction(3),
-                make_mock_espresso_transaction(4),
-            ],
-        ],
-    });
+    streamer.client = reader;
     streamer.filter_messages(vec![
-        make_entry(1, 10),
-        make_entry(2, 11),
-        make_entry(3, 12),
-        make_entry(4, 13),
+        make_entry(1, 1),
+        make_entry(2, 2),
+        make_entry(3, 10),
+        make_entry(4, 110),
     ]);
-    assert_eq!(stub_entries(&streamer), vec![(3, 12), (4, 13)]);
 
     streamer.handle_finalization(2).await;
-    // A copy at another height cannot replace the absent recorded occurrence.
-    // Independent valid entries can still be reconstructed behind that gap.
-    assert_eq!(stub_entries(&streamer), vec![(3, 12)]);
-    let promoted: Vec<_> = streamer
-        .queue
-        .iter()
-        .map(|entry| (entry.sequence_number(), entry.hotshot_height()))
-        .collect();
-    assert_eq!(promoted, vec![(4, 13)]);
+    assert_eq!(stub_entries(&streamer), vec![(3, 10)]);
+    assert_eq!(queue_positions(&streamer), vec![4]);
+    assert_eq!(streamer.queue[0].hotshot_height(), 110);
+    assert!(broadcast_positions(&mut streamer).await.is_empty());
     assert_eq!(streamer.last_broadcast_position, 2);
+}
 
-    let (feed_sender, mut feed_receiver) = mpsc::channel(2);
-    let (retry_sender, _retry_receiver) = mpsc::channel(1);
-    let mut retry = BroadcastRetry::new(retry_sender);
-    streamer
-        .try_broadcast_feed_message(feed_sender.clone(), &mut retry)
-        .await;
+#[tokio::test]
+async fn test_stub_promotion_retries_same_checkpoint_after_transient_failure() {
+    let reader = StubPromotionReader::new(&[(10, &[3]), (110, &[4])], Some(110));
+    let mut streamer = make_streamer_with_cap(1, 2).await;
+    streamer.client = reader.clone();
+    streamer.filter_messages(vec![
+        make_entry(1, 1),
+        make_entry(2, 2),
+        make_entry(3, 10),
+        make_entry(4, 110),
+    ]);
+    streamer.handle_finalization(0).await;
+    assert!(reader.requests().is_empty(), "full queue needs no refetch");
+
+    streamer.handle_finalization(2).await;
+    assert_eq!(reader.requests(), vec![(10, 11), (110, 111)]);
+    assert_eq!(streamer.finalized_idx, 2);
+    // The first range succeeded, but a later failure must not partially promote.
+    assert!(streamer.queue.is_empty());
+    assert_eq!(stub_entries(&streamer), vec![(3, 10), (4, 110)]);
+
+    streamer.filter_messages(vec![make_entry(5, 210), make_entry(6, 211)]);
+    assert!(
+        streamer.queue.is_empty(),
+        "newer entries must reserve recovery room"
+    );
+    assert_eq!(
+        stub_entries(&streamer),
+        vec![(3, 10), (4, 110), (5, 210), (6, 211)]
+    );
+    streamer.filter_messages(vec![make_entry(1, 300), make_entry(2, 300)]);
+    streamer.handle_finalization(1).await;
+    assert_eq!(
+        queue_positions(&streamer),
+        vec![1, 2],
+        "stale checkpoint must not prune"
+    );
+    assert_eq!(reader.requests().len(), 2);
+
+    // The same accepted checkpoint re-prunes finalized replays and retries.
+    streamer.handle_finalization(2).await;
+    assert_eq!(queue_positions(&streamer), vec![3, 4]);
+    assert_eq!(stub_entries(&streamer), vec![(5, 210), (6, 211)]);
+    assert_eq!(
+        reader.requests(),
+        vec![(10, 11), (110, 111), (10, 11), (110, 111)]
+    );
+    assert_eq!(broadcast_positions(&mut streamer).await, vec![3, 4]);
+    streamer.handle_finalization(2).await;
+    assert_eq!(
+        reader.requests().len(),
+        4,
+        "full recovered queue needs no refetch"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_stub_promotion_run_recovers_checkpoint_with_feed_backpressure() {
+    let reader = StubPromotionReader::new(&[(10, &[3]), (110, &[4])], Some(110));
+    let mut streamer = make_streamer_with_cap(1, 2).await;
+    streamer.client = reader.clone();
+    streamer.config.starting_hotshot_height = 111;
+    streamer.config.initial_backoff_ms = 60_000;
+    streamer.config.retry_broadcast_delay_ms = 1;
+    streamer.filter_messages(vec![
+        make_entry(1, 1),
+        make_entry(2, 2),
+        make_entry(3, 10),
+        make_entry(4, 110),
+    ]);
+    let (finalized_tx, finalized_rx) = watch::channel(2);
+    let (_verification_tx, verification_rx) = mpsc::channel(1);
+    // With no suspension in the send loop, seq 3 fills this channel and seq 4
+    // must hit backpressure before the current-thread driver can consume seq 3.
+    let (feed_tx, mut feed_rx) = mpsc::channel(1);
+    {
+        let run = streamer.run(finalized_rx, verification_rx, feed_tx.clone());
+        tokio::pin!(run);
+        let driver = tokio::time::timeout(Duration::from_secs(3), async {
+            reader.polled.notified().await;
+            assert!(
+                reader.requests().is_empty(),
+                "poller is at the immutable tip"
+            );
+            // run initialized finalized_idx=2 while the broadcast cursor was 0.
+            finalized_tx.send(2).unwrap();
+            reader.failed.notified().await;
+            assert_eq!(reader.requests(), vec![(10, 11), (110, 111)]);
+            assert!(matches!(
+                feed_rx.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
+
+            finalized_tx.send(2).unwrap();
+            assert_eq!(feed_rx.recv().await.unwrap().sequence_number(), 3);
+            // No further finality or HotShot notifications: the retry timer
+            // alone must deliver the second recovered message.
+            assert_eq!(feed_rx.recv().await.unwrap().sequence_number(), 4);
+        });
+        tokio::pin!(driver);
+        tokio::select! {
+            result = &mut run => panic!("streamer exited during recovery: {result:?}"),
+            result = &mut driver => result.expect("checkpoint recovery and feed retry timed out"),
+        }
+        // The isolated test runtime aborts run's private sleeping poller task.
+    }
+    assert_eq!(queue_positions(&streamer), vec![3, 4]);
+    assert!(streamer.stubs.is_empty());
+    assert_eq!(streamer.finalized_idx, 2);
+    assert_eq!(streamer.last_broadcast_position, 4);
+    assert_eq!(
+        reader.requests(),
+        vec![(10, 11), (110, 111), (10, 11), (110, 111)]
+    );
     assert!(matches!(
-        feed_receiver.try_recv(),
+        feed_rx.try_recv(),
         Err(mpsc::error::TryRecvError::Empty)
     ));
-    assert_eq!(streamer.last_broadcast_position, 2);
 }
 
 // Unit-level out-of-order delivery: later seqs arrive first, overflow to stubs, and finalization
@@ -398,15 +483,20 @@ async fn test_out_of_order_seq_overflows_to_stubs_and_finalization_clears() {
 }
 
 #[tokio::test]
-async fn test_handle_finalization_noop_when_not_advancing() {
+async fn test_handle_finalization_handles_stale_and_equal_checkpoints() {
     let mut s = make_streamer_with_cap(1, 5).await;
     s.filter_messages(vec![make_entry(2, 10), make_entry(3, 11)]);
+    // A loaded checkpoint may initially be ahead of the broadcast cursor.
+    s.finalized_idx = 2;
+    s.handle_finalization(1).await;
+    assert_eq!(s.last_broadcast_position, 0);
+    assert_eq!(queue_positions(&s), vec![2, 3]);
     s.handle_finalization(2).await;
     assert_eq!(queue_positions(&s), vec![3]);
     assert_eq!(s.finalized_idx, 2);
     assert_eq!(s.last_broadcast_position, 2);
 
-    // Stale/equal finalized idx must be a no-op (no queue mutation, no position regression).
+    // With no finalized replays or pending stubs, stale/equal checkpoints preserve retained entries.
     s.handle_finalization(1).await;
     s.handle_finalization(2).await;
     assert_eq!(queue_positions(&s), vec![3]);
@@ -711,275 +801,4 @@ async fn test_dropped_message_recovers_when_resubmitted_out_of_order() {
         "after seq 4 reappears, all messages broadcast in order"
     );
     assert_eq!(streamer.last_broadcast_position, 10);
-}
-
-// This capture uses Nitro v3.9.9's feed-signature scheme, as the deployed chain did.
-#[cfg(feature = "nitro-v3_9_9")]
-mod captured_nitro_replay {
-    use super::*;
-    use crate::rollups::{
-        nitro::{
-            config::NitroConfig,
-            feed::{
-                client::BroadcasterClientConfig, message::BroadcastFeedMessage, relay::FeedConfig,
-            },
-            types::{
-                BatchCursor, BatchMessage, MessageWithMetadata, Nitro as NitroRollup,
-                NitroRollupQueueEntry,
-            },
-        },
-        rollup::Rollup,
-    };
-    use std::collections::BTreeMap;
-    use std::sync::Mutex;
-
-    #[derive(serde::Deserialize)]
-    struct CapturedBlock {
-        height: u64,
-        transactions: Vec<Transaction>,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct CapturedFixture {
-        namespace_id: u64,
-        chain_id: u64,
-        trusted_sequencer_address: String,
-        blocks: Vec<CapturedBlock>,
-    }
-
-    struct CapturedReader {
-        blocks: BTreeMap<u64, Vec<Transaction>>,
-        requests: Mutex<Vec<(u64, u64)>>,
-    }
-
-    #[async_trait]
-    impl EspressoReader for CapturedReader {
-        async fn block_height(&self) -> Result<u64, LightClientError> {
-            Ok(self.blocks.last_key_value().expect("captured blocks").0 + 1)
-        }
-
-        async fn namespace_transactions_in_range(
-            &self,
-            namespace: NamespaceId,
-            start: u64,
-            end: u64,
-        ) -> Result<Vec<Vec<Transaction>>, LightClientError> {
-            assert_eq!(namespace, NamespaceId::from(3_313_939u64));
-            assert!(end - start <= super::super::HOTSHOT_RANGE_LIMIT);
-            self.requests
-                .lock()
-                .expect("request log")
-                .push((start, end));
-            Ok((start..end)
-                .map(|height| self.blocks.get(&height).cloned().unwrap_or_default())
-                .collect())
-        }
-    }
-
-    #[tokio::test]
-    async fn test_apechain_74510_duplicate_across_promotion_ranges() {
-        const ORIGINAL_HEIGHT: u64 = 23_678_095;
-        const REBUNDLED_HEIGHT: u64 = 23_681_423;
-        const START_SEQ: u64 = 73_510;
-        const NEXT_SEQ: u64 = 74_510;
-        const CAPACITY: usize = 1_000;
-        let _trace = tracing::subscriber::set_default(
-            tracing_subscriber::fmt()
-                .with_test_writer()
-                .with_ansi(false)
-                .with_max_level(tracing::Level::ERROR)
-                .finish(),
-        );
-        let fixture: CapturedFixture =
-            serde_json::from_str(include_str!("test_data/apechain_seq_74510.json"))
-                .expect("captured Espresso transactions");
-        assert_eq!(
-            fixture
-                .blocks
-                .iter()
-                .map(|block| block.height)
-                .collect::<Vec<_>>(),
-            vec![ORIGINAL_HEIGHT, REBUNDLED_HEIGHT]
-        );
-        assert_eq!(fixture.namespace_id, 3_313_939);
-        assert_eq!(fixture.chain_id, 3_313_939);
-        // Independently configured sequencer trust, not recovered from the payload.
-        let sequencer = "0xAb4b36cA0390E6707911B5D3D1E3bfc13F6DDDb6"
-            .parse::<alloy::primitives::Address>()
-            .expect("configured ApeChain testnet sequencer");
-        assert_eq!(
-            fixture
-                .trusted_sequencer_address
-                .parse::<alloy::primitives::Address>()
-                .expect("fixture sequencer address"),
-            sequencer
-        );
-        let original_payload = fixture.blocks[0].transactions[1].payload();
-        let rebundled_payload = fixture.blocks[1].transactions[0].payload();
-        assert_eq!(original_payload.len(), 858);
-        assert_eq!(rebundled_payload.len(), 3_396);
-        // Both V1 payloads start with a 12-byte header and an 8-byte frame length.
-        assert_eq!(&original_payload[20..], &rebundled_payload[20..858]);
-        let config = NitroConfig {
-            chain_id: fixture.chain_id,
-            feed: FeedConfig {
-                client: BroadcasterClientConfig {
-                    trusted_sequencer_addresses: vec![sequencer],
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        // Use the production Nitro decoder, including sequencer-signature checks.
-        let original = NitroRollup::parse_hotshot_transactions(
-            &config,
-            vec![fixture.blocks[0].transactions.clone()],
-            ORIGINAL_HEIGHT,
-        );
-        let rebundled = NitroRollup::parse_hotshot_transactions(
-            &config,
-            vec![fixture.blocks[1].transactions.clone()],
-            REBUNDLED_HEIGHT,
-        );
-        assert_eq!(
-            original
-                .iter()
-                .map(|entry| entry.sequence_number())
-                .collect::<Vec<_>>(),
-            vec![74_511, NEXT_SEQ]
-        );
-        assert_eq!(
-            rebundled
-                .iter()
-                .map(|entry| entry.sequence_number())
-                .collect::<Vec<_>>(),
-            vec![NEXT_SEQ, 74_511, 74_512, 74_513]
-        );
-        let original_message = original
-            .iter()
-            .find(|entry| entry.sequence_number() == NEXT_SEQ)
-            .expect("original target")
-            .feed_message
-            .clone();
-        assert_eq!(original_message, rebundled[0].feed_message);
-        assert_eq!(original_message.message.delayed_messages_read, 38);
-
-        let reader = Arc::new(CapturedReader {
-            blocks: fixture
-                .blocks
-                .into_iter()
-                .map(|block| (block.height, block.transactions))
-                .collect(),
-            requests: Mutex::new(Vec::new()),
-        });
-        let mut streamer = Streamer::<NitroRollup>::new(
-            reader.clone(),
-            StreamerConfig {
-                starting_pos: START_SEQ,
-                max_full_queue_entries: CAPACITY,
-                ..Default::default()
-            },
-            RollupConfig {
-                namespace_id: fixture.namespace_id,
-                stack: config,
-                ty: Nitro,
-            },
-            AdvancedConfig::default(),
-            None,
-        );
-        streamer.handle_finalization(START_SEQ - 1).await;
-        // Synthetic already-retained entries supply capacity pressure only. The
-        // overflow transactions above are the unmodified, signed public captures.
-        streamer.filter_messages(
-            (START_SEQ..NEXT_SEQ)
-                .map(|sequence_number| NitroRollupQueueEntry {
-                    feed_message: BroadcastFeedMessage {
-                        sequence_number,
-                        message: MessageWithMetadata {
-                            message: None,
-                            delayed_messages_read: 38,
-                        },
-                        signature: Vec::new(),
-                        block_hash: None,
-                        block_metadata: Vec::new(),
-                        cumulative_sum_msg_size: 0,
-                    },
-                    hotshot_height: ORIGINAL_HEIGHT - 1,
-                })
-                .collect(),
-        );
-        streamer.filter_messages(original);
-        streamer.filter_messages(rebundled);
-        assert_eq!(streamer.queue.len(), CAPACITY);
-        assert_eq!(
-            streamer
-                .stubs
-                .iter()
-                .map(|(seq, height)| (*seq, *height))
-                .collect::<Vec<_>>(),
-            vec![
-                (NEXT_SEQ, ORIGINAL_HEIGHT),
-                (74_511, ORIGINAL_HEIGHT),
-                (74_512, REBUNDLED_HEIGHT),
-                (74_513, REBUNDLED_HEIGHT)
-            ]
-        );
-
-        let batch = vec![BatchMessage::L2Msg(
-            alloy::primitives::Bytes::copy_from_slice(
-                &original_message
-                    .message
-                    .message
-                    .as_ref()
-                    .expect("L2 message")
-                    .l2msg,
-            ),
-        )];
-        let cursor = BatchCursor {
-            next_batch_start_pos: NEXT_SEQ,
-            last_batch_delayed_messages_read: 38,
-        };
-        assert!(!NitroRollup::verify_batch_messages(&batch, &streamer.queue, &cursor).success);
-        streamer.handle_finalization(NEXT_SEQ - 1).await;
-        assert_eq!(
-            *reader.requests.lock().expect("request log"),
-            vec![
-                (ORIGINAL_HEIGHT, ORIGINAL_HEIGHT + 1),
-                (REBUNDLED_HEIGHT, REBUNDLED_HEIGHT + 1)
-            ]
-        );
-        assert_eq!(
-            streamer
-                .queue
-                .iter()
-                .map(|entry| (entry.sequence_number(), entry.hotshot_height()))
-                .collect::<Vec<_>>(),
-            vec![
-                (NEXT_SEQ, ORIGINAL_HEIGHT),
-                (74_511, ORIGINAL_HEIGHT),
-                (74_512, REBUNDLED_HEIGHT),
-                (74_513, REBUNDLED_HEIGHT)
-            ]
-        );
-        assert!(streamer.stubs.is_empty());
-        let verified = NitroRollup::verify_batch_messages(&batch, &streamer.queue, &cursor);
-        assert!(verified.success);
-        assert_eq!(verified.start_message_position, NEXT_SEQ);
-        assert_eq!(verified.end_message_position, NEXT_SEQ);
-        assert_eq!(verified.start_espresso_block, ORIGINAL_HEIGHT);
-
-        let (feed_sender, mut feed_receiver) = mpsc::channel(4);
-        let (retry_sender, _retry_receiver) = mpsc::channel(1);
-        let mut retry = BroadcastRetry::new(retry_sender);
-        streamer
-            .try_broadcast_feed_message(feed_sender, &mut retry)
-            .await;
-        let mut broadcast = Vec::new();
-        while let Ok(message) = feed_receiver.try_recv() {
-            broadcast.push(message.sequence_number);
-        }
-        assert_eq!(broadcast, (NEXT_SEQ..=74_513).collect::<Vec<_>>());
-        assert_eq!(streamer.last_broadcast_position, 74_513);
-    }
 }

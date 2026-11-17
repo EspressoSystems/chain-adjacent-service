@@ -566,7 +566,3 @@ pub async fn poll_hotshot_blocks(
 #[cfg(test)]
 #[path = "streamer_tests.rs"]
 pub mod testing;
-
-#[cfg(test)]
-#[path = "streamer_retry_tests.rs"]
-mod retry_testing;
