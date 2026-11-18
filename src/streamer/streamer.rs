@@ -131,15 +131,18 @@ impl<R: Rollup> Streamer<R> {
                         Err(join_err) => Err(anyhow::anyhow!("hotshot poller task panicked: {join_err}")),
                     };
                 },
-                // New L1 finalized message index: prune the queue and update finalized_idx
-                // Also update last_broadcast_position to ensure we don't broadcast messages that are finalized by L1
+                // Parent finality notifications also retry promotion when the
+                // finalized message index has not advanced.
                 changed = l1_finalized_msg_idx.changed() => {
                     if changed.is_err() {
                         tracing::error!("l1_finalized_msg_idx sender was dropped");
                         continue;
                     }
                     let new_finalized_idx = *l1_finalized_msg_idx.borrow();
-                    self.handle_finalization(new_finalized_idx).await;
+                    if new_finalized_idx >= self.finalized_idx {
+                        self.handle_finalization(new_finalized_idx).await;
+                        self.try_broadcast_feed_message(espresso_finalization_sender.clone(), &mut retry).await;
+                    }
                 },
                 batch_data = verification_receiver.recv() => {
                     let Some((batch_data, sender)) = batch_data else {
@@ -208,6 +211,9 @@ impl<R: Rollup> Streamer<R> {
     }
 
     pub async fn handle_finalization(&mut self, new_finalized_idx: u64) {
+        if new_finalized_idx < self.finalized_idx {
+            return;
+        }
         if new_finalized_idx > self.last_broadcast_position {
             // Rare but possible: L1's finalized index has advanced beyond what we've
             // last broadcast. In that case, advance `last_broadcast_position` to
@@ -216,16 +222,17 @@ impl<R: Rollup> Streamer<R> {
             self.last_broadcast_position = new_finalized_idx;
         }
 
-        if new_finalized_idx <= self.finalized_idx {
-            return;
+        if new_finalized_idx > self.finalized_idx {
+            tracing::info!(
+                prev_finalized = self.finalized_idx,
+                new_finalized = new_finalized_idx,
+                "finalized message index advanced"
+            );
+            self.finalized_idx = new_finalized_idx;
         }
-        tracing::info!(
-            prev_finalized = self.finalized_idx,
-            new_finalized = new_finalized_idx,
-            "finalized message index advanced"
-        );
 
-        self.finalized_idx = new_finalized_idx;
+        // Replayed messages can arrive after the previous notification. Prune
+        // them again before calculating room for a failed promotion's retry.
         let split_at = self
             .queue
             .partition_point(|e| e.sequence_number() <= self.finalized_idx);
@@ -234,6 +241,8 @@ impl<R: Rollup> Streamer<R> {
             Some(split_key) => self.stubs = self.stubs.split_off(&split_key),
             None => self.stubs.clear(),
         }
+        // Another parent block can finalize without increasing the message
+        // index. Such notifications must still retry historical fetch failures.
         self.promote_stubs().await;
     }
 
@@ -313,6 +322,17 @@ impl<R: Rollup> Streamer<R> {
                 continue;
             }
 
+            // Keep room for older stubs after a failed promotion. Newer live
+            // entries must not fill the queue and prevent their reconstruction.
+            if self
+                .stubs
+                .first_key_value()
+                .is_some_and(|(first_seq, _)| *first_seq < seq)
+            {
+                self.stubs.insert(seq, parsed_entry.hotshot_height());
+                continue;
+            }
+
             self.queue.insert(pos, parsed_entry);
             if self.queue.len() > self.config.max_full_queue_entries {
                 let evicted = self.queue.pop().expect("queue is non-empty: just inserted");
@@ -347,8 +367,7 @@ impl<R: Rollup> Streamer<R> {
             .collect::<std::collections::BTreeSet<u64>>()
             .into_iter()
             .collect();
-        let expected: std::collections::BTreeSet<u64> =
-            stubs_to_promote.iter().map(|(s, _)| *s).collect();
+        let expected: BTreeMap<u64, u64> = stubs_to_promote.iter().copied().collect();
 
         let namespace_id = espresso_types::NamespaceId::from(self.rollup_config.namespace_id);
 
@@ -379,8 +398,10 @@ impl<R: Rollup> Streamer<R> {
             let entries = R::parse_hotshot_transactions(&self.rollup_config.stack, txns, start);
             for entry in entries {
                 let seq = entry.sequence_number();
-                if expected.contains(&seq) {
-                    fetched.insert(seq, entry);
+                // Resubmissions can repeat a sequence in another block. Preserve the
+                // first occurrence at the stub's recorded height, as ingestion does.
+                if expected.get(&seq) == Some(&entry.hotshot_height()) {
+                    fetched.entry(seq).or_insert(entry);
                 }
             }
             i = j;
